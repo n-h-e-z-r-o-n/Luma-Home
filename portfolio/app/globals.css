@@ -15,5 +15,8 @@
   box-sizing: border-box;
   text-decoration: none;
   background: green;
-   font-family: "Bitcount", system-ui;
+  font-family: "Bitcount", system-ui;
+}
+body{
+  background: white;
 }
