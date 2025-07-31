@@ -1,3 +1,23 @@
+root{
+    --global-background: white;
+    --global-text-color: black;
+}
+body {
+ width: 100%;
+ height: 100vh;
+ overflow: scroll;
+ background: var(--global-background);
+  margin: 0;
+  padding: 15px;
+  box-sizing: border-box;
+}
+
+.main {
+  margin: 0 auto;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
 
 
 .navbar {
@@ -5,18 +25,42 @@
   justify-content: space-between;
   align-items: center;
   position: fixed;
-  top: 0;
+  top: 40px;
   left: 0;
   right: 0;
   z-index: 10;
-  width: 100%;
+  width: 90%;
   height: 60px;
   padding: 10px;
   box-sizing: border-box;
-  text-decoration: none;
-  background: green;
-  font-family: "Bitcount", system-ui;
+  background: transparent;
+
+  backdrop-filter: blur(5px);
+  box-shadow: 0 2px 4px 0 rgba(0,0,0,0.1);
+    box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.1);
 }
-body{
-  background: white;
+
+
+.navBar-links{
+     background: transparent;
+    display: flex;
+    gap:  20px;
+}
+
+.navBar-links *{
+    text-decoration: none;
+    color: var(--global-text-color);
+     font-family: "Bitcount", system-ui;
+
+}
+.navBar-links *:hover{
+    color: gray;
+}
+
+
+main{
+  background: yellow;
+  width:  100%;
+  font-size: 14px;
+  height: 800px;
 }
