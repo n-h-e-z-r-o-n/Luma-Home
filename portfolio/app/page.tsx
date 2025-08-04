@@ -1,5 +1,5 @@
 import NavBar from '@/components/NavBar'
-import HomeSection1 from '@/components/HomeSection1'
+import HomeSection1m  ,{ HomeSection2 }from '@/components/HomeSection1'
 
 import "./globals.css"
 
@@ -7,8 +7,12 @@ export default function Page() {
   return (
       <>
        <NavBar />
-       <HomeSection1 />
-       <div className={"main"}></div>
+       <div className={"main"}>
+          <div className="snap-container">
+              <section className="snap-section"><HomeSection1 /></section>
+              <section className="snap-section"><HomeSection2 /></section>
+           </div>
+       </div>
       </>
 
   );

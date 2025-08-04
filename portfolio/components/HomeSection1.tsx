@@ -8,20 +8,29 @@ export default function HomeSection1() {
                 <div className={"info_section"}>
                     <>
                     <p>Hey i'm  Hezron</p>
-                    <div> I'M A SOFTWARE  </div>
-                    <div> DEVELOPER</div>
-                    <p>I specialize in building robust web applications, crafting elegant UIs, and writing clean, maintainable code. Passionate about performance, accessibility, and seamless user experience.</p>
+                    <div className={"Job-title"}> I'M A SOFTWARE  </div>
+                    <div className={"Job-title"}> DEVELOPER</div>
+                    <p className={"Job-summary"}>I specialize in building robust web applications, crafting elegant UIs, and writing clean, maintainable code. Passionate about performance, accessibility, and seamless user experience.</p>
 
                     </>
                 </div>
-                <Image
-                  className={"user_image"}
-                  src="/images/me.png" // or a full remote URL if allowed in next.config.js
-                  width={500}
-                  height={800}
-                  sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
-                  alt=""
-                />
+                <div className={"image-container"}>
+                      <Image
+                        className={"user_image"}
+                         src="/images/me.png" // or a full remote URL if allowed in next.config.js
+                         fill
+                         alt=""
+                    />
+                </div>
+
+            </div>
+    );
+}
+
+export function HomeSection2() {
+    return (
+            <div className={"section2"}>
+
             </div>
     );
 }
