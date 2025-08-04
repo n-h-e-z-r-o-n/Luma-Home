@@ -12,10 +12,10 @@ const geist = Geist({
 export default function navBar() {
     return (
         <div className={"navbar"}>
-            <div><Link className={geist.className} href="/">n-h-e-z-r-o-n</Link></div>
+            <div><Link className={"logo"} href="/">n-h-e-z-r-o-n</Link></div>
             <div className={"navBar-links"}>
-                <div><Link href="/products/">About Us</Link></div>
-                <div><Link href="/contacts/">Customer</Link></div>
+                <div><Link href="/about/">About Us</Link></div>
+                <div><Link href="/about/">Customer</Link></div>
                 <div><Link href="/about">Contact Us</Link></div>
             </div>
 

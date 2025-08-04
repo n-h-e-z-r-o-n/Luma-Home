@@ -1,5 +1,5 @@
 import NavBar from '@/components/NavBar'
-import HomeSection1m  ,{ HomeSection2 }from '@/components/HomeSection1'
+import HomeSection1  ,{ HomeSection2 }from '@/components/HomeSection1'
 
 import "./globals.css"
 
