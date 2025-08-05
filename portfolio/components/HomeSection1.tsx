@@ -15,10 +15,22 @@ export default function HomeSection1() {
                     </>
                 </div>
                 <div className={"Socials"}>
-                    <div><i className="fa fa-facebook" aria-hidden="true"></i> </div>
-                    <div>  <FontAwesomeIcon icon={['fab', 'whatsapp']} />   </div>
-                    <div>  <FontAwesomeIcon icon={["fab", "paper-plane"]} /> </div>
-                    <div>  <FontAwesomeIcon icon={["fab", "linkedin"]} />  </div>
+                    <div className={"Socials_each"}>
+                          <FontAwesomeIcon className={"Socials_icon"} icon={['fab', 'whatsapp']} />
+                          <div className={"Socials_data"}>
+                              <div> Whatsapp</div>
+                              <div> +254 714 415 034</div>
+                          </div>
+
+                    </div>
+
+                    <div  className={"Socials_each"}>
+                        <FontAwesomeIcon className={"Socials_icon"} icon={["fab", "linkedin"]} />
+                        <div className={"Socials_data"}>
+                        <div> Whatsapp</div>
+                        <div> +254 714 415 034</div>
+                        </div>
+                    </div>
 
                 </div>
                 <div className={"image-container"}>
