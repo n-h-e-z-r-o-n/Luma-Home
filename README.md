@@ -17,7 +17,9 @@ A personal Android TV home screen with warm translucent controls and a quiet fir
 
 ## Appearance
 
-Settings → Appearance offers warm glass or cool slate menus, tile sizes, clock sizes, high contrast and always-visible banner names.
+Settings → Appearance offers Warm glass, Cool slate or From wallpaper colors, tile sizes, clock sizes, high contrast and always-visible banner names.
+
+From wallpaper extracts a prominent usable hue from a small wallpaper sample and derives restrained dark surface tints and pale focus accents. Color intensity ranges from 0% (neutral) to 100%; its dialog previews changes before Save, while Cancel preserves the current setting. Palette extraction runs off the UI thread and is cached for the imported image. Built-in colored backgrounds supply their own seed; missing or neutral imagery falls back to Warm glass. Text remains neutral/readable, high-contrast focus takes priority, and recommendation artwork stays black. This is translucent tinting, without live background blur.
 
 Backgrounds include gradients, solid colors and an imported still photo. A dimming control keeps text readable. Images are resized and copied to private app storage; the picker supplies access without broad storage permission.
 
@@ -91,3 +93,7 @@ Real-TV results and remaining limitations are recorded in docs/validation.md.
 MIT. The required notice is preserved in LICENSE and included in APK assets.
 
 Home icons fill their circular frames using proportional center-cropping without inset padding. Transparent outer margins in native app icons are trimmed before fitting; All Apps artwork is unchanged.
+
+`ThemePaletteTest` checks representative wallpaper hues, neutral/transparent-image fallback, neutral intensity, alpha preservation and contrast of generated text/accent colors against the base dark surfaces.
+
+Clock and date use medium weight and the same foreground color. Recommendation section headings use the Home heading typography and show only the source app name.

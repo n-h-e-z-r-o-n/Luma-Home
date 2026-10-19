@@ -50,3 +50,11 @@ Implement and install for a real-TV preview, as requested. Preserve the existing
 - Validate navigation, preference persistence, whole-page scrolling, editing, photo import fallback, no-feed banner fallback and footer spacing on the connected TV.
 - Verify protected apps and TV inputs remain unchanged.
 - Install and open Luma Home for preview under the user's explicit installation request. Do not uninstall the previous launcher.
+
+
+## Wallpaper-derived colors
+
+- Appearance offers Warm glass, Cool slate and From wallpaper. The user's preview is set to From wallpaper; other preferences are retained.
+- A bounded wallpaper sample supplies a prominent usable hue. Derive muted translucent surface tints, pale focus accents and subtle secondary text; do not recolor app or recommendation artwork.
+- A 0?100% intensity control has a remote-focused slider, live sample, Save and Cancel. Default intensity is 45%.
+- Extract off the UI thread and cache by wallpaper identity. Built-in colored backgrounds supply a seed; neutral or missing images fall back to Warm glass. High contrast takes priority for focus and text. No live blur or changing colors from featured-title artwork.

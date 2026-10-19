@@ -199,8 +199,8 @@ public final class MainActivity extends Activity {
         if("photo".equals(style))wallpaperSeed=paletteKey().equals(store.value("palette_source",""))?store.number("palette_seed",0):0;
         else wallpaperSeed="forest".equals(style)?0xFF276849:"ocean".equals(style)?0xFF286A91:"midnight".equals(style)?0xFF465B9A:"ember".equals(style)?0xFF9A6A52:0;
     }
-    private void extractWallpaperColors(android.graphics.Bitmap bitmap){
-        final String key=paletteKey();
+    private void extractWallpaperColors(android.graphics.Bitmap bitmap,final String key){
+        if(!key.equals(paletteKey())||!"photo".equals(store.value("background","ember")))return;
         if(key.equals(store.value("palette_source",""))||key.equals(palettePending))return;
         palettePending=key;
         paletteWorker.execute(()->{
@@ -271,8 +271,9 @@ public final class MainActivity extends Activity {
         if ("photo".equals(style)) {
             String path=store.value("background_image","");
             if (!path.isEmpty()) {
+                final String backgroundPaletteKey=paletteKey();
                 ImageView image=new ImageView(this){
-                    @Override public void setImageBitmap(android.graphics.Bitmap bitmap){super.setImageBitmap(bitmap);if(bitmap!=null&&!destroyed)extractWallpaperColors(bitmap);}
+                    @Override public void setImageBitmap(android.graphics.Bitmap bitmap){super.setImageBitmap(bitmap);if(bitmap!=null&&!destroyed)extractWallpaperColors(bitmap,backgroundPaletteKey);}
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 root.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
@@ -334,11 +335,11 @@ public final class MainActivity extends Activity {
         header.removeAllViews();header.getLayoutParams().height=px(330);header.requestLayout();
         LinearLayout clock=new LinearLayout(this); clock.setOrientation(LinearLayout.VERTICAL);clock.setPadding(px(96),px(36),px(96),0);
         TextClock date=new TextClock(this); date.setFormat12Hour("EEEE, d MMMM"); date.setFormat24Hour("EEEE, d MMMM");
-        date.setTextColor(muted()); date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(27));
+        date.setTextColor(foreground());date.setTypeface(medium); date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(27));
         TextClock time=new TextClock(this); time.setFormat12Hour("h:mm"); time.setFormat24Hour("H:mm");
         int size=store.number("clock_size",176);
         time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(size)); time.setTextColor(foreground());
-        time.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL)); time.setIncludeFontPadding(false);
+        time.setTypeface(medium); time.setIncludeFontPadding(false);
         clock.addView(date); clock.addView(time); header.addView(clock,new FrameLayout.LayoutParams(-1,-1)); clockPanel=clock;
         String source=store.value("featured_source","");
         if (!store.flag("featured") || !store.flag("recommendations_master") || !store.recommendations(source) || !byPackage.containsKey(source)) return;
@@ -481,8 +482,8 @@ public final class MainActivity extends Activity {
         page.addView(drawerPage,new ScrollView.LayoutParams(-1,-2));
         FrameLayout top=new FrameLayout(this);
         LinearLayout clock=new LinearLayout(this);clock.setOrientation(LinearLayout.VERTICAL);
-        TextClock date=new TextClock(this);date.setFormat12Hour("EEEE, d MMMM");date.setFormat24Hour("EEEE, d MMMM");date.setTextColor(muted());date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(30));
-        TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");time.setTextColor(foreground());time.setIncludeFontPadding(false);time.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
+        TextClock date=new TextClock(this);date.setFormat12Hour("EEEE, d MMMM");date.setFormat24Hour("EEEE, d MMMM");date.setTextColor(foreground());date.setTypeface(medium);date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(30));
+        TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");time.setTextColor(foreground());time.setIncludeFontPadding(false);time.setTypeface(medium);time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
         clock.addView(date);clock.addView(time);top.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         Button back=button("Back to Home",()->{ hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); });
         top.addView(back,at(drawerWidth()-px(330),0,px(330),px(66)));
@@ -720,8 +721,8 @@ public final class MainActivity extends Activity {
             recommendations.load(pkg,feed->{
                 if(destroyed||drawer||current!=serial||section.getParent()!=contentRail)return;
                 if(!HomePolicy.recommendations(store.flag("recommendations_master"),store.recommendations(pkg),!feed.items.isEmpty()))return;
-                TextView label=text("From "+name(pkg),22,muted());label.setPadding(px(96),0,px(96),0);
-                section.addView(label,new LinearLayout.LayoutParams(-1,px(44)));
+                TextView label=text(name(pkg),34,foreground());label.setTypeface(medium);label.setPadding(px(96),0,px(96),0);
+                section.addView(label,new LinearLayout.LayoutParams(-1,px(52)));
                 HorizontalScrollView scroll=new HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);
                 scroll.setClipChildren(false);scroll.setClipToPadding(false);scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);

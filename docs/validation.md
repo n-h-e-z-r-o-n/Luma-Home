@@ -1,6 +1,21 @@
 # TCL preview validation
 
-Development preview: Luma Home 0.4.1, installed and checked on the connected TCL Android 11 TV on 19 October 2026. This records observed results, not a certification for other TVs.
+Development preview: Luma Home 0.5.1, installed and checked on the connected TCL Android 11 TV on 19 October 2026. This records observed results, not a certification for other TVs.
+
+## Clock and section-heading typography
+
+- Version 0.5.1, code 14, changes both Home fallback and All Apps clock/date to medium weight with matching foreground color. Their sizes and date/time formats remain user-selected/as before.
+- Recommendation section labels now show only the source app name, using the same 34-pixel reference size, medium weight and foreground color as Home. Heading height grows to 52 reference pixels to accommodate that text without clipping.
+- Built and signature-verified; installed on the TCL. Home and All Apps screenshots were visually inspected: date/time and the YouTube heading render without clipping. Saved preferences matched before/after. Evidence: `tv-audit/luma-preview/typography-update/`.
+
+## Wallpaper-derived theme
+
+- Version 0.5.0, code 13, adds From wallpaper and a previewable color-intensity control. Extraction uses at most a 64-pixel-long-edge bitmap, runs on a worker, and saves the source identity and seed. No additional library or device permission was needed.
+- Native TV preview: the user's forest wallpaper supplied a green hue, producing subtle dark green menu surfaces and pale green focus accents. Warm/Cool remain available; high-contrast text/focus priorities and black recommendation artwork remain.
+- 73 standalone palette checks passed: transparent and neutral inputs, dominant-color selection, representative hues and intensities, alpha retention, neutral 0% accents, and generated accent/secondary-text contrast against opaque base surfaces. These checks do not guarantee contrast over every transparent wallpaper region; high contrast remains available.
+- The remote-focused intensity slider changed 45% to 55%. Cancel retained 45%; subsequent Save applied 55%, then Save restored 45% for the preview. The selected From wallpaper theme is intentional. Evidence: `tv-audit/luma-preview/wallpaper-theme-update/`.
+- Cold startup retained From wallpaper and 45%. Final screenshots were visually inspected. Only theme, intensity and palette-cache keys changed; Home resolution and disabled packages were unchanged.
+- Imported-image changes and file picking were not retested in this update. Live blur is not implemented; the effect uses translucent color tints.
 
 ## Hero blending and proportional artwork refinement
 
