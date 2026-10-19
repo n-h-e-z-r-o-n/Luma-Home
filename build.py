@@ -23,7 +23,10 @@ def version(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="Build for local device testing")
+    parser.add_argument("--bundle", action="store_true", help="Also build and validate a signed release AAB")
     args = parser.parse_args()
+    if args.bundle and args.debug:
+        parser.error("Play release bundles must not be debuggable")
     candidates = [
         os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
         str(Path.home() / "AppData/Local/Android/Sdk"),
@@ -72,10 +75,14 @@ def main():
         "package com.lumahome.launcher;\nfinal class Apps { static final String[] LIST = {"
         + ",".join(json.dumps(pkg) for pkg in apps) + "}; }\n", encoding="utf-8")
 
-    aapt = tool / ("aapt2.exe" if os.name == "nt" else "aapt2")
+    aapt = Path(os.environ.get("AAPT2", str(ROOT / "tools" / ("aapt2.exe" if os.name == "nt" else "aapt2"))))
+    if not aapt.is_file():
+        aapt = tool / ("aapt2.exe" if os.name == "nt" else "aapt2")
+    compiled_resources = build / "resources.zip"
+    run([aapt, "compile", "--dir", ROOT / "res", "-o", compiled_resources])
     base = build / "base.apk"
     link = [aapt, "link", "-o", base, "-I", jar, "-A", legal,
-            "--manifest", ROOT / "AndroidManifest.xml", "--min-sdk-version", "21", "--target-sdk-version", "34"]
+            "--manifest", ROOT / "AndroidManifest.xml", "--min-sdk-version", "21", "--target-sdk-version", "34", "-R", compiled_resources]
     if args.debug:
         link.append("--debug-mode")
     run(link)
@@ -112,14 +119,44 @@ def main():
         raise SystemExit("Signing key exists. Supply KEYSTORE_PASS; its password will not be replaced.")
     password = "env:KEYSTORE_PASS" if supplied_password else "file:" + str(password_file)
     signer = tool / ("apksigner.bat" if os.name == "nt" else "apksigner")
-    apk = out / "luma-home.apk"
+    apk = out / ("luma-home-release.apk" if args.bundle else "luma-home.apk")
     run([signer, "sign", "--ks", keystore, "--ks-pass", password, "--out", apk, aligned], env=child_env)
     run([signer, "verify", apk], env=child_env)
     with zipfile.ZipFile(apk) as archive:
         assert archive.read("assets/LICENSE") == (ROOT / "LICENSE").read_bytes()
         assert "classes.dex" in archive.namelist()
-    (out / "build-info.json").write_text(json.dumps({
+    bundle = None
+    if args.bundle:
+        bundletool = Path(os.environ.get("BUNDLETOOL", str(ROOT / "tools/bundletool-all-1.18.3.jar")))
+        if not bundletool.is_file():
+            raise SystemExit("Set BUNDLETOOL to Google's bundletool-all JAR; see docs/play-release.md")
+        proto = build / "proto.apk"
+        proto_link = [str(value) for value in link]
+        proto_link[proto_link.index(str(base))] = str(proto)
+        run([*proto_link, "--proto-format"])
+        module = build / "base.zip"
+        with zipfile.ZipFile(proto) as source, zipfile.ZipFile(module, "w", zipfile.ZIP_DEFLATED) as target:
+            for name in source.namelist():
+                if name == "AndroidManifest.xml":
+                    target.writestr("manifest/AndroidManifest.xml", source.read(name))
+                elif name == "resources.pb" or name.startswith(("res/", "assets/")):
+                    target.writestr(name, source.read(name))
+            for file in dex.glob("*.dex"):
+                target.write(file, "dex/" + file.name)
+        unsigned_bundle = build / "unsigned.aab"
+        run([java_tool("java"), "-jar", bundletool, "build-bundle", "--modules=" + str(module), "--output=" + str(unsigned_bundle), "--overwrite"], env=child_env)
+        bundle = out / "luma-home.aab"
+        jar_password = ["-storepass:env", "KEYSTORE_PASS"] if supplied_password else ["-storepass:file", password_file]
+        run([java_tool("jarsigner"), "-keystore", keystore, *jar_password, "-signedjar", bundle, unsigned_bundle, "lumahome"], env=child_env, stdout=subprocess.DEVNULL)
+        run([java_tool("jarsigner"), "-verify", bundle], env=child_env, stdout=subprocess.DEVNULL)
+        run([java_tool("java"), "-jar", bundletool, "validate", "--bundle=" + str(bundle)], env=child_env, stdout=subprocess.DEVNULL)
+        with zipfile.ZipFile(bundle) as archive:
+            assert archive.read("base/assets/LICENSE") == (ROOT / "LICENSE").read_bytes()
+            assert not any(name.endswith(".so") for name in archive.namelist())
+        print(f"Built, signed and bundletool-validated: {bundle}")
+    (out / ("release-build-info.json" if args.bundle else "build-info.json")).write_text(json.dumps({
         "name": "Luma Home", "debug": args.debug,
+        "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest() if bundle else None,
         "sdk_platform": jar.parent.name, "build_tools": tool.name,
         "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
     }, indent=2) + "\n")

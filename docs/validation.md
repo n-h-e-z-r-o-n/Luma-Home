@@ -1,6 +1,14 @@
 # TCL preview validation
 
-Development preview: Luma Home 0.5.1, installed and checked on the connected TCL Android 11 TV on 19 October 2026. This records observed results, not a certification for other TVs.
+Development preview: Luma Home 0.5.2, installed and checked on the connected TCL Android 11 TV on 19 October 2026. This records observed results, not a certification for other TVs.
+
+## App identity and initial Play release preparation
+
+- Version 0.5.2, code 15, packages the exact supplied house-and-sun icon, a legacy/adaptive resource pair and a matching 320x180 TV banner. The manifest declares icon/banner and requires Android TV support.
+- Installed the debug preview on the TCL and visually inspected the Home chooser: Luma Home displays the supplied icon. No default Home choice was selected. Saved app preferences matched before/after installation.
+- Built a non-debug signed release APK and AAB, validated the AAB with bundletool, generated a universal APK from the bundle and verified its APK signature. Checked the bundle manifest: target 34, icon/banner present and no debuggable flag. No native libraries are packaged.
+- Store assets, listing and privacy drafts are local preparation only. Developer details, hosted policy, listing screenshots, Play Console declarations, signing enrollment and broader release testing are still pending. See `play-release.md`.
+- Evidence: `tv-audit/luma-preview/branding-update/`; build outputs/hashes are in `out/`.
 
 ## Clock and section-heading typography
 

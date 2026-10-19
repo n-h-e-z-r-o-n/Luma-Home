@@ -5,3 +5,8 @@ __pycache__/
 *.apk
 .DS_Store
 .idea
+
+*.aab
+*.apks
+tools/*.jar
+tools/*.exe

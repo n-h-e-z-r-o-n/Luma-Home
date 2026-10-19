@@ -97,3 +97,7 @@ Home icons fill their circular frames using proportional center-cropping without
 `ThemePaletteTest` checks representative wallpaper hues, neutral/transparent-image fallback, neutral intensity, alpha preservation and contrast of generated text/accent colors against the base dark surfaces.
 
 Clock and date use medium weight and the same foreground color. Recommendation section headings use the Home heading typography and show only the source app name.
+
+## Google Play preparation
+
+The supplied house-and-sun icon is packaged as the app icon, with adaptive icon support and a matching TV launcher banner. A signed release app bundle can be built with `python build.py --bundle`. See [Play release preparation](docs/play-release.md) for outputs, draft listing/privacy files and remaining publication steps. No store upload has been made.
