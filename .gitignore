@@ -1,0 +1,7 @@
+out/
+key.jks
+.signing-password
+__pycache__/
+*.apk
+.DS_Store
+.idea
