@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -24,9 +25,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="Build for local device testing")
     parser.add_argument("--bundle", action="store_true", help="Also build and validate a signed release AAB")
+    parser.add_argument("--bump-version", action="store_true", help="Increment the release version code and patch version")
     args = parser.parse_args()
     if args.bundle and args.debug:
         parser.error("Play release bundles must not be debuggable")
+    if args.bump_version and not args.bundle:
+        parser.error("--bump-version requires --bundle")
+    if args.bump_version:
+        manifest_path = ROOT / "AndroidManifest.xml"
+        manifest = manifest_path.read_text(encoding="utf-8")
+        manifest = re.sub(r'android:versionCode="(\d+)"',
+                          lambda match: f'android:versionCode="{int(match[1]) + 1}"', manifest)
+        manifest = re.sub(r'android:versionName="(\d+)\.(\d+)\.(\d+)"',
+                          lambda match: f'android:versionName="{match[1]}.{match[2]}.{int(match[3]) + 1}"', manifest)
+        manifest_path.write_text(manifest, encoding="utf-8")
     candidates = [
         os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
         str(Path.home() / "AppData/Local/Android/Sdk"),
@@ -145,14 +157,18 @@ def main():
                 target.write(file, "dex/" + file.name)
         unsigned_bundle = build / "unsigned.aab"
         run([java_tool("java"), "-jar", bundletool, "build-bundle", "--modules=" + str(module), "--output=" + str(unsigned_bundle), "--overwrite"], env=child_env)
-        bundle = out / "luma-home.aab"
+        signed_bundle = build / "signed.aab"
         jar_password = ["-storepass:env", "KEYSTORE_PASS"] if supplied_password else ["-storepass:file", password_file]
-        run([java_tool("jarsigner"), "-keystore", keystore, *jar_password, "-signedjar", bundle, unsigned_bundle, "lumahome"], env=child_env, stdout=subprocess.DEVNULL)
-        run([java_tool("jarsigner"), "-verify", bundle], env=child_env, stdout=subprocess.DEVNULL)
-        run([java_tool("java"), "-jar", bundletool, "validate", "--bundle=" + str(bundle)], env=child_env, stdout=subprocess.DEVNULL)
-        with zipfile.ZipFile(bundle) as archive:
+        run([java_tool("jarsigner"), "-keystore", keystore, *jar_password, "-signedjar", signed_bundle, unsigned_bundle, "lumahome"], env=child_env, stdout=subprocess.DEVNULL)
+        run([java_tool("jarsigner"), "-verify", signed_bundle], env=child_env, stdout=subprocess.DEVNULL)
+        run([java_tool("java"), "-jar", bundletool, "validate", "--bundle=" + str(signed_bundle)], env=child_env, stdout=subprocess.DEVNULL)
+        with zipfile.ZipFile(signed_bundle) as archive:
             assert archive.read("base/assets/LICENSE") == (ROOT / "LICENSE").read_bytes()
             assert not any(name.endswith(".so") for name in archive.namelist())
+        release = ROOT / "release"
+        release.mkdir(exist_ok=True)
+        bundle = release / "luma-home.aab"
+        os.replace(signed_bundle, bundle)
         print(f"Built, signed and bundletool-validated: {bundle}")
     (out / ("release-build-info.json" if args.bundle else "build-info.json")).write_text(json.dumps({
         "name": "Luma Home", "debug": args.debug,
