@@ -25,7 +25,7 @@ final class ImageLoader {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService workers = Executors.newFixedThreadPool(2);
     private volatile boolean closed;
-    private final LruCache<String, Bitmap> cache = new LruCache<String, Bitmap>(8 * 1024 * 1024) {
+    private final LruCache<String, Bitmap> cache = new LruCache<String, Bitmap>(20 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
     };
     ImageLoader(Context context) { this.context = context.getApplicationContext(); }

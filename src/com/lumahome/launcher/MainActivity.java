@@ -2352,6 +2352,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@sparkles|Glass & surfaces: "+glassSurfacesSummary(),()->glassSurfacesMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus glow: "+glowSummary(),()->focusGlowMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus motion: "+focusMotionSummary(),()->focusMotionMenu(this::settingsMenu));
+        add(labels,actions,"@clock|Idle screensaver: "+screensaverSummary(),()->screensaverMenu(this::settingsMenu));
         add(labels,actions,"@banner|Featured banner: "+bannerState,this::bannerMenu);
         add(labels,actions,"@sparkles|Recommendations: "+recState,this::recommendationMenu);
         add(labels,actions,"@clock|Recent shortcuts: "+onOff(store.flag("recents")),()->{
@@ -2409,8 +2410,6 @@ public final class MainActivity extends Activity {
         String bgLabel=backgroundSummary();
         int clockSize=store.number("clock_size",176);
         String clockLabel=clockSize==115?"Small":clockSize==138?"Medium":"Large";
-        int idleMin=store.number("idle_clock_minutes",5);
-        String idleLabel=idleMin<=0?"Off":idleMin+" min";
         menu("Appearance",Arrays.asList(
                 "§THEME & WALLPAPER",
                 "Background: "+bgLabel,
@@ -2428,8 +2427,8 @@ public final class MainActivity extends Activity {
                 "High contrast: "+onOff(store.flag("contrast")),
                 "Separate TV utilities: "+onOff(store.flag("group_utilities",true)),
                 "§IDLE SCREENSAVER",
-                "Idle clock screensaver: "+idleLabel,
-                "Preview idle clock"),
+                "Idle screensaver: "+screensaverSummary(),
+                "Preview screensaver now"),
                 Arrays.asList(
                         null,
                         this::backgroundMenu,
@@ -2456,9 +2455,7 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("contrast",!store.flag("contrast"));render();appearanceMenu();},
                         ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();render();appearanceMenu();},
                         null,
-                        ()->choice("Idle clock screensaver",new String[]{"Off","5 minutes","10 minutes","15 minutes"},
-                                idleMin<=0?0:idleMin==5?1:idleMin==10?2:3,
-                                index->{store.setNumber("idle_clock_minutes",new int[]{0,5,10,15}[index]);resetIdleTimer();appearanceMenu();},this::appearanceMenu),
+                        ()->screensaverMenu(this::appearanceMenu),
                         ()->{closeBlade();showIdleClock();}),this::settingsMenu);
     }
     private void glassSurfacesMenu(Runnable back) {
@@ -3612,6 +3609,214 @@ public final class MainActivity extends Activity {
             handler.postDelayed(idleClockTrigger,min*60000L);
         }
     }
+    private String screensaverStyle() { return store.value("screensaver_style","cinema"); }
+    private String screensaverMotion() { return store.value("screensaver_motion","cinematic"); }
+    private String screensaverClockPos() { return store.value("screensaver_clock_pos","bottom_left"); }
+    private int screensaverSlideSec() { return Math.max(5,Math.min(120,store.number("screensaver_slide_sec",15))); }
+    private int screensaverDimming() { return Math.max(0,Math.min(75,store.number("screensaver_dimming",15))); }
+    private String screensaverSummary() {
+        int min=store.number("idle_clock_minutes",5);
+        if(min<=0) return "Off";
+        String st="minimal".equals(screensaverStyle())?"OLED clock":"Cinema frame";
+        return st+" · "+min+" min";
+    }
+    private String screensaverClockPosName(String pos) {
+        if("bottom_right".equals(pos)) return "Bottom right";
+        if("center".equals(pos)) return "Center";
+        if("hidden".equals(pos)) return "Hidden";
+        return "Bottom left";
+    }
+    private String screensaverMotionName(String m) {
+        if("subtle".equals(m)) return "Subtle";
+        if("off".equals(m)) return "Off";
+        return "Cinematic";
+    }
+    private List<String> screensaverPhotoUris() {
+        List<String> uris=new ArrayList<>();
+        for(File f:PhoneDropServer.listSavedFiles(this,store)) {
+            String u=f.toURI().toString();
+            if(!uris.contains(u)) uris.add(u);
+        }
+        String customBg=store.value("background_image","");
+        if(!customBg.isEmpty() && !uris.contains(customBg)) {
+            try {
+                File cf=new File(Uri.parse(customBg).getPath());
+                if(cf.exists() && cf.isFile()) uris.add(0,customBg);
+            } catch(Exception ignored) {}
+        }
+        if(uris.size()>1 && store.flag("screensaver_shuffle",true)) {
+            Collections.shuffle(uris);
+        }
+        return uris;
+    }
+    private void screensaverMenu(Runnable back) {
+        int idleMin=store.number("idle_clock_minutes",5);
+        String style=screensaverStyle();
+        String motion=screensaverMotion();
+        String clockPos=screensaverClockPos();
+        int slideSec=screensaverSlideSec();
+        int dim=screensaverDimming();
+        int photoCount=PhoneDropServer.listSavedFiles(this,store).size();
+        boolean shuffle=store.flag("screensaver_shuffle",true);
+        boolean keepAwake=store.flag("screensaver_keep_awake",true);
+
+        List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
+        add(labels,actions,"§PREVIEW",null);
+        add(labels,actions,"@display|Preview screensaver now",()->{ closeBlade(); showIdleClock(); });
+        add(labels,actions,"§BEHAVIOR",null);
+        add(labels,actions,"Start after: "+(idleMin<=0?"Off":idleMin+" min"),()->{
+            int[] mins={0,2,5,10,15,30};
+            String[] opts={"Off","2 minutes","5 minutes","10 minutes","15 minutes","30 minutes"};
+            int sel=2;
+            for(int i=0;i<mins.length;i++) if(mins[i]==idleMin) { sel=i; break; }
+            choice("Start screensaver after",opts,sel,idx->{
+                store.setNumber("idle_clock_minutes",mins[idx]);
+                resetIdleTimer();
+                screensaverMenu(back);
+            },()->screensaverMenu(back));
+        });
+        add(labels,actions,"Style: "+("minimal".equals(style)?"Minimal OLED clock":"Cinema photo frame"),()->choice(
+                "Screensaver style",
+                new String[]{
+                        "Cinema photo frame · Ken Burns motion + Liquid Glass clock",
+                        "Minimal OLED clock · Pitch-dark drifting timepiece"},
+                "minimal".equals(style)?1:0,
+                idx->{
+                    store.set("screensaver_style",idx==1?"minimal":"cinema");
+                    screensaverMenu(back);
+                },()->screensaverMenu(back)));
+        add(labels,actions,"Keep TV awake: "+onOff(keepAwake),()->{
+            store.setFlag("screensaver_keep_awake",!keepAwake);
+            screensaverMenu(back);
+        });
+        add(labels,actions,"§CINEMA PHOTO FRAME",null);
+        add(labels,actions,"Photo duration: "+slideSec+" sec",()->{
+            int[] secs={8,15,30,60};
+            String[] opts={
+                    "8 seconds · Lively gallery pace",
+                    "15 seconds · Balanced cinema showcase",
+                    "30 seconds · Relaxed living-room frame",
+                    "60 seconds · Slow ambient portrait"};
+            int sel=1;
+            for(int i=0;i<secs.length;i++) if(secs[i]==slideSec) { sel=i; break; }
+            choice("Photo duration",opts,sel,idx->{
+                store.setNumber("screensaver_slide_sec",secs[idx]);
+                screensaverMenu(back);
+            },()->screensaverMenu(back));
+        });
+        add(labels,actions,"Ken Burns motion: "+screensaverMotionName(motion),()->choice(
+                "Ken Burns motion",
+                new String[]{
+                        "Cinematic · Smooth 60fps zoom & pan across photos",
+                        "Subtle · Gentle slow camera drift",
+                        "Off · Static photos with smooth crossfades"},
+                "subtle".equals(motion)?1:"off".equals(motion)?2:0,
+                idx->{
+                    store.set("screensaver_motion",new String[]{"cinematic","subtle","off"}[idx]);
+                    screensaverMenu(back);
+                },()->screensaverMenu(back)));
+        add(labels,actions,"Photo order: "+(shuffle?"Shuffle":"Newest first"),()->{
+            store.setFlag("screensaver_shuffle",!shuffle);
+            screensaverMenu(back);
+        });
+        add(labels,actions,"@wifi|Frame photos: "+(photoCount==0?"Scan QR to add":photoCount+" saved"),()->{
+            if(photoCount==0) phoneDropPanel(()->screensaverMenu(back));
+            else wallpaperGalleryMenu(()->screensaverMenu(back));
+        });
+        add(labels,actions,"§CLOCK & AMBIENCE",null);
+        add(labels,actions,"Glass clock: "+screensaverClockPosName(clockPos),()->choice(
+                "Glass clock position",
+                new String[]{
+                        "Bottom left · Classic cinema gallery plaque",
+                        "Bottom right · Right-corner frosted plaque",
+                        "Center · Floating centerpiece clock",
+                        "Hidden · Pure unobstructed photo frame"},
+                "bottom_right".equals(clockPos)?1:"center".equals(clockPos)?2:"hidden".equals(clockPos)?3:0,
+                idx->{
+                    store.set("screensaver_clock_pos",new String[]{"bottom_left","bottom_right","center","hidden"}[idx]);
+                    screensaverMenu(back);
+                },()->screensaverMenu(back)));
+        add(labels,actions,"Night dimming: "+dim+"%",()->screensaverDimmingDialog(back));
+        add(labels,actions,"Restore screensaver defaults",()->{
+            store.setNumber("idle_clock_minutes",5);
+            store.set("screensaver_style","cinema");
+            store.setFlag("screensaver_keep_awake",true);
+            store.setNumber("screensaver_slide_sec",15);
+            store.set("screensaver_motion","cinematic");
+            store.setFlag("screensaver_shuffle",true);
+            store.set("screensaver_clock_pos","bottom_left");
+            store.setNumber("screensaver_dimming",15);
+            resetIdleTimer();
+            toast("Screensaver restored to defaults");
+            screensaverMenu(back);
+        });
+        menu("Idle screensaver",labels,actions,back);
+    }
+    private void screensaverDimmingDialog(Runnable back) {
+        LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        TextView value=text("",22,foreground()); value.setTypeface(medium); box.addView(value);
+        TextView sub=text("Use Left / Right to soften photo brightness for evening viewing.",18,muted());
+        LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2); sp.topMargin=px(4); box.addView(sub,sp);
+
+        FrameLayout preview=new FrameLayout(this);
+        preview.setClipToOutline(true);
+        preview.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v,android.graphics.Outline o) { o.setRoundRect(0,0,v.getWidth(),v.getHeight(),px(18)); }
+        });
+        preview.setBackground(buildSkyBackground());
+        List<File> saved=PhoneDropServer.listSavedFiles(this,store);
+        if(!saved.isEmpty()) {
+            ImageView pvImg=new ImageView(this);
+            pvImg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            preview.addView(pvImg,new FrameLayout.LayoutParams(-1,-1));
+            images.show(pvImg,saved.get(0).toURI().toString(),px(400),px(225));
+        }
+        View veil=new View(this);
+        preview.addView(veil,new FrameLayout.LayoutParams(-1,-1));
+
+        LinearLayout miniClock=new LinearLayout(this);
+        miniClock.setOrientation(LinearLayout.VERTICAL);
+        miniClock.setPadding(px(14),px(10),px(16),px(10));
+        miniClock.setBackground(shapeRadius(0x660E1522,0x55FFFFFF,1,14));
+        TextClock mcTime=new TextClock(this);
+        mcTime.setFormat12Hour("h:mm"); mcTime.setFormat24Hour("H:mm");
+        mcTime.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(30));
+        mcTime.setTextColor(0xF2FFFFFF); mcTime.setTypeface(medium); mcTime.setIncludeFontPadding(false);
+        miniClock.addView(mcTime);
+        TextView mcSub=text("Cinema Frame",13,0xCCFFFFFF);
+        miniClock.addView(mcSub);
+        FrameLayout.LayoutParams mcp=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT);
+        mcp.leftMargin=px(14); mcp.bottomMargin=px(14);
+        preview.addView(miniClock,mcp);
+
+        LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,px(205));
+        pp.topMargin=px(16); pp.bottomMargin=px(16);
+        box.addView(preview,pp);
+
+        SeekBar slider=new SeekBar(this);
+        slider.setMax(75); slider.setProgress(screensaverDimming());
+        slider.setKeyProgressIncrement(5); slider.setFocusableInTouchMode(true);
+        slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
+        box.addView(slider,new LinearLayout.LayoutParams(-1,px(60)));
+
+        Runnable update=()->{
+            int d=slider.getProgress();
+            String tag=d==0?"Full vivid brightness":d<=25?"Balanced cinema glow":d<=50?"Cozy evening dim":"Late-night dark";
+            value.setText("Night dimming · "+d+"% ("+tag+")");
+            veil.setBackgroundColor(Color.argb(Math.round(d*2.55f),0,0,0));
+        };
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar bar,int progress,boolean user) { update.run(); }
+            public void onStartTrackingTouch(SeekBar bar) {}
+            public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        update.run();
+        showBladePanel("Night dimming",box,"Save",()->{
+            store.setNumber("screensaver_dimming",slider.getProgress());
+            screensaverMenu(back);
+        },()->screensaverMenu(back),slider);
+    }
     private void dismissIdleClock() {
         if(idleClockDialog!=null) {
             Dialog d=idleClockDialog; idleClockDialog=null;
@@ -3621,55 +3826,391 @@ public final class MainActivity extends Activity {
     }
     private void showIdleClock() {
         if(destroyed || (idleClockDialog!=null && idleClockDialog.isShowing())) return;
-        Dialog d=new Dialog(this,android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        FrameLayout stage=new FrameLayout(this);
-        GradientDrawable bg=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0xFF04060C,0xFF080E1C,0xFF030408});
-        stage.setBackground(bg);
-        LinearLayout box=new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(Gravity.CENTER);
-        TextView greet=text(greetingText(),18,accent());
-        greet.setTypeface(medium); greet.setLetterSpacing(0.18f);
-        box.addView(greet,new LinearLayout.LayoutParams(-2,-2));
-        TextClock time=new TextClock(this);
-        time.setFormat12Hour("h:mm"); time.setFormat24Hour("H:mm");
-        time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(210));
-        time.setTextColor(0xEEFFFFFF);
-        time.setTypeface(medium);
-        time.setIncludeFontPadding(false);
-        box.addView(time,new LinearLayout.LayoutParams(-2,-2));
-        TextClock date=new TextClock(this);
-        date.setFormat12Hour("EEEE, d MMMM"); date.setFormat24Hour("EEEE, d MMMM");
-        date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
-        date.setTextColor(0x99FFFFFF);
-        date.setTypeface(medium);
-        box.addView(date,new LinearLayout.LayoutParams(-2,-2));
-        TextView hint=text("Press any button to wake",16,0x55FFFFFF);
-        LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-2,-2); hp.topMargin=px(32);
-        box.addView(hint,hp);
-        stage.addView(box,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
-        final Runnable[] drift={null};
-        drift[0]=()->{
-            if(idleClockDialog!=d || !d.isShowing()) return;
-            float dx=(float)(Math.sin(System.currentTimeMillis()/18000.0)*px(90));
-            float dy=(float)(Math.cos(System.currentTimeMillis()/23000.0)*px(55));
-            box.animate().translationX(dx).translationY(dy).setDuration(4000).start();
-            handler.postDelayed(drift[0],4000);
+        final boolean minimal="minimal".equals(screensaverStyle());
+        final Dialog d=new Dialog(this,android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        if(store.flag("screensaver_keep_awake",true) && d.getWindow()!=null) {
+            d.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        final long openedAt=android.os.SystemClock.uptimeMillis();
+        final boolean[] sawKeyDown={false};
+
+        if(minimal) {
+            FrameLayout stage=new FrameLayout(this);
+            GradientDrawable bg=new GradientDrawable(GradientDrawable.Orientation.TL_BR,new int[]{0xFF04060C,0xFF080E1C,0xFF030408});
+            stage.setBackground(bg);
+            LinearLayout box=new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setGravity(Gravity.CENTER);
+            TextView greet=text(greetingText(),18,accent());
+            greet.setTypeface(medium); greet.setLetterSpacing(0.18f);
+            box.addView(greet,new LinearLayout.LayoutParams(-2,-2));
+            TextClock time=new TextClock(this);
+            time.setFormat12Hour("h:mm"); time.setFormat24Hour("H:mm");
+            time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(210));
+            time.setTextColor(0xEEFFFFFF);
+            time.setTypeface(medium);
+            time.setIncludeFontPadding(false);
+            box.addView(time,new LinearLayout.LayoutParams(-2,-2));
+            TextClock date=new TextClock(this);
+            date.setFormat12Hour("EEEE, d MMMM"); date.setFormat24Hour("EEEE, d MMMM");
+            date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
+            date.setTextColor(0x99FFFFFF);
+            date.setTypeface(medium);
+            box.addView(date,new LinearLayout.LayoutParams(-2,-2));
+            TextView hint=text("Press any button to wake",16,0x55FFFFFF);
+            LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-2,-2); hp.topMargin=px(32);
+            box.addView(hint,hp);
+            stage.addView(box,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
+            final Runnable[] drift={null};
+            drift[0]=()->{
+                if(idleClockDialog!=d || !d.isShowing()) return;
+                float dx=(float)(Math.sin(System.currentTimeMillis()/18000.0)*px(90));
+                float dy=(float)(Math.cos(System.currentTimeMillis()/23000.0)*px(55));
+                box.animate().translationX(dx).translationY(dy).setDuration(4000).start();
+                handler.postDelayed(drift[0],4000);
+            };
+            d.setContentView(stage);
+            d.setOnKeyListener((dlg,key,ev)->{
+                if(ev.getAction()==KeyEvent.ACTION_DOWN) sawKeyDown[0]=true;
+                else if(ev.getAction()==KeyEvent.ACTION_UP && (sawKeyDown[0] || android.os.SystemClock.uptimeMillis()-openedAt>450)) dismissIdleClock();
+                return true;
+            });
+            d.setOnDismissListener(dlg->{
+                if(idleClockDialog==d) idleClockDialog=null;
+                resetIdleTimer();
+            });
+            idleClockDialog=d;
+            d.show();
+            box.setAlpha(0f);
+            box.animate().alpha(1f).setDuration(450).start();
+            handler.postDelayed(drift[0],2000);
+            return;
+        }
+
+        // Cinema Photo Frame Screensaver (60fps Ken Burns + Live Frosted Liquid Glass Clock)
+        final List<String> photos=screensaverPhotoUris();
+        final String motionMode=screensaverMotion();
+        final String clockPos=screensaverClockPos();
+        final long slideMs=screensaverSlideSec()*1000L;
+        final long crossfadeMs=1400L;
+        final int dimPct=screensaverDimming();
+        final int dimAlpha=Math.round(dimPct*2.55f);
+
+        final FrameLayout stage=new FrameLayout(this);
+        stage.setBackgroundColor(0xFF060911);
+        stage.setClipChildren(true);
+
+        // Live frosted refraction state updated per slide
+        final android.graphics.Bitmap ssFrostBmp=android.graphics.Bitmap.createBitmap(240,135,android.graphics.Bitmap.Config.ARGB_8888);
+        final android.graphics.BitmapShader[] ssShader={null};
+        final int[] ssAccent={accent()};
+        final LinearLayout[] glassClockRef={null};
+        final TextView[] eyebrowRef={null};
+
+        final Runnable buildFallbackShader=()->{
+            try {
+                Drawable sky=buildSkyBackground();
+                android.graphics.Canvas cv=new android.graphics.Canvas(ssFrostBmp);
+                cv.drawColor(0xFF0B101A);
+                sky.setBounds(0,0,240,135);
+                sky.draw(cv);
+                if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+                blurBitmapInPlace(ssFrostBmp,7);
+                ssShader[0]=new android.graphics.BitmapShader(ssFrostBmp,
+                        android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+                if(glassClockRef[0]!=null) glassClockRef[0].invalidate();
+            } catch(Exception|OutOfMemoryError ignored) {}
         };
+
+        // 1. Photo Deck (holds double-buffered Ken Burns layers)
+        final FrameLayout photoDeck=new FrameLayout(this);
+        photoDeck.setClipChildren(true);
+        stage.addView(photoDeck,new FrameLayout.LayoutParams(-1,-1));
+
+        final android.view.animation.LinearInterpolator linearInterp=new android.view.animation.LinearInterpolator();
+        final int[] curPhotoIdx={-1};
+        final int[] moveCounter={0};
+        final int[] activeLayerIdx={1};
+        final FrameLayout[] wraps=new FrameLayout[2];
+        final ImageView[] layers=new ImageView[2];
+        final Runnable[] autoTick={null};
+
+        final java.util.function.BiConsumer<View,Boolean> startKenBurns=(targetView,firstSlide)->{
+            targetView.animate().cancel();
+            if("off".equals(motionMode)) {
+                targetView.setScaleX(1f); targetView.setScaleY(1f);
+                targetView.setTranslationX(0f); targetView.setTranslationY(0f);
+                return;
+            }
+            float amp="subtle".equals(motionMode)?0.5f:1.0f;
+            float sMin=1f+0.06f*amp;
+            float sMax=1f+0.15f*amp;
+            float dx=px(26f*amp);
+            float dy=px(15f*amp);
+            int mv=(moveCounter[0]++)%4;
+            float s0, s1, tx0, tx1, ty0, ty1;
+            switch(mv) {
+                case 0: s0=sMin; s1=sMax; tx0=-dx; tx1=dx; ty0=dy; ty1=-dy; break;
+                case 1: s0=sMax; s1=sMin; tx0=dx; tx1=-dx; ty0=-dy; ty1=dy; break;
+                case 2: s0=(sMin+sMax)*0.5f; s1=sMax; tx0=-dx*1.12f; tx1=dx*1.12f; ty0=-dy*0.4f; ty1=dy*0.4f; break;
+                default: s0=sMin; s1=sMax*0.99f; tx0=dx*0.7f; tx1=-dx*0.7f; ty0=dy; ty1=-dy; break;
+            }
+            targetView.setScaleX(s0); targetView.setScaleY(s0);
+            targetView.setTranslationX(tx0); targetView.setTranslationY(ty0);
+            long moveTotal=photos.size()>1?(slideMs+crossfadeMs+400L):Math.max(22000L,slideMs*2);
+            targetView.animate()
+                    .scaleX(s1).scaleY(s1)
+                    .translationX(tx1).translationY(ty1)
+                    .setInterpolator(linearInterp)
+                    .setDuration(moveTotal)
+                    .start();
+        };
+
+        if(photos.isEmpty()) {
+            View aurora=new View(this);
+            aurora.setBackground(buildSkyBackground());
+            aurora.setLayerType(View.LAYER_TYPE_HARDWARE,null);
+            photoDeck.addView(aurora,new FrameLayout.LayoutParams(-1,-1));
+            buildFallbackShader.run();
+            startKenBurns.accept(aurora,true);
+        } else {
+            for(int i=0;i<2;i++) {
+                final int slot=i;
+                final FrameLayout wrap=new FrameLayout(this);
+                wrap.setClipChildren(true);
+                wrap.setAlpha(0f);
+                wraps[i]=wrap;
+                ImageView iv=new ImageView(this) {
+                    @Override public void setImageBitmap(android.graphics.Bitmap bmp) {
+                        super.setImageBitmap(bmp);
+                        if(bmp==null || idleClockDialog!=d || !d.isShowing()) return;
+                        try {
+                            android.graphics.Canvas cv=new android.graphics.Canvas(ssFrostBmp);
+                            cv.drawColor(0xFF0B101A);
+                            int pw=Math.max(1,bmp.getWidth()), ph=Math.max(1,bmp.getHeight());
+                            float sc=Math.max(240f/pw,135f/ph);
+                            float dw=pw*sc, dh=ph*sc;
+                            cv.drawBitmap(bmp,null,new android.graphics.RectF((240f-dw)/2f,(135f-dh)/2f,(240f+dw)/2f,(135f+dh)/2f),
+                                    new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
+                            int[] pxSample=new int[48*27];
+                            android.graphics.Bitmap tiny=android.graphics.Bitmap.createScaledBitmap(ssFrostBmp,48,27,true);
+                            tiny.getPixels(pxSample,0,48,0,0,48,27);
+                            if(tiny!=ssFrostBmp) tiny.recycle();
+                            int seed=ThemePalette.seed(pxSample);
+                            if(seed!=0) ssAccent[0]=ThemePalette.accent(seed,72);
+                            if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+                            blurBitmapInPlace(ssFrostBmp,7);
+                            ssShader[0]=new android.graphics.BitmapShader(ssFrostBmp,
+                                    android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+                            if(eyebrowRef[0]!=null) eyebrowRef[0].setTextColor(ssAccent[0]);
+                            if(glassClockRef[0]!=null) glassClockRef[0].invalidate();
+                        } catch(Exception|OutOfMemoryError ignored) {}
+
+                        boolean first=(moveCounter[0]==0);
+                        FrameLayout otherWrap=wraps[1-slot];
+                        wrap.animate().cancel();
+                        wrap.bringToFront();
+                        wrap.setAlpha(0f);
+                        startKenBurns.accept(this,first);
+                        wrap.animate().alpha(1f)
+                                .setInterpolator(crispDecel)
+                                .setDuration(first?650L:crossfadeMs)
+                                .withEndAction(()->{
+                                    if(otherWrap!=null) otherWrap.setAlpha(0f);
+                                }).start();
+                    }
+                };
+                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                iv.setLayerType(View.LAYER_TYPE_HARDWARE,null);
+                layers[i]=iv;
+                wrap.addView(iv,new FrameLayout.LayoutParams(-1,-1));
+                photoDeck.addView(wrap,new FrameLayout.LayoutParams(-1,-1));
+            }
+        }
+
+        // Wait: even cleaner decoupled alpha + Ken Burns wrapper! Let's check below.
+        // 2. Subtle Cinema Vignette + Night Dimming Veil
+        View vignette=new View(this);
+        GradientDrawable vig=new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x28000000,0x00000000,0x58000000});
+        vignette.setBackground(vig);
+        stage.addView(vignette,new FrameLayout.LayoutParams(-1,-1));
+
+        if(dimAlpha>0) {
+            View dimVeil=new View(this);
+            dimVeil.setBackgroundColor(Color.argb(dimAlpha,0,0,0));
+            stage.addView(dimVeil,new FrameLayout.LayoutParams(-1,-1));
+        }
+
+        // 3. Floating Liquid Glass Clock Plaque
+        final boolean centerClock="center".equals(clockPos);
+        if(!"hidden".equals(clockPos)) {
+            final LinearLayout glassCard=new LinearLayout(this);
+            glassClockRef[0]=glassCard;
+            glassCard.setOrientation(LinearLayout.VERTICAL);
+            glassCard.setGravity(centerClock?Gravity.CENTER:Gravity.LEFT);
+            int padH=px(centerClock?44:32), padV=px(centerClock?30:22);
+            glassCard.setPadding(padH,padV,padH,padV);
+            glassCard.setBackground(new Drawable() {
+                private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+                private final android.graphics.RectF r=new android.graphics.RectF();
+                private final android.graphics.Matrix mat=new android.graphics.Matrix();
+                private final int[] loc=new int[2];
+                @Override public void draw(android.graphics.Canvas c) {
+                    r.set(getBounds());
+                    if(r.width()<=0 || r.height()<=0) return;
+                    float rad=px(28);
+                    float sh=sheenMultiplier();
+                    if(ssShader[0]!=null && screenWidth>0 && screenHeight>0) {
+                        glassCard.getLocationOnScreen(loc);
+                        mat.reset();
+                        mat.setScale((float)screenWidth/240f,(float)screenHeight/135f);
+                        mat.postTranslate(-loc[0],-loc[1]);
+                        ssShader[0].setLocalMatrix(mat);
+                        p.setStyle(android.graphics.Paint.Style.FILL);
+                        p.setShader(ssShader[0]);
+                        c.drawRoundRect(r,rad,rad,p);
+                        p.setShader(null);
+                    }
+                    int frost=glassFrostDepth();
+                    int tintAlpha=Math.min(205,Math.max(105,Math.round(frost*1.85f)));
+                    p.setStyle(android.graphics.Paint.Style.FILL);
+                    p.setColor((tintAlpha<<24)|0x0C111B);
+                    c.drawRoundRect(r,rad,rad,p);
+
+                    c.save();
+                    c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.46f);
+                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.46f,
+                            Color.argb(Math.min(130,Math.round(54*sh)),255,255,255),0x00FFFFFF,
+                            android.graphics.Shader.TileMode.CLAMP));
+                    c.drawRoundRect(r,rad,rad,p);
+                    c.restore();
+                    p.setShader(null);
+
+                    float sw=Math.max(1f,px(1.6f));
+                    p.setStyle(android.graphics.Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    int ac=(ssAccent[0]&0x00FFFFFF)|0x66000000;
+                    p.setShader(new android.graphics.LinearGradient(r.left,r.top,r.right,r.bottom,
+                            new int[]{Color.argb(Math.min(220,Math.round(125*sh)),255,255,255),0x2EFFFFFF,ac},
+                            new float[]{0f,0.52f,1f},android.graphics.Shader.TileMode.CLAMP));
+                    float inset=sw/2f;
+                    r.inset(inset,inset);
+                    c.drawRoundRect(r,rad-inset,rad-inset,p);
+                    p.setShader(null);
+                }
+                @Override public void setAlpha(int a) {}
+                @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+                @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+            });
+
+            TextView eyebrow=text(greetingText(),15,ssAccent[0]);
+            eyebrow.setTypeface(medium);
+            eyebrow.setLetterSpacing(0.16f);
+            eyebrowRef[0]=eyebrow;
+            glassCard.addView(eyebrow,new LinearLayout.LayoutParams(-2,-2));
+
+            TextClock time=new TextClock(this);
+            time.setFormat12Hour("h:mm"); time.setFormat24Hour("H:mm");
+            time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(centerClock?152:98));
+            time.setTextColor(0xF6FFFFFF);
+            time.setTypeface(medium);
+            time.setIncludeFontPadding(false);
+            glassCard.addView(time,new LinearLayout.LayoutParams(-2,-2));
+
+            TextClock date=new TextClock(this);
+            date.setFormat12Hour("EEEE, d MMMM"); date.setFormat24Hour("EEEE, d MMMM");
+            date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(centerClock?26:21));
+            date.setTextColor(0xCCFFFFFF);
+            date.setTypeface(medium);
+            glassCard.addView(date,new LinearLayout.LayoutParams(-2,-2));
+
+            int grav=centerClock?Gravity.CENTER:("bottom_right".equals(clockPos)?(Gravity.BOTTOM|Gravity.RIGHT):(Gravity.BOTTOM|Gravity.LEFT));
+            FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(-2,-2,grav);
+            if(!centerClock) {
+                cp.leftMargin=px(64); cp.rightMargin=px(64); cp.bottomMargin=px(56);
+            }
+            stage.addView(glassCard,cp);
+
+            glassCard.setAlpha(0f);
+            glassCard.setTranslationY(px(14));
+            glassCard.animate().alpha(1f).translationY(0f).setDuration(550).setInterpolator(crispDecel).start();
+
+            // Gentle OLED pixel-protection micro-drift + glass refraction refresh
+            final Runnable[] clockDrift={null};
+            clockDrift[0]=()->{
+                if(idleClockDialog!=d || !d.isShowing()) return;
+                float range=centerClock?px(36):px(8);
+                float dx=(float)(Math.sin(System.currentTimeMillis()/19000.0)*range);
+                float dy=(float)(Math.cos(System.currentTimeMillis()/24000.0)*(range*0.7f));
+                glassCard.animate().translationX(dx).translationY(dy).setDuration(4200)
+                        .setUpdateListener(a->glassCard.invalidate()).start();
+                handler.postDelayed(clockDrift[0],4200);
+            };
+            handler.postDelayed(clockDrift[0],2500);
+        }
+
+        // Subtle wake / browse hint pill that fades away cleanly after 4.5s
+        String hintMsg=photos.size()>1?"Left / Right to change photo  ·  Any button to wake":
+                photos.isEmpty()?"Drop photos via QR to showcase your gallery  ·  Any button to wake":
+                "Press any button to wake";
+        TextView wakeHint=text(hintMsg,15,0xCCFFFFFF);
+        wakeHint.setTypeface(medium);
+        wakeHint.setPadding(px(18),px(8),px(18),px(8));
+        wakeHint.setBackground(shapeRadius(0x550B101A,0x28FFFFFF,1,99));
+        FrameLayout.LayoutParams whp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+        whp.topMargin=px(44); whp.rightMargin=px(56);
+        stage.addView(wakeHint,whp);
+        wakeHint.postDelayed(()->{
+            if(idleClockDialog==d && d.isShowing()) wakeHint.animate().alpha(0f).setDuration(900).start();
+        },4500);
+
+        // Slide advancement helper
+        final java.util.function.IntConsumer advanceSlide=delta->{
+            if(photos.isEmpty() || idleClockDialog!=d || !d.isShowing()) return;
+            if(autoTick[0]!=null) handler.removeCallbacks(autoTick[0]);
+            curPhotoIdx[0]=(curPhotoIdx[0]+delta+photos.size())%photos.size();
+            activeLayerIdx[0]=1-activeLayerIdx[0];
+            ImageView nextView=layers[activeLayerIdx[0]];
+            String uri=photos.get(curPhotoIdx[0]);
+            if(eyebrowRef[0]!=null) {
+                eyebrowRef[0].setText(photos.size()>1
+                        ?(greetingText()+"  ·  "+(curPhotoIdx[0]+1)+" / "+photos.size())
+                        :greetingText());
+            }
+            images.show(nextView,uri,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+            if(photos.size()>1 && autoTick[0]!=null) {
+                handler.postDelayed(autoTick[0],slideMs);
+            }
+        };
+        autoTick[0]=()->advanceSlide.accept(1);
+
         d.setContentView(stage);
         d.setOnKeyListener((dlg,key,ev)->{
-            if(ev.getAction()==KeyEvent.ACTION_UP) dismissIdleClock();
+            if(ev.getAction()==KeyEvent.ACTION_DOWN) {
+                sawKeyDown[0]=true;
+                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_RIGHT) { advanceSlide.accept(1); return true; }
+                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_LEFT) { advanceSlide.accept(-1); return true; }
+                return true;
+            }
+            if(ev.getAction()==KeyEvent.ACTION_UP) {
+                if(photos.size()>1 && (key==KeyEvent.KEYCODE_DPAD_RIGHT || key==KeyEvent.KEYCODE_DPAD_LEFT)) return true;
+                if(sawKeyDown[0] || android.os.SystemClock.uptimeMillis()-openedAt>450) dismissIdleClock();
+            }
             return true;
         });
         d.setOnDismissListener(dlg->{
+            if(autoTick[0]!=null) handler.removeCallbacks(autoTick[0]);
+            for(ImageView iv:layers) if(iv!=null) iv.animate().cancel();
             if(idleClockDialog==d) idleClockDialog=null;
             resetIdleTimer();
         });
         idleClockDialog=d;
         d.show();
-        box.setAlpha(0f);
-        box.animate().alpha(1f).setDuration(450).start();
-        handler.postDelayed(drift[0],2000);
+        if(!photos.isEmpty()) {
+            curPhotoIdx[0]=-1;
+            advanceSlide.accept(1);
+        }
     }
     private void closeBlade() {
         overrideFrostPct=-1;
