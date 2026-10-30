@@ -10,7 +10,16 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -103,6 +112,7 @@ public final class MainActivity extends Activity {
     private String lastBladeTitle="";
     private int lastBladeSelection=0, bladeGeneration=0;
     private SpringStage homeSpringStage, drawerSpringStage, recentSpringStage, previewSpringStage;
+    private final List<SpringStage> recommendationSpringStages=new ArrayList<>();
     private DockSpringLens dockSpringLens;
     private View dockBar, searchBar, activeBladeBox;
     private UiSoundEngine sfx;
@@ -113,6 +123,12 @@ public final class MainActivity extends Activity {
     private android.graphics.Bitmap frostedBackdrop;
     private android.graphics.BitmapShader frostedShader;
     private String frostedBackdropKey="";
+    private String overrideTreatmentStyle;
+    private int overrideTreatmentIntensity=-1;
+    private ImageView treatmentBlurLayer, wallpaperImageView;
+    private View treatmentOverlayLayer;
+    private android.graphics.Bitmap blurredWallpaperBackdrop;
+    private String blurredWallpaperKey="";
     private int overrideFrostPct=-1;
     private final OvershootInterpolator liquidOvershoot=new OvershootInterpolator(0.75f);
     private final DecelerateInterpolator crispDecel=new DecelerateInterpolator(1.6f);
@@ -176,6 +192,8 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onDestroy() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
+        if(blurredWallpaperBackdrop!=null) { blurredWallpaperBackdrop.recycle(); blurredWallpaperBackdrop=null; }
+        wallpaperImageView=null;
         destroyed=true; stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
         unregisterReceiver(packageChanges); if(sfx!=null)sfx.close(); images.close(); recommendations.close(); super.onDestroy();
     }
@@ -368,6 +386,8 @@ public final class MainActivity extends Activity {
         if(recentSpringStage!=null) recentSpringStage.stop();
         if(dockSpringLens!=null) dockSpringLens.stop();
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
+        for(SpringStage stage:recommendationSpringStages) if(stage!=null) stage.stop();
+        recommendationSpringStages.clear();
     }
 
     private String uiSurfaceStyle() { return store.value("ui_surface_style","glass"); }
@@ -443,6 +463,40 @@ public final class MainActivity extends Activity {
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
+            if(treatmentBlurLayer!=null && !"photo".equals(store.value("background","ember"))) {
+                treatmentBlurLayer.setImageBitmap(frostedBackdrop);
+                syncTreatmentLayers();
+            }
+        } catch(Exception|OutOfMemoryError ignored) {}
+    }
+
+    private void updateBlurredWallpaper(android.graphics.Bitmap photo, String key) {
+        if(photo==null || (key.equals(blurredWallpaperKey) && blurredWallpaperBackdrop!=null)) {
+            if(treatmentBlurLayer!=null && blurredWallpaperBackdrop!=null) {
+                treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
+                syncTreatmentLayers();
+            }
+            return;
+        }
+        try {
+            int bw=384, bh=216;
+            if(blurredWallpaperBackdrop==null || blurredWallpaperBackdrop.getWidth()!=bw || blurredWallpaperBackdrop.getHeight()!=bh) {
+                blurredWallpaperBackdrop=android.graphics.Bitmap.createBitmap(bw,bh,android.graphics.Bitmap.Config.ARGB_8888);
+            }
+            android.graphics.Canvas cv=new android.graphics.Canvas(blurredWallpaperBackdrop);
+            int pw=Math.max(1,photo.getWidth()), ph=Math.max(1,photo.getHeight());
+            float scale=Math.max((float)bw/pw,(float)bh/ph);
+            float dw=pw*scale, dh=ph*scale;
+            android.graphics.RectF dst=new android.graphics.RectF((bw-dw)/2f,(bh-dh)/2f,(bw+dw)/2f,(bh+dh)/2f);
+            android.graphics.Paint bp=new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            cv.drawBitmap(photo,null,dst,bp);
+            blurBitmapInPlace(blurredWallpaperBackdrop,12);
+            blurBitmapInPlace(blurredWallpaperBackdrop,8);
+            blurredWallpaperKey=key;
+            if(treatmentBlurLayer!=null) {
+                treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
+                syncTreatmentLayers();
+            }
         } catch(Exception|OutOfMemoryError ignored) {}
     }
 
@@ -765,6 +819,16 @@ public final class MainActivity extends Activity {
         int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
         final int dimAlpha=Math.round(dim*2.55f);
         final String frostKey=paletteKey()+":dim="+dim;
+        treatmentBlurLayer=new ImageView(this);
+        treatmentBlurLayer.setScaleType(ImageView.ScaleType.FIT_XY);
+        treatmentBlurLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        if("photo".equals(style) && blurredWallpaperBackdrop!=null) {
+            treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
+        } else if(frostedBackdrop!=null) {
+            treatmentBlurLayer.setImageBitmap(frostedBackdrop);
+        }
+        root.addView(treatmentBlurLayer,new FrameLayout.LayoutParams(-1,-1));
+
         if ("photo".equals(style)) {
             String path=store.value("background_image","");
             if (!path.isEmpty()) {
@@ -775,15 +839,19 @@ public final class MainActivity extends Activity {
                         if(bitmap!=null&&!destroyed){
                             extractWallpaperColors(bitmap,backgroundPaletteKey);
                             updateFrostedFromPhoto(bitmap,dimAlpha,frostKey);
+                            updateBlurredWallpaper(bitmap,path);
                         }
                     }
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                wallpaperImageView=image;
                 root.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
             } else {
+                wallpaperImageView=null;
                 updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
             }
         } else {
+            wallpaperImageView=null;
             updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
         }
         if("app_glow".equals(style)) {
@@ -800,9 +868,139 @@ public final class MainActivity extends Activity {
             ambientBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             root.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
         }
-        View shade=new View(this);
-        shade.setBackgroundColor(Color.argb(dimAlpha,0,0,0));
-        root.addView(shade,new FrameLayout.LayoutParams(-1,-1));
+
+        treatmentOverlayLayer=new View(this);
+        treatmentOverlayLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        root.addView(treatmentOverlayLayer,new FrameLayout.LayoutParams(-1,-1));
+
+        syncTreatmentLayers();
+    }
+    private String backgroundTreatment() { return store.value("background_treatment","dim"); }
+    private String treatmentStyleName() {
+        String t=backgroundTreatment();
+        switch(t) {
+            case "blur": return "Frosted Silk";
+            case "vignette": return "Cinema Vignette";
+            case "scrim": return "Horizon Scrim";
+            case "studio": return "Studio Glass";
+            default: return "Classic Dim";
+        }
+    }
+    private int treatmentIntensity() { return store.number("dimming",0); }
+    private Drawable buildTreatmentDrawable(String style,int intensity,int width,int height) {
+        if(intensity<=0) return new ColorDrawable(Color.TRANSPARENT);
+        final int alpha=Math.round(intensity*2.55f);
+        if("dim".equals(style)) {
+            return new ColorDrawable(Color.argb(alpha,0,0,0));
+        }
+        if("blur".equals(style)) {
+            int veilAlpha=Math.round(alpha*0.35f);
+            return new ColorDrawable(Color.argb(veilAlpha,0,0,0));
+        }
+        if("vignette".equals(style)) {
+            return new Drawable() {
+                private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+                private final RectF rect=new RectF();
+                @Override public void draw(Canvas c) {
+                    rect.set(getBounds());
+                    float w=rect.width(), h=rect.height();
+                    if(w<=0||h<=0) return;
+                    float cx=w*0.48f, cy=h*0.42f;
+                    float radius=Math.max(w,h)*0.72f;
+                    RadialGradient radial=new RadialGradient(cx,cy,radius,
+                            new int[]{0x00000000, 0x00000000, Color.argb(Math.round(alpha*0.45f),0,0,0), Color.argb(alpha,0,0,0)},
+                            new float[]{0f, 0.45f, 0.72f, 1f}, Shader.TileMode.CLAMP);
+                    paint.setShader(radial);
+                    c.drawRect(rect,paint);
+                    LinearGradient shelf=new LinearGradient(0,h*0.62f,0,h,
+                            0x00000000, Color.argb(Math.round(alpha*0.80f),0,0,0), Shader.TileMode.CLAMP);
+                    paint.setShader(shelf);
+                    c.drawRect(0,h*0.62f,w,h,paint);
+                }
+                @Override public void setAlpha(int a) {}
+                @Override public void setColorFilter(ColorFilter cf) {}
+                @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+            };
+        }
+        if("scrim".equals(style)) {
+            return new Drawable() {
+                private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+                private final RectF rect=new RectF();
+                @Override public void draw(Canvas c) {
+                    rect.set(getBounds());
+                    float w=rect.width(), h=rect.height();
+                    if(w<=0||h<=0) return;
+                    LinearGradient grad=new LinearGradient(0,0,0,h,
+                            new int[]{0x00000000, 0x00000000, Color.argb(Math.round(alpha*0.28f),0,0,0), Color.argb(Math.round(alpha*0.75f),0,0,0), Color.argb(alpha,0,0,0)},
+                            new float[]{0f, 0.32f, 0.50f, 0.76f, 1f}, Shader.TileMode.CLAMP);
+                    paint.setShader(grad);
+                    c.drawRect(rect,paint);
+                }
+                @Override public void setAlpha(int a) {}
+                @Override public void setColorFilter(ColorFilter cf) {}
+                @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+            };
+        }
+        if("studio".equals(style)) {
+            return new Drawable() {
+                private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+                private final RectF rect=new RectF();
+                @Override public void draw(Canvas c) {
+                    rect.set(getBounds());
+                    float w=rect.width(), h=rect.height();
+                    if(w<=0||h<=0) return;
+                    float cx=w*0.48f, cy=h*0.42f;
+                    float radius=Math.max(w,h)*0.70f;
+                    RadialGradient radial=new RadialGradient(cx,cy,radius,
+                            new int[]{0x00000000, 0x00000000, Color.argb(Math.round(alpha*0.35f),0,0,0), Color.argb(Math.round(alpha*0.85f),0,0,0)},
+                            new float[]{0f, 0.40f, 0.70f, 1f}, Shader.TileMode.CLAMP);
+                    paint.setShader(radial);
+                    c.drawRect(rect,paint);
+                    LinearGradient shelf=new LinearGradient(0,h*0.65f,0,h,
+                            0x00000000, Color.argb(Math.round(alpha*0.65f),0,0,0), Shader.TileMode.CLAMP);
+                    paint.setShader(shelf);
+                    c.drawRect(0,h*0.65f,w,h,paint);
+                }
+                @Override public void setAlpha(int a) {}
+                @Override public void setColorFilter(ColorFilter cf) {}
+                @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+            };
+        }
+        return new ColorDrawable(Color.argb(alpha,0,0,0));
+    }
+    private void syncTreatmentLayers() {
+        if(treatmentOverlayLayer==null) return;
+        String style=overrideTreatmentStyle!=null?overrideTreatmentStyle:backgroundTreatment();
+        int intensity=overrideTreatmentIntensity>=0?overrideTreatmentIntensity:treatmentIntensity();
+        if(store.flag("contrast")) intensity=Math.max(55,intensity);
+
+        boolean needsBlur="blur".equals(style)||"studio".equals(style);
+        if(treatmentBlurLayer!=null) {
+            android.graphics.Bitmap blurBmp="photo".equals(store.value("background","ember"))?blurredWallpaperBackdrop:frostedBackdrop;
+            if(blurBmp!=null) treatmentBlurLayer.setImageBitmap(blurBmp);
+            if(needsBlur && intensity>0 && blurBmp!=null) {
+                treatmentBlurLayer.setVisibility(View.VISIBLE);
+                if(wallpaperImageView!=null) {
+                    treatmentBlurLayer.setAlpha(1f);
+                    float sharpAlpha="studio".equals(style)?Math.max(0f,1f-(intensity*0.75f/100f)):Math.max(0f,1f-(intensity/100f));
+                    wallpaperImageView.setAlpha(sharpAlpha);
+                } else {
+                    float blurAlpha="studio".equals(style)?(intensity*0.75f/100f):(intensity/100f);
+                    treatmentBlurLayer.setAlpha(Math.min(1f,Math.max(0f,blurAlpha)));
+                }
+            } else {
+                treatmentBlurLayer.setVisibility(View.GONE);
+                if(wallpaperImageView!=null) wallpaperImageView.setAlpha(1f);
+            }
+        } else if(wallpaperImageView!=null) {
+            wallpaperImageView.setAlpha(1f);
+        }
+        if(intensity>0) {
+            treatmentOverlayLayer.setVisibility(View.VISIBLE);
+            treatmentOverlayLayer.setBackground(buildTreatmentDrawable(style,intensity,screenWidth,screenHeight));
+        } else {
+            treatmentOverlayLayer.setVisibility(View.GONE);
+        }
     }
     private boolean backgroundGlow(){return "app_glow".equals(store.value("background","ember"));}
     private void updateAmbient(String pkg){
@@ -2189,6 +2387,8 @@ public final class MainActivity extends Activity {
     private void updateRecommendationRows() {
         if (drawer || contentRail==null || destroyed) return;
         contentRail.removeAllViews();contentRows.clear();contentViews.clear();
+        for(SpringStage stage:recommendationSpringStages) if(stage!=null) stage.stop();
+        recommendationSpringStages.clear();
         final int current=serial;
         final int size=recommendationSize(),cardWidth=recommendationWidth(size),artHeight=cardWidth*9/16;
         List<String> sources=new ArrayList<>(favorites());
@@ -2198,7 +2398,7 @@ public final class MainActivity extends Activity {
             LinearLayout section=new LinearLayout(this);section.setOrientation(LinearLayout.VERTICAL);
             section.setClipChildren(false);section.setClipToPadding(false);section.setVisibility(View.GONE);
             LinearLayout.LayoutParams sectionParams=new LinearLayout.LayoutParams(-1,-2);
-            sectionParams.topMargin=px(56);sectionParams.bottomMargin=px(72);
+            sectionParams.topMargin=px(28);sectionParams.bottomMargin=px(44);
             contentRail.addView(section,sectionParams);
             List<View> rowViews=new ArrayList<>();contentRows.add(rowViews);
             recommendations.load(pkg,feed->{
@@ -2207,50 +2407,169 @@ public final class MainActivity extends Activity {
                 TextView label=text(name(pkg),34,foreground());label.setTypeface(medium);label.setPadding(px(96),0,px(96),0);
                 LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(52));
                 labelParams.bottomMargin=px(16);section.addView(label,labelParams);
-                HorizontalScrollView scroll=new HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);
+                HorizontalScrollView scroll=new HorizontalScrollView(this) {
+                    @Override public void playSoundEffect(int soundConstant) {
+                        if(muteSystem()) return;
+                        super.playSoundEffect(soundConstant);
+                    }
+                };
+                scroll.setSoundEffectsEnabled(!muteSystem());
+                scroll.setHorizontalScrollBarEnabled(false);
                 scroll.setClipChildren(false);scroll.setClipToPadding(false);scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setClipChildren(false);row.setClipToPadding(false);row.setPadding(px(32),px(16),px(32),px(16));
-            for (RecommendationRepository.Item item:feed.items) {
-                LinearLayout card=new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setId(View.generateViewId()); card.setFocusable(true); card.setClickable(true);
-                card.setFocusableInTouchMode(true);card.setClipChildren(false);card.setClipToPadding(false);
-                FrameLayout picture=new FrameLayout(this);picture.setClipToOutline(true);
-                picture.setBackground(shape(Color.BLACK,0,0));
-                card.addView(picture,new LinearLayout.LayoutParams(-1,px(artHeight)));
-                final int[] naturalWidth={px(cardWidth)};
-                if (!item.artwork.isEmpty()) {
-                    ImageView image=new ImageView(this) {
-                        @Override public void setImageBitmap(android.graphics.Bitmap bitmap) {
-                            super.setImageBitmap(bitmap);
-                            if(bitmap==null||destroyed||current!=serial||drawer)return;
-                            naturalWidth[0]=artworkWidth(bitmap.getWidth(),bitmap.getHeight(),px(artHeight),screenWidth-px(96));
-                            android.view.ViewGroup.LayoutParams params=card.getLayoutParams();
-                            if(params!=null && params.width!=naturalWidth[0]) {params.width=naturalWidth[0];card.setLayoutParams(params);}
+                row.setClipChildren(false);row.setClipToPadding(false);
+                int edgePadding=px(96);
+                int vertPad=Math.max(px(32),px(glowRadiusSetting()+14));
+                row.setPadding(edgePadding,vertPad,edgePadding,vertPad);
+
+                final SpringStage rowStage=new SpringStage(row,false);
+                recommendationSpringStages.add(rowStage);
+                final int appColor=extractAppColor(pkg);
+                final int glowColor=resolveGlowColor(pkg);
+                final int surfaceTint=glowColor!=0?glowColor:appColor;
+
+                for (RecommendationRepository.Item item:feed.items) {
+                    LinearLayout card=new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setId(View.generateViewId()); card.setTag(pkg); card.setFocusable(true); card.setClickable(true);
+                    card.setFocusableInTouchMode(true);card.setClipChildren(false);card.setClipToPadding(false);
+                    card.setSoundEffectsEnabled(!muteSystem());
+
+                    FrameLayout iconSlot=new FrameLayout(this);
+                    iconSlot.setClipChildren(false);iconSlot.setClipToPadding(false);
+
+                    int rawRad=glowRadiusSetting();
+                    int spread=px(Math.round(rawRad*0.68f));
+                    View glow=new View(this);
+                    glow.setBackground(iconGlowDrawable(glowColor,false,Math.min(cardWidth,artHeight)/2f,spread,glowIntensity()));
+                    glow.setAlpha(0f);
+                    glow.setVisibility(View.INVISIBLE);
+                    FrameLayout.LayoutParams glowLp=new FrameLayout.LayoutParams(-1,-1);
+                    glowLp.setMargins(-spread,-spread,-spread,-spread);
+                    iconSlot.addView(glow,glowLp);
+
+                    FrameLayout picture=new FrameLayout(this) {
+                        private final android.graphics.Paint halo=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+                        @Override protected void dispatchDraw(android.graphics.Canvas canvas) {
+                            super.dispatchDraw(canvas);
+                            if(card.isFocused() && !springFocusActive()) {
+                                float rad=px(22);
+                                halo.setStyle(android.graphics.Paint.Style.STROKE);
+                                halo.setStrokeWidth(Math.max(2f,px(2.4f)));
+                                halo.setColor(store.flag("contrast")?accent():0xE8FFFFFF);
+                                float inset=halo.getStrokeWidth()/2f;
+                                android.graphics.RectF rect=new android.graphics.RectF(inset,inset,getWidth()-inset,getHeight()-inset);
+                                canvas.drawRoundRect(rect,rad,rad,halo);
+                            }
                         }
-                    };image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                    picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
-                    images.show(image,item.artwork,screenWidth-px(96),px(artHeight));
+                    };
+                    picture.setClipToOutline(true);
+                    picture.setOutlineProvider(new android.view.ViewOutlineProvider() {
+                        @Override public void getOutline(View view,android.graphics.Outline outline) {
+                            outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),px(22));
+                        }
+                    });
+                    picture.setBackground(glassSurface(false,true,false,surfaceTint));
+                    iconSlot.addView(picture,new FrameLayout.LayoutParams(-1,-1));
+                    card.addView(iconSlot,new LinearLayout.LayoutParams(-1,px(artHeight)));
+
+                    final int[] naturalWidth={px(cardWidth)};
+                    final ImageView[] imgRef=new ImageView[1];
+                    if (!item.artwork.isEmpty()) {
+                        ImageView image=new ImageView(this) {
+                            @Override public void setImageBitmap(android.graphics.Bitmap bitmap) {
+                                super.setImageBitmap(bitmap);
+                                if(bitmap==null||destroyed||current!=serial||drawer)return;
+                                naturalWidth[0]=artworkWidth(bitmap.getWidth(),bitmap.getHeight(),px(artHeight),screenWidth-px(96));
+                                android.view.ViewGroup.LayoutParams params=card.getLayoutParams();
+                                if(params!=null && params.width!=naturalWidth[0]) {
+                                    params.width=naturalWidth[0];
+                                    card.setLayoutParams(params);
+                                }
+                            }
+                        };
+                        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                        imgRef[0]=image;
+                        picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
+                        images.show(image,item.artwork,screenWidth-px(96),px(artHeight));
+                    }
+                    TextView title=text(item.title,recommendationTextSize(size),foreground()); title.setMaxLines(1); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    title.setGravity(Gravity.CENTER_VERTICAL);title.setPadding(px(4),px(4),px(4),0);
+                    card.addView(title,new LinearLayout.LayoutParams(-1,px(recommendationTitleHeight(size))));
+                    card.setContentDescription(item.title+" · "+name(pkg)); card.setOnClickListener(v->openTitle(item));
+
+                    card.setOnFocusChangeListener((v,has)->{
+                        boolean useSpring=springFocusActive();
+                        float zoom=focusZoomScale(true);
+                        boolean liquid="liquid".equals(focusMotionStyle());
+                        android.view.animation.Interpolator interp=useSpring&&liquid?liquidOvershoot:crispDecel;
+                        int dur=has?(useSpring?220:140):(useSpring?170:140);
+
+                        card.animate().translationZ(has?px(16):0).setDuration(dur).start();
+                        picture.setBackground(glassSurface(false,true,has&&!useSpring,surfaceTint));
+                        picture.invalidate();
+                        picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
+                                .translationY(has&&useSpring?-px(4):0f)
+                                .translationZ(has?px(12):0)
+                                .setInterpolator(interp).setDuration(dur).start();
+
+                        if(imgRef[0]!=null) {
+                            if(store.flag("focus_parallax",true)) {
+                                imgRef[0].animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f)
+                                        .setInterpolator(crispDecel).setDuration(has?280:180).start();
+                            } else {
+                                imgRef[0].setScaleX(1f); imgRef[0].setScaleY(1f);
+                            }
+                        }
+
+                        title.animate().cancel();
+                        title.animate().alpha(has?1f:0.76f)
+                                .translationY(has&&useSpring?px(3):0f)
+                                .setInterpolator(crispDecel).setDuration(has?200:150).start();
+                        title.setTextColor(has?foreground():muted());
+
+                        if(useSpring && rowStage!=null) {
+                            glow.animate().cancel();
+                            glow.setAlpha(0f);
+                            glow.setVisibility(View.INVISIBLE);
+                            if(has) {
+                                int w=picture.getWidth()>0?picture.getWidth():naturalWidth[0];
+                                int h=picture.getHeight()>0?picture.getHeight():px(artHeight);
+                                rowStage.onTileFocused(card,picture,w,h,glowColor);
+                            } else {
+                                rowStage.onTileUnfocused(card,picture);
+                            }
+                        } else {
+                            if(rowStage!=null) rowStage.hideImmediate();
+                            boolean showGlow=has&&store.flag("ambient_glow",true)&&!backgroundGlow()&&glowColor!=0;
+                            glow.setVisibility(showGlow?View.VISIBLE:View.INVISIBLE);
+                            glow.animate().cancel();
+                            if(showGlow) {
+                                glow.setScaleX(0.88f); glow.setScaleY(0.88f);
+                                glow.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start();
+                            } else {
+                                glow.setAlpha(0f);
+                            }
+                        }
+
+                        if(has){updateAmbient(pkg);revealHorizontalFocus(card,vertPad);}
+                    });
+                    card.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
+                        if(v.hasFocus()&&(left!=oldLeft||right!=oldRight||top!=oldTop||bottom!=oldBottom)){
+                            if(springFocusActive() && rowStage!=null) {
+                                int w=picture.getWidth()>0?picture.getWidth():naturalWidth[0];
+                                int h=picture.getHeight()>0?picture.getHeight():px(artHeight);
+                                rowStage.onTileFocused(card,picture,w,h,glowColor);
+                            }
+                            revealHorizontalFocus(v,vertPad);
+                        }
+                    });
+                    card.setOnKeyListener((v,key,event)->{
+                        if (key==KeyEvent.KEYCODE_BACK) { if(event.getAction()==KeyEvent.ACTION_UP){View source=views.get(pkg);if(source!=null)source.requestFocus();else if(focusedFavorite!=null)focusedFavorite.requestFocus();} return true; } return false;
+                    });
+                    LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(naturalWidth[0],px(artHeight+recommendationTitleHeight(size)));
+                    if(rowViews.size()+1<feed.items.size())lp.rightMargin=px(40);
+                    row.addView(card,lp); rowViews.add(card);
                 }
-                TextView title=text(item.title,recommendationTextSize(size),foreground()); title.setMaxLines(1); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                title.setGravity(Gravity.CENTER_VERTICAL);title.setPadding(px(4),px(4),px(4),0);
-                card.addView(title,new LinearLayout.LayoutParams(-1,px(recommendationTitleHeight(size))));
-                card.setContentDescription(item.title+" · "+name(pkg)); card.setOnClickListener(v->openTitle(item));
-                card.setOnFocusChangeListener((v,has)->{
-                    focusRecommendationPicture(picture,has);
-                    title.setTextColor(has?foreground():muted());
-                    if(has){updateAmbient(pkg);revealHorizontalFocus(card);}
-                });
-                card.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
-                    if(v.hasFocus()&&(left!=oldLeft||right!=oldRight)){focusRecommendationPicture(picture,true);revealHorizontalFocus(v);}
-                });
-                card.setOnKeyListener((v,key,event)->{
-                    if (key==KeyEvent.KEYCODE_BACK) { if(event.getAction()==KeyEvent.ACTION_UP){View source=views.get(pkg);if(source!=null)source.requestFocus();else if(focusedFavorite!=null)focusedFavorite.requestFocus();} return true; } return false;
-                });
-                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(naturalWidth[0],px(artHeight+recommendationTitleHeight(size)));
-                if(rowViews.size()+1<feed.items.size())lp.rightMargin=px(40);
-                row.addView(card,lp); rowViews.add(card);
-            }
-                scroll.addView(row);section.addView(scroll);section.setVisibility(View.VISIBLE);wireNavigation();
+                scroll.addView(rowStage.host);section.addView(scroll);section.setVisibility(View.VISIBLE);applyViewSoundPolicy(section);wireNavigation();
             });
         }
         showRecentRow();
@@ -2260,13 +2579,6 @@ public final class MainActivity extends Activity {
     private int artworkWidth(int width,int height,int targetHeight,int limit) {
         if(width<=0||height<=0)return Math.min(limit,targetHeight*16/9);
         return Math.max(px(64),Math.min(limit,(int)Math.round((double)width*targetHeight/height)));
-    }
-    private void focusRecommendationPicture(FrameLayout picture,boolean focused) {
-        // Foreground is drawn after the artwork, keeping the complete ring visible.
-        picture.setForeground(focused?shape(Color.TRANSPARENT,accent(),2):null);
-        picture.setForegroundGravity(Gravity.FILL);
-        float lift=focused?Math.min(1.035f,1f+(float)px(24)/Math.max(1,picture.getWidth())):1f;
-        picture.animate().scaleX(lift).scaleY(lift).translationZ(focused?px(12):0).setDuration(140).start();
     }
     private void revealHorizontalFocus(View view) {
         revealHorizontalFocus(view,0);
@@ -3104,10 +3416,11 @@ public final class MainActivity extends Activity {
             });
         }
         add(labels,actions,"Import from TV storage",()->pickImage("background_image"));
-        add(labels,actions,"§ADJUST",null);
-        add(labels,actions,"Background dimming: "+store.number("dimming",0)+"%",()->dimmingDialog(()->backgroundMenu(back)));
+        add(labels,actions,"§BACKGROUND TREATMENT",null);
+        add(labels,actions,"Treatment style: "+treatmentStyleName(),()->treatmentStyleChoice(()->backgroundMenu(back)));
+        add(labels,actions,"Treatment intensity: "+treatmentIntensity()+"%",()->treatmentIntensityDialog(()->backgroundMenu(back)));
         add(labels,actions,"Wallpaper tint: "+colorIntensity()+"%",this::colorIntensityDialog);
-        add(labels,actions,"Restore default background",()->{store.set("background","ember");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
+        add(labels,actions,"Restore default background",()->{store.set("background","ember");store.set("background_treatment","dim");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
         menu("Background",labels,actions,back);
     }
     private void stopPhoneDrop() {
@@ -3384,28 +3697,66 @@ public final class MainActivity extends Activity {
             if(back!=null) back.run();
         },null);
     }
-    private void dimmingDialog() { dimmingDialog(this::backgroundMenu); }
-    private void dimmingDialog(Runnable back) {
+    private void treatmentStyleChoice(Runnable back) {
+        String[] keys={"dim","blur","vignette","scrim","studio"};
+        String[] titles={
+                "Classic Dim · Uniform dark veil",
+                "Frosted Silk · Optical blur, keeps wallpaper color",
+                "Cinema Vignette · Clear center, edge & dock shadow",
+                "Horizon Scrim · Open sky, dark stage for apps",
+                "Studio Glass · Hybrid soft blur & vignette"
+        };
+        int current=0;
+        String curKey=backgroundTreatment();
+        for(int i=0;i<keys.length;i++) if(keys[i].equals(curKey)) { current=i; break; }
+        choice("Treatment style",titles,current,idx->{
+            store.set("background_treatment",keys[idx]);
+            if(store.number("dimming",0)==0) store.setNumber("dimming",40);
+            render();
+            back.run();
+        },back);
+    }
+    private void treatmentIntensityDialog(Runnable back) {
         LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
-        TextView value=text("Dimming · "+store.number("dimming",0)+"%",22,foreground()); value.setTypeface(medium);
+        final int initial=treatmentIntensity();
+        TextView value=text("Intensity · "+initial+"%",22,foreground()); value.setTypeface(medium);
         box.addView(value);
-        TextView sub=text("Use Left / Right to darken your wallpaper behind text and tiles.",18,muted());
+        String subDesc="dim".equals(backgroundTreatment())?"Uniform darkness behind text and tiles":
+                "blur".equals(backgroundTreatment())?"Optical diffusion softness":
+                "vignette".equals(backgroundTreatment())?"Perimeter and dock shadow depth":
+                "scrim".equals(backgroundTreatment())?"Content stage gradient depth":"Hybrid diffusion and vignette depth";
+        TextView sub=text(subDesc,18,muted());
         LinearLayout.LayoutParams subParams=new LinearLayout.LayoutParams(-1,-2); subParams.topMargin=px(6); subParams.bottomMargin=px(20);
         box.addView(sub,subParams);
-        SeekBar slider=new SeekBar(this); slider.setMax(80); slider.setProgress(store.number("dimming",0));
+        SeekBar slider=new SeekBar(this); slider.setMax(100); slider.setProgress(initial);
         slider.setKeyProgressIncrement(5); slider.setFocusableInTouchMode(true);
         slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
         slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
         box.addView(slider,new LinearLayout.LayoutParams(-1,px(64)));
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
-            public void onProgressChanged(SeekBar bar,int progress,boolean user){value.setText("Dimming · "+progress+"%");}
+            public void onProgressChanged(SeekBar bar,int progress,boolean user){
+                value.setText("Intensity · "+progress+"%");
+                if(user) {
+                    overrideTreatmentIntensity=progress;
+                    syncTreatmentLayers();
+                }
+            }
             public void onStartTrackingTouch(SeekBar bar){}
             public void onStopTrackingTouch(SeekBar bar){}
         });
-        showBladePanel("Background dimming",box,"Save",()->{
-            store.setNumber("dimming",slider.getProgress());render();back.run();
-        },back,slider);
+        showBladePanel("Treatment intensity",box,"Save",()->{
+            overrideTreatmentIntensity=-1;
+            store.setNumber("dimming",slider.getProgress());
+            render();
+            back.run();
+        },()->{
+            overrideTreatmentIntensity=-1;
+            syncTreatmentLayers();
+            back.run();
+        },slider);
     }
+    private void dimmingDialog() { treatmentIntensityDialog(this::backgroundMenu); }
+    private void dimmingDialog(Runnable back) { treatmentIntensityDialog(back); }
     private void recommendationMenu() {
         String access=Build.VERSION.SDK_INT<23||checkSelfPermission(TV_LISTINGS_PERMISSION)==PackageManager.PERMISSION_GRANTED
                 ?"TV listings: Allowed":"TV listings: Request access";
@@ -4480,6 +4831,9 @@ public final class MainActivity extends Activity {
     }
     private void closeBlade() {
         overrideFrostPct=-1;
+        overrideTreatmentStyle=null;
+        overrideTreatmentIntensity=-1;
+        syncTreatmentLayers();
         activeBladeBox=null;
         stopPhoneDrop();
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
@@ -4799,6 +5153,11 @@ public final class MainActivity extends Activity {
             footer.addView(cancel,cp);
         }
         box.addView(footer,new LinearLayout.LayoutParams(-1,-2));
+        if(focusTarget!=null) {
+            if(focusTarget.getId()==View.NO_ID) focusTarget.setId(View.generateViewId());
+            focusTarget.setNextFocusDownId(save.getId());
+            save.setNextFocusUpId(focusTarget.getId());
+        }
         presentBladeView(title,box,back,focusTarget!=null?focusTarget:save,true);
     }
     private void info(String title,String message) { info(title,message,bladeBack); }
