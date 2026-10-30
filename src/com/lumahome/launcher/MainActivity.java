@@ -105,6 +105,9 @@ public final class MainActivity extends Activity {
     private SpringStage homeSpringStage, drawerSpringStage, previewSpringStage;
     private DockSpringLens dockSpringLens;
     private View dockBar, searchBar, activeBladeBox;
+    private UiSoundEngine sfx;
+    private long lastUserNavMs;
+    private int lastUserNavDir=1;
     private PhoneDropServer phoneDrop;
     private final Runnable wallpaperSlideshowTick=this::advanceWallpaperSlideshow;
     private android.graphics.Bitmap frostedBackdrop;
@@ -134,7 +137,7 @@ public final class MainActivity extends Activity {
             medium=getResources().getFont(getResources().getIdentifier("outfit_medium","font",getPackageName()));
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
-        store=new LauncherStore(this); catalog=new AppCatalog(this);
+        store=new LauncherStore(this); sfx=new UiSoundEngine(this,store); catalog=new AppCatalog(this);
         images=new ImageLoader(this); recommendations=new RecommendationRepository(this);
         if (state!=null) { imageTarget=state.getString("imageTarget",""); drawer=state.getBoolean("drawer"); }
         refreshApps(); applyIntent(getIntent()); initializeFavorites();
@@ -173,9 +176,30 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
         destroyed=true; stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
-        unregisterReceiver(packageChanges); images.close(); recommendations.close(); super.onDestroy();
+        unregisterReceiver(packageChanges); if(sfx!=null)sfx.close(); images.close(); recommendations.close(); super.onDestroy();
+    }
+    private void noteNavKey(int key,KeyEvent event) {
+        if(event!=null && event.getAction()==KeyEvent.ACTION_DOWN) {
+            if(key==KeyEvent.KEYCODE_DPAD_RIGHT || key==KeyEvent.KEYCODE_DPAD_DOWN) {
+                lastUserNavMs=android.os.SystemClock.uptimeMillis();
+                lastUserNavDir=1;
+            } else if(key==KeyEvent.KEYCODE_DPAD_LEFT || key==KeyEvent.KEYCODE_DPAD_UP) {
+                lastUserNavMs=android.os.SystemClock.uptimeMillis();
+                lastUserNavDir=-1;
+            }
+        }
+    }
+    private void applyViewSoundPolicy(View v) {
+        if(v==null || store==null) return;
+        boolean allowStock=!(sfx!=null && sfx.enabled() && store.flag("ui_sounds_mute_system",true));
+        v.setSoundEffectsEnabled(allowStock);
+        if(v instanceof ViewGroup) {
+            ViewGroup vg=(ViewGroup)v;
+            for(int i=0;i<vg.getChildCount();i++) applyViewSoundPolicy(vg.getChildAt(i));
+        }
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if(event!=null) noteNavKey(event.getKeyCode(),event);
         resetIdleTimer();
         if(idleClockDialog!=null && idleClockDialog.isShowing()) {
             if(event.getAction()==KeyEvent.ACTION_UP) dismissIdleClock();
@@ -184,10 +208,10 @@ public final class MainActivity extends Activity {
         return super.dispatchKeyEvent(event);
     }
     @Override public void onBackPressed() {
-        if(heroVideo!=null){stopHeroVideo();return;}
-        if(!drawer&&header!=null&&header.hasFocus()&&!appViews.isEmpty()){heroWantsFocus=false;appViews.get(0).requestFocus();return;}
-        if (!moving.isEmpty()) { moving=""; render(); return; }
-        if (drawer) { hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); }
+        if(heroVideo!=null){if(sfx!=null)sfx.playBack();stopHeroVideo();return;}
+        if(!drawer&&header!=null&&header.hasFocus()&&!appViews.isEmpty()){if(sfx!=null)sfx.playBack();heroWantsFocus=false;appViews.get(0).requestFocus();return;}
+        if (!moving.isEmpty()) { if(sfx!=null)sfx.playBack(); moving=""; render(); return; }
+        if (drawer) { if(sfx!=null)sfx.playBack(); hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); }
     }
     private void refreshApps() {
         apps=catalog.all(); byPackage.clear();
@@ -670,6 +694,13 @@ public final class MainActivity extends Activity {
         if (drawer) renderDrawer(); else renderHome();
         if (store.flag("show_dock",true)) buildDock();
         setContentView(root);
+        applyViewSoundPolicy(root);
+        root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
+            if(destroyed || sfx==null || oldFocus==null || newFocus==null || oldFocus==newFocus) return;
+            if(android.os.SystemClock.uptimeMillis()-lastUserNavMs<280L) {
+                sfx.playFocus(newFocus,screenWidth,lastUserNavDir);
+            }
+        });
         wireNavigation();
         View restore=views.get(desiredFocus);
         if (restore==null) restore=!appViews.isEmpty()?appViews.get(0):!dockViews.isEmpty()?dockViews.get(0):!topPillViews.isEmpty()?topPillViews.get(0):null;
@@ -843,7 +874,10 @@ public final class MainActivity extends Activity {
             pill.animate().scaleX(has?1.06f:1f).scaleY(has?1.06f:1f).translationZ(has?px(14):0).setDuration(130).start();
             if(has){lastFocus=key;if(!drawer&&homeScroll!=null)homeScroll.post(()->homeScroll.smoothScrollTo(0,0));}
         });
-        pill.setOnClickListener(v->action.run());
+        pill.setOnClickListener(v->{
+            if(sfx!=null && !"pill.settings".equals(key) && !"pill.inputs".equals(key)) sfx.playSelect(v,screenWidth);
+            action.run();
+        });
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,px(64));
         if(parent.getChildCount()>0)lp.leftMargin=px(12);
         parent.addView(pill,lp);
@@ -2038,7 +2072,10 @@ public final class MainActivity extends Activity {
                 }
             }
         });
-        tile.setOnClickListener(v->action.run()); views.put(key,tile); dockViews.add(tile);
+        tile.setOnClickListener(v->{
+            if(sfx!=null && !SETTINGS.equals(key)) sfx.playSelect(v,screenWidth);
+            action.run();
+        }); views.put(key,tile); dockViews.add(tile);
     }
     private void wireNavigation() {
         List<List<View>> rows=new ArrayList<>();contentViews.clear();
@@ -2283,6 +2320,7 @@ public final class MainActivity extends Activity {
     private void moveFavorite(String pkg,int delta) {
         List<String> list=favorites(); int from=list.indexOf(pkg), to=from+delta;
         if (from<0||to<0||to>=list.size()) return;
+        if(sfx!=null) sfx.playDetent(0.5f,Math.max(10,Math.min(90,to*100/Math.max(1,list.size()-1))));
         list.remove(from); list.add(to,pkg); store.list("favorites",list); lastFocus=pkg; render();
     }
     private void rename(String pkg) {
@@ -2352,6 +2390,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@sparkles|Glass & surfaces: "+glassSurfacesSummary(),()->glassSurfacesMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus glow: "+glowSummary(),()->focusGlowMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus motion: "+focusMotionSummary(),()->focusMotionMenu(this::settingsMenu));
+        add(labels,actions,"@sound|UI sounds: "+(sfx!=null?sfx.summary():"On"),()->soundMenu(this::settingsMenu));
         add(labels,actions,"@clock|Idle screensaver: "+screensaverSummary(),()->screensaverMenu(this::settingsMenu));
         add(labels,actions,"@banner|Featured banner: "+bannerState,this::bannerMenu);
         add(labels,actions,"@sparkles|Recommendations: "+recState,this::recommendationMenu);
@@ -2418,6 +2457,7 @@ public final class MainActivity extends Activity {
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
+                "UI sounds: "+(sfx!=null?sfx.summary():"On"),
                 "§LAYOUT & BARS",
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
@@ -2439,6 +2479,7 @@ public final class MainActivity extends Activity {
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
+                        ()->soundMenu(this::appearanceMenu),
                         null,
                         ()->choice("Tile size",new String[]{"Compact · 8 columns in All Apps","Comfortable · 6 columns in All Apps","Large · 4 columns in All Apps"},
                                 columns()==8?0:columns()==6?1:2,index->{store.setNumber("columns",new int[]{8,6,4}[index]);render();appearanceMenu();},this::appearanceMenu),
@@ -3649,6 +3690,148 @@ public final class MainActivity extends Activity {
         }
         return uris;
     }
+    private void soundMenu(Runnable back) {
+        boolean on=sfx!=null && sfx.enabled();
+        String curPack=sfx!=null?sfx.pack():"glass";
+        int vol=sfx!=null?sfx.volumePct():65;
+        boolean spatial=store.flag("ui_sounds_spatial",true);
+        boolean pitch=store.flag("ui_sounds_pitch",true);
+        boolean detents=store.flag("ui_sounds_detents",true);
+        boolean muteSys=store.flag("ui_sounds_mute_system",true);
+
+        menu("UI sounds",Arrays.asList(
+                "§SOUND PACK",
+                "UI sounds: "+onOff(on),
+                "Sound profile: "+(sfx!=null?sfx.packName():"Liquid glass"),
+                "Sound volume: "+vol+"%",
+                "§ACOUSTIC DETAILS",
+                "Spatial stereo pan: "+onOff(spatial),
+                "Melodic glide pitch: "+onOff(pitch),
+                "Slider & switch detents: "+onOff(detents),
+                "Mute stock TV click: "+onOff(muteSys),
+                "§RESET",
+                "Restore sound defaults"),
+                Arrays.asList(
+                        null,
+                        ()->{
+                            boolean next=!on;
+                            store.setFlag("ui_sounds_enabled",next);
+                            applyViewSoundPolicy(root);
+                            if(next && sfx!=null) sfx.preview(sfx.pack(),UiSoundEngine.roleSelect(),-1);
+                            soundMenu(back);
+                        },
+                        ()->choice("Sound profile",new String[]{
+                                "Liquid glass · Crisp frosted crystal taps",
+                                "Warm wood · Organic rosewood marimba mallet",
+                                "Velvet pulse · Deep tactile cinema thock",
+                                "Dewdrop · Zen water-drop harmonics"},
+                                "wood".equals(curPack)?1:"pulse".equals(curPack)?2:"dew".equals(curPack)?3:0,
+                                idx->{
+                                    String picked=UiSoundEngine.PACK_IDS[idx];
+                                    store.set("ui_sounds_pack",picked);
+                                    store.setFlag("ui_sounds_enabled",true);
+                                    applyViewSoundPolicy(root);
+                                    if(sfx!=null) sfx.preview(picked,UiSoundEngine.roleSelect(),-1);
+                                    soundMenu(back);
+                                },()->soundMenu(back)),
+                        ()->soundVolumeDialog(back),
+                        null,
+                        ()->{ store.setFlag("ui_sounds_spatial",!spatial); soundMenu(back); },
+                        ()->{ store.setFlag("ui_sounds_pitch",!pitch); soundMenu(back); },
+                        ()->{ store.setFlag("ui_sounds_detents",!detents); soundMenu(back); },
+                        ()->{
+                            store.setFlag("ui_sounds_mute_system",!muteSys);
+                            applyViewSoundPolicy(root);
+                            soundMenu(back);
+                        },
+                        null,
+                        ()->{
+                            store.setFlag("ui_sounds_enabled",true);
+                            store.set("ui_sounds_pack","glass");
+                            store.setNumber("ui_sounds_volume",65);
+                            store.setFlag("ui_sounds_spatial",true);
+                            store.setFlag("ui_sounds_pitch",true);
+                            store.setFlag("ui_sounds_detents",true);
+                            store.setFlag("ui_sounds_mute_system",true);
+                            applyViewSoundPolicy(root);
+                            if(sfx!=null) sfx.preview("glass",UiSoundEngine.roleSelect(),65);
+                            toast("UI sounds restored to defaults");
+                            soundMenu(back);
+                        }),back);
+    }
+    private void soundVolumeDialog(Runnable back) {
+        LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        TextView value=text("",22,foreground()); value.setTypeface(medium); box.addView(value);
+        TextView sub=text("Use Left / Right to adjust loudness, or audition each sound below.",18,muted());
+        LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2); sp.topMargin=px(4); box.addView(sub,sp);
+
+        final SeekBar slider=new SeekBar(this);
+        slider.setMax(90);
+        slider.setProgress((sfx!=null?sfx.volumePct():65)-10);
+        slider.setKeyProgressIncrement(5);
+        slider.setFocusableInTouchMode(true);
+        slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
+        LinearLayout.LayoutParams slp=new LinearLayout.LayoutParams(-1,px(60));
+        slp.topMargin=px(14); slp.bottomMargin=px(14);
+        box.addView(slider,slp);
+
+        // Live Acoustic Audition Card (2x2 tactile sample pads)
+        LinearLayout card=new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(px(16),px(16),px(16),px(16));
+        card.setBackground(glassPanelDrawable(card,20f,false));
+        String pName=sfx!=null?sfx.packName():"Liquid glass";
+        TextView cardTitle=text("Audition · "+pName,19,foreground());
+        cardTitle.setTypeface(medium);
+        card.addView(cardTitle);
+        TextView cardSub=text("Press OK on any pad to hear it at this volume",15,muted());
+        LinearLayout.LayoutParams csp=new LinearLayout.LayoutParams(-1,-2); csp.topMargin=px(2); csp.bottomMargin=px(12);
+        card.addView(cardSub,csp);
+
+        String[] padNames={"Focus Tap","Select Bloom","Menu Glide","Back Settle"};
+        int[] padRoles={UiSoundEngine.roleFocus(),UiSoundEngine.roleSelect(),UiSoundEngine.roleBlade(),UiSoundEngine.roleBack()};
+        LinearLayout gridRow1=new LinearLayout(this); gridRow1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout gridRow2=new LinearLayout(this); gridRow2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams r2p=new LinearLayout.LayoutParams(-1,-2); r2p.topMargin=px(8);
+
+        for(int i=0;i<4;i++) {
+            final int role=padRoles[i];
+            Button pad=button(padNames[i],()->{
+                if(sfx!=null) sfx.preview(sfx.pack(),role,slider.getProgress()+10);
+            });
+            pad.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(18));
+            LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(0,px(48),1f);
+            if(i%2==1) pp.leftMargin=px(8);
+            (i<2?gridRow1:gridRow2).addView(pad,pp);
+        }
+        card.addView(gridRow1,new LinearLayout.LayoutParams(-1,-2));
+        card.addView(gridRow2,r2p);
+        box.addView(card,new LinearLayout.LayoutParams(-1,-2));
+
+        Runnable update=()->{
+            int v=slider.getProgress()+10;
+            String tag=v<=30?"Whisper subtle":v<=70?"Balanced tactile":"Crisp & prominent";
+            value.setText("Sound volume · "+v+"% ("+tag+")");
+        };
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar bar,int progress,boolean user) {
+                update.run();
+                if(user && sfx!=null) sfx.preview(sfx.pack(),UiSoundEngine.roleFocus(),progress+10);
+            }
+            public void onStartTrackingTouch(SeekBar bar) {}
+            public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        update.run();
+
+        showBladePanel("Sound volume",box,"Save",()->{
+            int v=slider.getProgress()+10;
+            store.setNumber("ui_sounds_volume",v);
+            store.setFlag("ui_sounds_enabled",true);
+            applyViewSoundPolicy(root);
+            soundMenu(back);
+        },()->soundMenu(back),slider);
+    }
     private void screensaverMenu(Runnable back) {
         int idleMin=store.number("idle_clock_minutes",5);
         String style=screensaverStyle();
@@ -4189,8 +4372,8 @@ public final class MainActivity extends Activity {
         d.setOnKeyListener((dlg,key,ev)->{
             if(ev.getAction()==KeyEvent.ACTION_DOWN) {
                 sawKeyDown[0]=true;
-                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_RIGHT) { advanceSlide.accept(1); return true; }
-                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_LEFT) { advanceSlide.accept(-1); return true; }
+                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_RIGHT) { if(sfx!=null)sfx.playFocus(null,screenWidth,1); advanceSlide.accept(1); return true; }
+                if(photos.size()>1 && key==KeyEvent.KEYCODE_DPAD_LEFT) { if(sfx!=null)sfx.playFocus(null,screenWidth,-1); advanceSlide.accept(-1); return true; }
                 return true;
             }
             if(ev.getAction()==KeyEvent.ACTION_UP) {
@@ -4254,16 +4437,36 @@ public final class MainActivity extends Activity {
         bladeGeneration++;
         bladeBack=back;
         if (activeBlade==null || !activeBlade.isShowing() || bladeHost==null) {
+            if(sfx!=null) sfx.playBladeOpen();
             Dialog dialog=new Dialog(this,android.R.style.Theme_Material_NoActionBar);
             FrameLayout host=new FrameLayout(this);
+            host.getViewTreeObserver().addOnGlobalFocusChangeListener((oldF,newF)->{
+                if(destroyed || sfx==null || oldF==null || newF==null || oldF==newF) return;
+                if(android.os.SystemClock.uptimeMillis()-lastUserNavMs<280L) {
+                    sfx.playFocus(newF,screenWidth,lastUserNavDir);
+                }
+            });
             dialog.setContentView(host);
             dialog.setOnKeyListener((d,key,event)->{
+                noteNavKey(key,event);
+                if(event.getAction()==KeyEvent.ACTION_DOWN
+                        && (key==KeyEvent.KEYCODE_DPAD_LEFT || key==KeyEvent.KEYCODE_DPAD_RIGHT)
+                        && dialog.getCurrentFocus() instanceof SeekBar
+                        && !"Sound volume".equals(lastBladeTitle)) {
+                    SeekBar sb=(SeekBar)dialog.getCurrentFocus();
+                    if((key==KeyEvent.KEYCODE_DPAD_LEFT && sb.getProgress()>0)
+                            || (key==KeyEvent.KEYCODE_DPAD_RIGHT && sb.getProgress()<sb.getMax())) {
+                        int pct=sb.getMax()>0?(sb.getProgress()*100/sb.getMax()):50;
+                        if(sfx!=null) sfx.playDetent(0.76f,pct);
+                    }
+                }
                 if(suppressCenterUp&&(key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_ENTER)) {
                     if(event.getAction()==KeyEvent.ACTION_UP)suppressCenterUp=false;
                     return true;
                 }
                 if(key==KeyEvent.KEYCODE_BACK) {
                     if(event.getAction()==KeyEvent.ACTION_UP && ! event.isCanceled()) {
+                        if(sfx!=null) sfx.playBack();
                         if(bladeBack!=null){Runnable r=bladeBack;bladeBack=null;r.run();}
                         else closeBlade();
                     }
@@ -4298,6 +4501,7 @@ public final class MainActivity extends Activity {
                 panel.animate().translationX(0).alpha(1f).setDuration(110).start();
             }
         }
+        applyViewSoundPolicy(panel);
         lastBladeTitle=title;
         if(initialFocus!=null) initialFocus.post(initialFocus::requestFocus);
     }
@@ -4425,8 +4629,14 @@ public final class MainActivity extends Activity {
             }
         };
         list.setAdapter(adapter);
+        final int[] prevSoundSel={-1};
         list.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id) {
+                if(prevSoundSel[0]>=0 && pos!=prevSoundSel[0] && sfx!=null
+                        && android.os.SystemClock.uptimeMillis()-lastUserNavMs<280L) {
+                    sfx.playFocus(v!=null?v:list,screenWidth,pos>prevSoundSel[0]?1:-1);
+                }
+                prevSoundSel[0]=pos;
                 lastBladeSelection=pos; adapter.notifyDataSetChanged();
             }
             @Override public void onNothingSelected(android.widget.AdapterView<?> p) { adapter.notifyDataSetChanged(); }
@@ -4434,6 +4644,16 @@ public final class MainActivity extends Activity {
         list.setOnFocusChangeListener((v,has)->adapter.notifyDataSetChanged());
         list.setOnItemClickListener((parent,view,position,id)->{
             if(position<0||position>=actions.size()||actions.get(position)==null)return;
+            String rawLbl=labels.get(position);
+            if(sfx!=null && rawLbl!=null && !rawLbl.startsWith("UI sounds: ") && !rawLbl.startsWith("✓ ") && !rawLbl.startsWith("○ ")) {
+                if(rawLbl.endsWith(": On") || rawLbl.endsWith(": Off") || rawLbl.endsWith(": On · paused")) {
+                    sfx.playDetent(0.76f,rawLbl.endsWith(": Off")?85:25);
+                } else {
+                    sfx.playSelectAtPan(0.76f);
+                }
+            } else if(sfx!=null && rawLbl!=null && (rawLbl.startsWith("✓ ") || rawLbl.startsWith("○ ")) && !"Sound profile".equals(title)) {
+                sfx.playSelectAtPan(0.76f);
+            }
             lastBladeSelection=position;
             int before=bladeGeneration;
             actions.get(position).run();
@@ -4493,12 +4713,14 @@ public final class MainActivity extends Activity {
     }
     private String onOff(boolean value){return value?"On":"Off";}
     private void launch(String pkg) {
+        if(sfx!=null) sfx.playSelect(views.get(pkg),screenWidth);
         Intent intent=catalog.launch(pkg);
         if(intent==null){toast("This app is no longer available");dirty=true;return;}
         try{startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));store.recent(pkg);}
         catch(Exception e){toast("This app could not be opened");}
     }
     private void openTitle(RecommendationRepository.Item item) {
+        if(sfx!=null) sfx.playSelect(getCurrentFocus(),screenWidth);
         Intent intent=item.intent();
         if(intent==null){toast("This title has no supported app link");return;}
         try{startActivity(intent);store.recent(item.source);}
@@ -4542,7 +4764,14 @@ public final class MainActivity extends Activity {
             button.setBackground(glassControlDrawable(button,has,16f,accent(),false,false));
             button.animate().scaleX(has?1.03f:1f).scaleY(has?1.03f:1f).setDuration(130).start();
         });
-        button.setOnClickListener(v->action.run());return button;
+        button.setOnClickListener(v->{
+            boolean auditionPad="Focus Tap".equals(label)||"Select Bloom".equals(label)||"Menu Glide".equals(label)||"Back Settle".equals(label);
+            if(sfx!=null && !auditionPad) {
+                if("Cancel".equals(label)) sfx.playBack();
+                else sfx.playSelect(button,screenWidth);
+            }
+            action.run();
+        });return button;
     }
     private GradientDrawable shape(int color,int stroke,int width) {
         GradientDrawable drawable=new GradientDrawable();drawable.setColor(color);drawable.setCornerRadius(px(22));
