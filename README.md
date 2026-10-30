@@ -10,10 +10,11 @@ A personal Android TV home screen with warm translucent controls and a quiet fir
 - Hold OK and choose Section to change an app's group. Appearance can turn the separate utilities section off.
 - Both Home and All Apps scroll as complete pages, including their header, app section and input/settings footer. Home's app and content rows scroll horizontally across the physical screen width.
 - Reaching the footer reveals the space below its controls. No fixed middle scrolling area remains.
+- On Home, vertical D-pad navigation moves focus between sections and positions the complete section, including recommendation headings and row padding. Returning to Home icons restores the clock and greeting at the top. Left/Right keeps the section vertically steady; a vertical press that cannot move focus does not pan the page.
 - Horizontal app and recommendation rows use the full screen width, so cards pass through the physical screen edge instead of an inset clipping boundary. Their scrolling content includes breathing room at the ends, and focus reveals extra room around the selected tile.
 - Hold OK on an app to add it to Home, move or replace it, remove its shortcut, rename it, choose artwork, manage recommendations or select a featured source.
 - Rounded banner tiles retain the simple focus lift. Plain icon tiles have their name inside. Banner names appear on focus by default.
-- Optional recent app shortcuts appear in a separate wrapping block above the bottom controls, without a heading or horizontal carousel. Their columns align with those controls. History records only apps launched through Luma Home and can be cleared.
+- Optional recent app shortcuts appear as rounded 16:9 app banners in one horizontally scrolling row above the bottom controls. They never wrap to a second row. There are no visible app-name captions, including on focus; names remain available to accessibility services. Recent banners share the app tiles' selected focus motion, glass, glow, zoom and parallax settings. Apps without banner artwork use a centered icon fallback. History records only apps launched through Luma Home and can be cleared.
 
 ## Appearance
 

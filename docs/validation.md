@@ -1,6 +1,31 @@
 # TCL preview validation
 
-Development preview: Luma Home 0.5.2, installed and checked on the connected TCL Android 11 TV on 19 October 2026. This records observed results, not a certification for other TVs.
+Development preview: Luma Home 0.5.9, installed and checked on the connected TCL Android 11 TV on 30 October 2026. This records observed results, not a certification for other TVs.
+
+## Focused Home section scrolling
+
+- Home's vertical scroll container now delegates D-pad Up/Down to focus navigation and consumes boundary presses instead of falling back to scrolling with stationary focus. Automatic child-rectangle scrolling is suppressed on Home; horizontal row scrolling and the All Apps scroll container retain their existing behavior.
+- Focus on a Home app restores scroll position zero, including the full clock, greeting, heading and icon row. Recommendation sections include their headings and row padding when positioned; Recent includes its complete panel. Sections are centered where the page's scroll range allows it, with the footer revealing the bottom padding. Content taller than the viewport aligns at its start.
+- Built and signature-verified the 0.5.9/code 22 debug preview and installed it on the connected TCL. Checked Home, two populated recommendation rows, Recent and the footer in both directions. Left/Right preserved the selected row's vertical bounds. Three extra Down presses on the footer retained both focus and position.
+- Local evidence, captured UI hierarchies and the previous installed APK/preferences are in `out/section-scroll-preview/`. This check uses the current TV settings and feeds; other screen sizes and an expanded featured hero were not separately exercised.
+
+## Single-row Recent and shared app focus
+
+- Recent now always uses one horizontal scrolling row. Fixed-size 16:9 cards remain in history order, including apps beyond the visible width; there is no wrapping or truncation of the saved history.
+- Recent reuses the app-tile rendering and focus implementation, with a separate rectangular spring stage for the row. The selected motion, spring speed, glass style, zoom, parallax and glow settings apply to its banners. Caption and fallback-icon names remain hidden; accessibility descriptions remain available. Recent tiles do not replace the Home tiles in the package-to-view focus registry.
+- Built, signature-verified and installed the refinement as the same 0.5.9/code 22 development preview. Existing local sound-policy changes were retained. No store release was generated.
+- Checked the TV's saved Liquid spring setting at 75% speed. Six recent apps shared one row; Right reached the last, initially off-screen banner. The last tile was fully visible at `[1451,859][1772,1040]`, leaving room for its enlarged artwork and focus glass. The end-of-row screenshot was visually inspected after correcting viewport clipping and vertical focus clearance.
+- D-pad checks passed between Home apps, Recent and the footer, as well as across the overflowing recent row. The UI hierarchy contained no visible recent captions. All saved preferences, default Home resolution and disabled-package states matched the pre-refinement snapshot.
+- Evidence and the previous installed APK/preferences are local in `out/recent-single-row-preview/`: `last-recent.png`, `recent-final.png`, captured hierarchies and `verification-result.json`. Classic/Crisp modes and banner-less fallbacks share the implementation but were not separately selected during this TV check.
+
+## Initial Recent banner layout (superseded by the single row above)
+
+- Recent shortcuts now use rounded 16:9 app banners with no separate visible app-name labels, including while focused. Names remain as accessibility descriptions. Custom artwork is respected; apps without banner artwork have a centered icon fallback.
+- Built the debug APK and passed signature verification, then installed and previewed it after the user's approval. The installed package remains version 0.5.9, code 22; this is a development update, not a store release.
+- Six recent apps were visible across two rows on the TV. Their columns remained aligned with the bottom controls. The UI hierarchy contained no text-label children in the recent cards, and the focused screenshot was visually inspected for complete artwork, rounded corners, focus outline, and absence of captions.
+- D-pad checks passed from the first recent row down through the partial second row to All Apps, back up through both recent rows, and right to the next banner. No recent app was opened during the check, so history order was retained.
+- Every saved preference matched the pre-update snapshot. Default Home resolution and disabled-package states also matched. The previous APK and preferences were backed up locally before installation.
+- Local evidence: `out/recent-banners-preview/`, including `recent-final.png`, `navigation-results.json`, and `verification-result.json`. The centered-icon fallback and every supported screen/column configuration were not separately exercised on the TV.
 
 ## App identity and initial Play release preparation
 
