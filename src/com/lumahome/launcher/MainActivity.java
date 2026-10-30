@@ -114,7 +114,12 @@ public final class MainActivity extends Activity {
     private String lastFocus="", moving="", imageTarget="", search="";
     private int screenWidth, screenHeight, contentHeight, serial;
     private float scale;
-    private final Typeface medium=Typeface.create("sans-serif-medium",Typeface.NORMAL);
+    private Typeface regular=Typeface.create("sans-serif",Typeface.NORMAL);
+    private Typeface medium=Typeface.create("sans-serif-medium",Typeface.NORMAL);
+    private View ambientBackground;
+    private android.graphics.drawable.BitmapDrawable ambientTexture;
+    private android.animation.ValueAnimator ambientAnimator;
+    private int ambientColor=0xFF604844;
 
     private final BroadcastReceiver packageChanges=new BroadcastReceiver() {
         @Override public void onReceive(Context context,Intent intent) { dirty=true; }
@@ -122,6 +127,10 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        if(Build.VERSION.SDK_INT>=26){
+            regular=getResources().getFont(getResources().getIdentifier("outfit_regular","font",getPackageName()));
+            medium=getResources().getFont(getResources().getIdentifier("outfit_medium","font",getPackageName()));
+        }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         store=new LauncherStore(this); catalog=new AppCatalog(this);
         images=new ImageLoader(this); recommendations=new RecommendationRepository(this);
@@ -154,9 +163,11 @@ public final class MainActivity extends Activity {
         if(focused)resetIdleTimer();
     }
     @Override protected void onPause() {
+        if(ambientAnimator!=null)ambientAnimator.cancel();
         stopSpringStages();stopHeroVideo();handler.removeCallbacks(heroRotation);handler.removeCallbacks(idleClockTrigger);super.onPause();
     }
     @Override protected void onDestroy() {
+        if(ambientAnimator!=null)ambientAnimator.cancel();
         destroyed=true; stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
         unregisterReceiver(packageChanges); images.close(); recommendations.close(); super.onDestroy();
     }
@@ -643,6 +654,8 @@ public final class MainActivity extends Activity {
         screenWidth=getResources().getDisplayMetrics().widthPixels;
         screenHeight=getResources().getDisplayMetrics().heightPixels;
         scale=Math.min(screenWidth/1920f,screenHeight/1080f);
+        if(ambientAnimator!=null){ambientAnimator.cancel();ambientAnimator=null;}
+        ambientBackground=null;ambientTexture=null;
         root=new FrameLayout(this); root.setBackgroundColor(0xFF0B101A);
         applyBackground();
         contentHeight=screenHeight;
@@ -668,6 +681,7 @@ public final class MainActivity extends Activity {
             case "ocean": colors=new int[]{0xFF102D40,0xFF07121F}; break;
             case "forest": colors=new int[]{0xFF17382E,0xFF080F16}; break;
             case "midnight": colors=new int[]{0xFF202C49,0xFF090D18}; break;
+            case "app_glow": colors=new int[]{0xFF050405,0xFF050405}; break;
             case "solid_black": colors=new int[]{0xFF000000,0xFF000000}; break;
             case "solid_slate": colors=new int[]{0xFF18202B,0xFF18202B}; break;
             default: colors=new int[]{0xFF33211D,0xFF140E16}; break;
@@ -705,10 +719,37 @@ public final class MainActivity extends Activity {
         } else {
             updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
         }
+        if("app_glow".equals(style)) {
+            ambientBackground=new View(this);
+            android.graphics.Bitmap mask=android.graphics.Bitmap.createBitmap(480,270,android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas=new android.graphics.Canvas(mask);
+            android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            paint.setShader(new android.graphics.RadialGradient(154,113,298,
+                    new int[]{0x70FFFFFF,0x30FFFFFF,0x00FFFFFF},new float[]{0f,.45f,1f},android.graphics.Shader.TileMode.CLAMP));
+            canvas.drawRect(0,0,480,270,paint);
+            ambientTexture=new android.graphics.drawable.BitmapDrawable(getResources(),mask);
+            ambientTexture.setGravity(Gravity.FILL);ambientTexture.setFilterBitmap(true);
+            ambientTexture.setTint(ambientColor);ambientBackground.setBackground(ambientTexture);
+            ambientBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            root.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
+        }
         View shade=new View(this);
         shade.setBackgroundColor(Color.argb(dimAlpha,0,0,0));
         root.addView(shade,new FrameLayout.LayoutParams(-1,-1));
     }
+    private boolean backgroundGlow(){return "app_glow".equals(store.value("background","ember"));}
+    private void updateAmbient(String pkg){
+        if(!backgroundGlow()||ambientTexture==null)return;
+        int color=extractAppColor(pkg)|0xFF000000;
+        if(ambientAnimator!=null)ambientAnimator.cancel();
+        if(color==ambientColor)return;
+        final android.graphics.drawable.BitmapDrawable texture=ambientTexture;
+        ambientAnimator=android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(),ambientColor,color);
+        ambientAnimator.setDuration(360);
+        ambientAnimator.addUpdateListener(a->{ambientColor=(Integer)a.getAnimatedValue();texture.setTint(ambientColor);});
+        ambientAnimator.start();
+    }
+    private boolean topControlsVisible(){return !store.flag("show_dock",true);}
     private void renderHome() {
         homeScroll=scroll();content.addView(homeScroll,new FrameLayout.LayoutParams(-1,-1));
         homePage=new LinearLayout(this);homePage.setOrientation(LinearLayout.VERTICAL);
@@ -719,7 +760,7 @@ public final class MainActivity extends Activity {
         homePage.addView(header,headerParams);
         updateHeader();
         FrameLayout heading=new FrameLayout(this);
-        TextView title=text("Home",34,foreground()); title.setTypeface(medium);
+        TextView title=text("Home",38,foreground()); title.setTypeface(medium);
         heading.addView(title,at(0,0,px(500),px(52)));
         TextView hint=text(moving.isEmpty()?"Hold OK to personalize · All Apps keeps everything accessible":"Move with arrows · OK or Back to finish",21,muted());
         hint.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);
@@ -787,7 +828,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(px(20),px(20));
         ip.rightMargin=px(10);
         pill.addView(icon,ip);
-        TextView tv=text(label,19,0xF2FFFFFF);
+        TextView tv=text(label,26,0xF2FFFFFF);
         tv.setTypeface(medium);
         tv.setSingleLine(true);
         pill.addView(tv);
@@ -799,7 +840,7 @@ public final class MainActivity extends Activity {
             if(has){lastFocus=key;if(!drawer&&homeScroll!=null)homeScroll.post(()->homeScroll.smoothScrollTo(0,0));}
         });
         pill.setOnClickListener(v->action.run());
-        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,px(46));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,px(64));
         if(parent.getChildCount()>0)lp.leftMargin=px(12);
         parent.addView(pill,lp);
         views.put(key,pill);
@@ -850,7 +891,7 @@ public final class MainActivity extends Activity {
         FrameLayout barHost=new FrameLayout(this);
         LinearLayout clock=new LinearLayout(this); clock.setOrientation(LinearLayout.VERTICAL);clock.setPadding(px(96),px(32),px(96),0);
         if(store.flag("show_greeting",true)) {
-            TextView greet=text(greetingText(),17,accent());
+            TextView greet=text(greetingText(),22,muted());
             greet.setTypeface(medium);greet.setLetterSpacing(0.14f);
             LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-2,-2);gp.bottomMargin=px(4);
             clock.addView(greet,gp);
@@ -863,7 +904,7 @@ public final class MainActivity extends Activity {
         time.setTypeface(medium); time.setIncludeFontPadding(false);
         clock.addView(date); clock.addView(time); barHost.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         topPillViews.clear();
-        if(store.flag("top_pills",true)) {
+        if(topControlsVisible()) {
             View pills=buildTopPillBar();
             FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
             pp.topMargin=px(36);pp.rightMargin=px(96);
@@ -1012,7 +1053,7 @@ public final class MainActivity extends Activity {
         FrameLayout top=new FrameLayout(this);
         LinearLayout clock=new LinearLayout(this);clock.setOrientation(LinearLayout.VERTICAL);
         if(store.flag("show_greeting",true)) {
-            TextView greet=text(greetingText(),17,accent());
+            TextView greet=text(greetingText(),22,muted());
             greet.setTypeface(medium);greet.setLetterSpacing(0.14f);
             LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-2,-2);gp.bottomMargin=px(4);
             clock.addView(greet,gp);
@@ -1021,7 +1062,7 @@ public final class MainActivity extends Activity {
         TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");time.setTextColor(foreground());time.setIncludeFontPadding(false);time.setTypeface(medium);time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
         clock.addView(date);clock.addView(time);top.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         topPillViews.clear();
-        if(store.flag("top_pills",true)) {
+        if(topControlsVisible()) {
             View pills=buildTopPillBar();
             FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
             top.addView(pills,pp);
@@ -1033,7 +1074,7 @@ public final class MainActivity extends Activity {
         drawerPage.addView(top,new LinearLayout.LayoutParams(-1,px(266)));
         EditText filter=new EditText(this); filter.setId(View.generateViewId()); filter.setSingleLine(true);
         searchBar=filter;
-        filter.setTextColor(foreground()); filter.setHintTextColor(muted()); filter.setHint("Search all apps");
+        filter.setTypeface(regular);filter.setTextColor(foreground()); filter.setHintTextColor(muted()); filter.setHint("Search all apps");
         filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
         filter.setPadding(px(24),0,px(24),0);
         filter.setBackground(glassControlDrawable(filter,false,22f,accent(),true,false));
@@ -1523,7 +1564,7 @@ public final class MainActivity extends Activity {
                 glowView.setLayoutParams(new FrameLayout.LayoutParams(glowW,glowH));
             }
             float cornerPx=oval?zoomedR:(px(22)*zoom);
-            boolean glowEnabled=store.flag("ambient_glow",true) && glowCol!=0;
+            boolean glowEnabled=store.flag("ambient_glow",true) && !backgroundGlow() && glowCol!=0;
 
             targetX=tx; targetY=ty;
             if(!shown || glassView.getAlpha()<0.08f) {
@@ -1791,7 +1832,7 @@ public final class MainActivity extends Activity {
                 else stage.onTileUnfocused(tile,iconSlot);
             } else {
                 if(stage!=null) stage.hideImmediate();
-                boolean showGlow=has&&store.flag("ambient_glow",true)&&glowColor!=0;
+                boolean showGlow=has&&store.flag("ambient_glow",true)&&!backgroundGlow()&&glowColor!=0;
                 if(showGlow) {
                     glow.setVisibility(View.VISIBLE);
                     glow.animate().alpha(1f).scaleX(1.15f).scaleY(1.15f).setDuration(180).start();
@@ -1801,6 +1842,7 @@ public final class MainActivity extends Activity {
                 }
             }
             if (has) {
+                updateAmbient(pkg);
                 lastFocus=pkg;
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile);}
             }
@@ -1976,7 +2018,7 @@ public final class MainActivity extends Activity {
             tile.setBackground(glassControlDrawable(tile,has && !useDockSpring,18f,accent(),false,true));
             if(iconView!=null) iconView.setImageDrawable(new LineIcon(symbol,has?accent():0xE8FFFFFF));
             text.setTextColor(has?foreground():0xECFFFFFF);
-            if(has) text.setTypeface(medium); else text.setTypeface(Typeface.DEFAULT);
+            if(has) text.setTypeface(medium); else text.setTypeface(regular);
             tile.animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f).setDuration(150).start();
             if(dockSpringLens!=null) {
                 if(has && useDockSpring) dockSpringLens.onItemFocused(tile);
@@ -2105,7 +2147,7 @@ public final class MainActivity extends Activity {
                 card.setOnFocusChangeListener((v,has)->{
                     focusRecommendationPicture(picture,has);
                     title.setTextColor(has?foreground():muted());
-                    if(has)revealHorizontalFocus(card);
+                    if(has){updateAmbient(pkg);revealHorizontalFocus(card);}
                 });
                 card.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
                     if(v.hasFocus()&&(left!=oldLeft||right!=oldRight)){focusRecommendationPicture(picture,true);revealHorizontalFocus(v);}
@@ -2345,7 +2387,7 @@ public final class MainActivity extends Activity {
     }
     private void appearanceMenu() {
         String bg=store.value("background","ember");
-        String bgLabel="photo".equals(bg)?"Custom photo":"sky".equals(bg)?"Dynamic sky":"solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":
+        String bgLabel="app_glow".equals(bg)?"App-color glow":"photo".equals(bg)?"Custom photo":"sky".equals(bg)?"Dynamic sky":"solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":
                 bg.substring(0,1).toUpperCase(Locale.ROOT)+bg.substring(1);
         int clockSize=store.number("clock_size",176);
         String clockLabel=clockSize==115?"Small":clockSize==138?"Medium":"Large";
@@ -2363,7 +2405,6 @@ public final class MainActivity extends Activity {
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
                 "Time-of-day greeting: "+onOff(store.flag("show_greeting",true)),
-                "Top quick-action pills: "+onOff(store.flag("top_pills",true)),
                 "Bottom dock bar: "+onOff(store.flag("show_dock",true)),
                 "Always show app names: "+onOff(store.flag("labels",false)),
                 "High contrast: "+onOff(store.flag("contrast")),
@@ -2388,15 +2429,9 @@ public final class MainActivity extends Activity {
                                 index->{store.setNumber("clock_size",new int[]{115,138,176}[index]);render();appearanceMenu();},this::appearanceMenu),
                         ()->{store.setFlag("show_greeting",!store.flag("show_greeting",true));render();appearanceMenu();},
                         ()->{
-                            boolean next=!store.flag("top_pills",true);
-                            store.setFlag("top_pills",next);
-                            if(!next && !store.flag("show_dock",true)) { store.setFlag("show_dock",true); toast("Bottom dock kept enabled so Settings stay accessible"); }
-                            render();appearanceMenu();
-                        },
-                        ()->{
                             boolean next=!store.flag("show_dock",true);
                             store.setFlag("show_dock",next);
-                            if(!next && !store.flag("top_pills",true)) { store.setFlag("top_pills",true); toast("Top pills enabled so Settings stay accessible"); }
+                            if(!next)toast("Quick actions move to the top");
                             render();appearanceMenu();
                         },
                         ()->{store.setFlag("labels",!store.flag("labels",false));render();appearanceMenu();},
@@ -2904,6 +2939,7 @@ public final class MainActivity extends Activity {
         boolean hasPhoto=!store.value("background_image","").isEmpty();
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         add(labels,actions,"§STYLE",null);
+        add(labels,actions,"App-color glow: "+("app_glow".equals(bg)?"Active":"Follows the selected app"),()->{store.set("background","app_glow");render();backgroundMenu();});
         add(labels,actions,"Dynamic sky: "+("sky".equals(bg)?"Active":"Time of day"),()->{
             store.set("background","sky");render();backgroundMenu();
         });
@@ -3464,7 +3500,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout leftCol=new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
-        TextView titleView=text(primary,20,selected?foreground():0xEAFFFFFF);
+        TextView titleView=text(primary,24,selected?foreground():0xEAFFFFFF);
         if(selected) titleView.setTypeface(medium);
         titleView.setMaxLines(2);
         titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -3642,11 +3678,11 @@ public final class MainActivity extends Activity {
         startSafely(view);
     }
     private TextView text(String value,int size,int color) {
-        TextView view=new TextView(this);view.setText(value);view.setTextColor(color);
+        TextView view=new TextView(this);view.setTypeface(regular);view.setText(value);view.setTextColor(color);
         view.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(size));return view;
     }
     private Button button(String label,Runnable action) {
-        Button button=new Button(this);button.setText(label);button.setAllCaps(false);button.setTextColor(foreground());
+        Button button=new Button(this);button.setTypeface(medium);button.setText(label);button.setAllCaps(false);button.setTextColor(foreground());
         button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(23));button.setPadding(px(12),0,px(12),0);
         button.setBackground(glassControlDrawable(button,false,16f,accent(),false,false));button.setId(View.generateViewId());
         button.setFocusableInTouchMode(true);

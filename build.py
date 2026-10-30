@@ -79,6 +79,7 @@ def main():
     for folder in (classes, generated, dex, legal):
         folder.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "LICENSE", legal / "LICENSE")
+    shutil.copyfile(ROOT / "FONT-LICENSE-OFL.txt", legal / "FONT-LICENSE-OFL.txt")
     apps_file = Path(os.environ.get("APPS", str(ROOT / "apps.txt")))
     apps = [line.strip() for line in apps_file.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if any(not all(c.isalnum() or c in "._" for c in pkg) for pkg in apps):
