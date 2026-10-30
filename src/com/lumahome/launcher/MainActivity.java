@@ -105,6 +105,8 @@ public final class MainActivity extends Activity {
     private SpringStage homeSpringStage, drawerSpringStage, previewSpringStage;
     private DockSpringLens dockSpringLens;
     private View dockBar, searchBar, activeBladeBox;
+    private PhoneDropServer phoneDrop;
+    private final Runnable wallpaperSlideshowTick=this::advanceWallpaperSlideshow;
     private android.graphics.Bitmap frostedBackdrop;
     private android.graphics.BitmapShader frostedShader;
     private String frostedBackdropKey="";
@@ -147,6 +149,7 @@ public final class MainActivity extends Activity {
         if (dirty || root==null) { refreshApps(); dirty=false; recommendations.clear(); render(); }
         else { recommendations.clear(); updateHeader(); updateRecommendationRows(); }
         resetIdleTimer();
+        resetWallpaperSlideshowTimer();
     }
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent); setIntent(intent); applyIntent(intent);
@@ -164,7 +167,8 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onPause() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
-        stopSpringStages();stopHeroVideo();handler.removeCallbacks(heroRotation);handler.removeCallbacks(idleClockTrigger);super.onPause();
+        stopPhoneDrop();
+        stopSpringStages();stopHeroVideo();handler.removeCallbacks(heroRotation);handler.removeCallbacks(idleClockTrigger);handler.removeCallbacks(wallpaperSlideshowTick);super.onPause();
     }
     @Override protected void onDestroy() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
@@ -765,7 +769,7 @@ public final class MainActivity extends Activity {
         TextView hint=text(moving.isEmpty()?"Hold OK to personalize · All Apps keeps everything accessible":"Move with arrows · OK or Back to finish",21,muted());
         hint.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);
         heading.addView(hint,at(px(480),px(5),innerWidth()-px(480),px(44)));
-        LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(10);
+        LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(42);
         homePage.addView(heading,headingParams);
         List<String> favorite=favorites();
         HorizontalScrollView appsScroll=new HorizontalScrollView(this);appsScroll.setHorizontalScrollBarEnabled(false);
@@ -779,14 +783,14 @@ public final class MainActivity extends Activity {
         for(int i=0;i<favorite.size();i++) {
             View tile=appTile(favorite.get(i),iconSize,iconSize,false);
             LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
-            if(i+1<favorite.size())tileParams.rightMargin=px(36);
+            if(i+1<favorite.size())tileParams.rightMargin=px(52);
             appsRow.addView(tile,tileParams);appViews.add(tile);navigationRow.add(tile);
         }
         homeSpringStage=new SpringStage(appsRow,true);
         appsScroll.addView(homeSpringStage.host);
         LinearLayout.LayoutParams appsParams=new LinearLayout.LayoutParams(screenWidth,-2);
         appsParams.leftMargin=-px(96);appsParams.rightMargin=-px(96);
-        appsParams.topMargin=px(32)-rowTopPad;appsParams.bottomMargin=px(26)-rowBotPad;
+        appsParams.topMargin=px(48)-rowTopPad;appsParams.bottomMargin=px(56)-rowBotPad;
         homePage.addView(appsScroll,appsParams);
         if (favorite.isEmpty()) {
             TextView empty=text("Your home, your choices.\nOpen All Apps and hold OK to add an app to Home.",28,muted());
@@ -795,7 +799,7 @@ public final class MainActivity extends Activity {
         contentRail=new LinearLayout(this); contentRail.setOrientation(LinearLayout.VERTICAL);
         contentRail.setClipChildren(false);contentRail.setClipToPadding(false);
         LinearLayout.LayoutParams railParams=new LinearLayout.LayoutParams(screenWidth,-2);
-        railParams.leftMargin=-px(96);railParams.rightMargin=-px(96);railParams.topMargin=px(12);
+        railParams.leftMargin=-px(96);railParams.rightMargin=-px(96);railParams.topMargin=px(24);
         homePage.addView(contentRail,railParams);
         root.post(this::updateRecommendationRows);
     }
@@ -884,30 +888,37 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@settings|Configure visible HDMI inputs",this::inputMenu);
         menu("TV Inputs",labels,actions,null);
     }
+    private LinearLayout clockBlock(){
+        LinearLayout block=new LinearLayout(this);block.setOrientation(LinearLayout.VERTICAL);
+        if(store.flag("show_greeting",true)){
+            TextView greeting=text(greetingText(),22,muted());greeting.setTypeface(medium);greeting.setLetterSpacing(.14f);
+            LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-2,-2);gp.bottomMargin=px(16);block.addView(greeting,gp);
+        }
+        LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.BOTTOM);row.setBaselineAligned(true);
+        TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");
+        time.setTypeface(medium);time.setTextColor(foreground());time.setIncludeFontPadding(false);
+        time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
+        row.addView(time,new LinearLayout.LayoutParams(-2,-2));
+        View separator=new View(this);separator.setBackgroundColor(0x55FFFFFF);
+        LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(px(1),px(52));sp.leftMargin=px(38);sp.rightMargin=px(32);sp.bottomMargin=px(32);row.addView(separator,sp);
+        TextClock date=new TextClock(this);date.setFormat12Hour("EEEE, d MMMM");date.setFormat24Hour("EEEE, d MMMM");
+        date.setTypeface(medium);date.setTextColor(foreground());date.setIncludeFontPadding(false);
+        date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));date.setMaxLines(2);
+        LinearLayout.LayoutParams dp=new LinearLayout.LayoutParams(0,-2,1f);row.addView(date,dp);
+        block.addView(row,new LinearLayout.LayoutParams(-1,-2));return block;
+    }
     private void updateHeader() {
         if (header==null || drawer) return;
         stopHeroVideo();handler.removeCallbacks(heroRotation);heroPanel=null;heroPrimary=null;
         header.removeAllViews();header.getLayoutParams().height=px(330);header.requestLayout();
         FrameLayout barHost=new FrameLayout(this);
-        LinearLayout clock=new LinearLayout(this); clock.setOrientation(LinearLayout.VERTICAL);clock.setPadding(px(96),px(32),px(96),0);
-        if(store.flag("show_greeting",true)) {
-            TextView greet=text(greetingText(),22,muted());
-            greet.setTypeface(medium);greet.setLetterSpacing(0.14f);
-            LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-2,-2);gp.bottomMargin=px(4);
-            clock.addView(greet,gp);
-        }
-        TextClock date=new TextClock(this); date.setFormat12Hour("EEEE, d MMMM"); date.setFormat24Hour("EEEE, d MMMM");
-        date.setTextColor(foreground());date.setTypeface(medium); date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(26));
-        TextClock time=new TextClock(this); time.setFormat12Hour("h:mm"); time.setFormat24Hour("H:mm");
-        int size=store.number("clock_size",176);
-        time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(size)); time.setTextColor(foreground());
-        time.setTypeface(medium); time.setIncludeFontPadding(false);
-        clock.addView(date); clock.addView(time); barHost.addView(clock,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout clock=clockBlock();clock.setPadding(px(96),px(32),px(96),0);
+        barHost.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         topPillViews.clear();
         if(topControlsVisible()) {
             View pills=buildTopPillBar();
             FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
-            pp.topMargin=px(36);pp.rightMargin=px(96);
+            pp.topMargin=px(250);pp.rightMargin=px(96);
             barHost.addView(pills,pp);
         }
         header.addView(barHost,new FrameLayout.LayoutParams(-1,-1)); clockPanel=barHost;
@@ -1051,27 +1062,18 @@ public final class MainActivity extends Activity {
         drawerPage.setPadding(px(48),px(92),px(48),px(96));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
         page.addView(drawerPage,new ScrollView.LayoutParams(-1,-2));
         FrameLayout top=new FrameLayout(this);
-        LinearLayout clock=new LinearLayout(this);clock.setOrientation(LinearLayout.VERTICAL);
-        if(store.flag("show_greeting",true)) {
-            TextView greet=text(greetingText(),22,muted());
-            greet.setTypeface(medium);greet.setLetterSpacing(0.14f);
-            LinearLayout.LayoutParams gp=new LinearLayout.LayoutParams(-2,-2);gp.bottomMargin=px(4);
-            clock.addView(greet,gp);
-        }
-        TextClock date=new TextClock(this);date.setFormat12Hour("EEEE, d MMMM");date.setFormat24Hour("EEEE, d MMMM");date.setTextColor(foreground());date.setTypeface(medium);date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
-        TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");time.setTextColor(foreground());time.setIncludeFontPadding(false);time.setTypeface(medium);time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
-        clock.addView(date);clock.addView(time);top.addView(clock,new FrameLayout.LayoutParams(-1,-1));
+        LinearLayout clock=clockBlock();top.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         topPillViews.clear();
         if(topControlsVisible()) {
             View pills=buildTopPillBar();
             FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
-            top.addView(pills,pp);
+            pp.topMargin=px(220);top.addView(pills,pp);
         } else {
             Button back=button("Back to Home",()->{ hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); });
             top.addView(back,at(drawerWidth()-px(330),0,px(330),px(66)));
             topPillViews.add(back);
         }
-        drawerPage.addView(top,new LinearLayout.LayoutParams(-1,px(266)));
+        drawerPage.addView(top,new LinearLayout.LayoutParams(-1,px(topControlsVisible()?310:266)));
         EditText filter=new EditText(this); filter.setId(View.generateViewId()); filter.setSingleLine(true);
         searchBar=filter;
         filter.setTypeface(regular);filter.setTextColor(foreground()); filter.setHintTextColor(muted()); filter.setHint("Search all apps");
@@ -1081,7 +1083,7 @@ public final class MainActivity extends Activity {
         filter.setOnFocusChangeListener((v,has)->filter.setBackground(glassControlDrawable(filter,has,22f,accent(),true,false)));
         filter.setText(search); filter.setSelectAllOnFocus(true);
         filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
-        LinearLayout.LayoutParams searchParams=new LinearLayout.LayoutParams(-1,px(64));searchParams.topMargin=px(16);searchParams.bottomMargin=px(36);
+        LinearLayout.LayoutParams searchParams=new LinearLayout.LayoutParams(-1,px(64));searchParams.topMargin=px(32);searchParams.bottomMargin=px(64);
         drawerPage.addView(filter,searchParams);
         FrameLayout grid=new FrameLayout(this);
         grid.setClipChildren(false);grid.setClipToPadding(false);
@@ -1107,7 +1109,7 @@ public final class MainActivity extends Activity {
         if(!regular.isEmpty())groups.addView(gridRows(regular,true),new LinearLayout.LayoutParams(-1,-2));
         if(!utilities.isEmpty()) {
             TextView label=text("TV utilities",26,muted());
-            LinearLayout.LayoutParams heading=new LinearLayout.LayoutParams(-1,px(46));heading.topMargin=regular.isEmpty()?0:px(18);
+            LinearLayout.LayoutParams heading=new LinearLayout.LayoutParams(-1,px(46));heading.topMargin=regular.isEmpty()?0:px(56);heading.bottomMargin=px(20);
             groups.addView(label,heading);groups.addView(gridRows(utilities,true),new LinearLayout.LayoutParams(-1,-2));
         }
         drawerSpringStage=new SpringStage(groups,false);
@@ -1120,7 +1122,7 @@ public final class MainActivity extends Activity {
         }
     }
     private LinearLayout gridRows(List<String> packages,boolean allApps) {
-        LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(12),0,px(14));
+        LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(24),0,px(28));
         int width=allApps?drawerWidth():innerWidth(), count=columns(), gap=px(36);
         int tileWidth=(width-gap*(count-1))/count, tileHeight=tileWidth*9/16;
         LinearLayout row=null;
@@ -1128,7 +1130,7 @@ public final class MainActivity extends Activity {
         for (int i=0;i<packages.size();i++) {
             if (i%count==0) {
                 row=new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);row.setClipChildren(false);row.setClipToPadding(false);
-                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,tileHeight+px(58)); lp.bottomMargin=px(21); rows.addView(row,lp);
+                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,tileHeight+px(58)); lp.bottomMargin=px(56); rows.addView(row,lp);
                 navigationRow=new ArrayList<>();appRows.add(navigationRow);
             }
             View tile=appTile(packages.get(i),tileWidth,tileHeight,allApps);
@@ -1994,7 +1996,7 @@ public final class MainActivity extends Activity {
         dock.setPadding(px(12),px(12),px(12),px(12));
         shell.addView(dock,new FrameLayout.LayoutParams(-1,-1));
 
-        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(28);place.bottomMargin=px(24);
+        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(64);place.bottomMargin=px(40);
         (drawer?drawerPage:homePage).addView(shell,place);
         List<TvInputInfo> inputs=hdmiInputs();
         addDock(dock,ALL,drawer?"Home":"All Apps",null,()->{ hideKeyboard(); drawer=!drawer; search=""; lastFocus=""; render(); });
@@ -2108,18 +2110,19 @@ public final class MainActivity extends Activity {
             LinearLayout section=new LinearLayout(this);section.setOrientation(LinearLayout.VERTICAL);
             section.setClipChildren(false);section.setClipToPadding(false);section.setVisibility(View.GONE);
             LinearLayout.LayoutParams sectionParams=new LinearLayout.LayoutParams(-1,-2);
-            sectionParams.topMargin=px(24);sectionParams.bottomMargin=px(48);
+            sectionParams.topMargin=px(56);sectionParams.bottomMargin=px(72);
             contentRail.addView(section,sectionParams);
             List<View> rowViews=new ArrayList<>();contentRows.add(rowViews);
             recommendations.load(pkg,feed->{
                 if(destroyed||drawer||current!=serial||section.getParent()!=contentRail)return;
                 if(!HomePolicy.recommendations(store.flag("recommendations_master"),store.recommendations(pkg),!feed.items.isEmpty()))return;
                 TextView label=text(name(pkg),34,foreground());label.setTypeface(medium);label.setPadding(px(96),0,px(96),0);
-                section.addView(label,new LinearLayout.LayoutParams(-1,px(52)));
+                LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(52));
+                labelParams.bottomMargin=px(16);section.addView(label,labelParams);
                 HorizontalScrollView scroll=new HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);
                 scroll.setClipChildren(false);scroll.setClipToPadding(false);scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setClipChildren(false);row.setClipToPadding(false);row.setPadding(px(32),px(8),px(32),px(8));
+                row.setClipChildren(false);row.setClipToPadding(false);row.setPadding(px(32),px(16),px(32),px(16));
             for (RecommendationRepository.Item item:feed.items) {
                 LinearLayout card=new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setId(View.generateViewId()); card.setFocusable(true); card.setClickable(true);
                 card.setFocusableInTouchMode(true);card.setClipChildren(false);card.setClipToPadding(false);
@@ -2156,7 +2159,7 @@ public final class MainActivity extends Activity {
                     if (key==KeyEvent.KEYCODE_BACK) { if(event.getAction()==KeyEvent.ACTION_UP){View source=views.get(pkg);if(source!=null)source.requestFocus();else if(focusedFavorite!=null)focusedFavorite.requestFocus();} return true; } return false;
                 });
                 LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(naturalWidth[0],px(artHeight+recommendationTitleHeight(size)));
-                if(rowViews.size()+1<feed.items.size())lp.rightMargin=px(24);
+                if(rowViews.size()+1<feed.items.size())lp.rightMargin=px(40);
                 row.addView(card,lp); rowViews.add(card);
             }
                 scroll.addView(row);section.addView(scroll);section.setVisibility(View.VISIBLE);wireNavigation();
@@ -2193,7 +2196,7 @@ public final class MainActivity extends Activity {
         if(recent.isEmpty())return;
         recentSection=new LinearLayout(this);recentSection.setOrientation(LinearLayout.VERTICAL);
         recentSection.setClipChildren(false);recentSection.setClipToPadding(false);
-        recentSection.setPadding(px(12),px(12),px(12),px(12));
+        recentSection.setPadding(px(12),px(20),px(12),px(20));
         recentSection.setBackground(glassPanelDrawable(recentSection,26f,false));
         int count=hdmiInputs().size()+2;
         LinearLayout row=null;List<View> rowViews=null;
@@ -2201,7 +2204,7 @@ public final class MainActivity extends Activity {
             if(i%count==0) {
                 row=new LinearLayout(this);rowViews=new ArrayList<>();contentRows.add(rowViews);
                 LinearLayout.LayoutParams rowParams=new LinearLayout.LayoutParams(-1,px(108));
-                if(i>0)rowParams.topMargin=px(12);
+                if(i>0)rowParams.topMargin=px(24);
                 recentSection.addView(row,rowParams);
             }
             String pkg=recent.get(i);
@@ -2226,7 +2229,7 @@ public final class MainActivity extends Activity {
                 empty.leftMargin=px(5);empty.rightMargin=px(5);row.addView(blank,empty);
             }
         }
-        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(48);
+        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(72);
         homePage.addView(recentSection,Math.max(0,homePage.getChildCount()-1),place);
     }
 
@@ -2345,6 +2348,7 @@ public final class MainActivity extends Activity {
         String recState=store.flag("recommendations_master")?recommendationSizeName(recommendationSize()):"Off";
         add(labels,actions,"§PERSONALIZE",null);
         add(labels,actions,"@palette|Appearance: "+themeName(),this::appearanceMenu);
+        add(labels,actions,"@wifi|Wallpapers & QR drop: "+backgroundSummary(),()->backgroundMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Glass & surfaces: "+glassSurfacesSummary(),()->glassSurfacesMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus glow: "+glowSummary(),()->focusGlowMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus motion: "+focusMotionSummary(),()->focusMotionMenu(this::settingsMenu));
@@ -2385,10 +2389,24 @@ public final class MainActivity extends Activity {
         }
         startSafely(new Intent(Settings.ACTION_SETTINGS));
     }
-    private void appearanceMenu() {
+    private String backgroundSummary() {
         String bg=store.value("background","ember");
-        String bgLabel="app_glow".equals(bg)?"App-color glow":"photo".equals(bg)?"Custom photo":"sky".equals(bg)?"Dynamic sky":"solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":
+        if("photo".equals(bg)) {
+            int slide=store.number("wallpaper_interval_min",0);
+            int saved=PhoneDropServer.listSavedFiles(this,store).size();
+            if(slide>0 && saved>=2) return "Slideshow · "+slideshowIntervalLabel(slide);
+            return saved>0?"Phone photo ("+saved+")":"Custom photo";
+        }
+        return "app_glow".equals(bg)?"App-color glow":"sky".equals(bg)?"Dynamic sky":"solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":
                 bg.substring(0,1).toUpperCase(Locale.ROOT)+bg.substring(1);
+    }
+    private String slideshowIntervalLabel(int min) {
+        if(min<=0) return "Off";
+        if(min>=60) return (min/60)+" hr";
+        return min+" min";
+    }
+    private void appearanceMenu() {
+        String bgLabel=backgroundSummary();
         int clockSize=store.number("clock_size",176);
         String clockLabel=clockSize==115?"Small":clockSize==138?"Medium":"Large";
         int idleMin=store.number("idle_clock_minutes",5);
@@ -2934,35 +2952,321 @@ public final class MainActivity extends Activity {
             store.setNumber("color_intensity",slider.getProgress());render();appearanceMenu();
         },this::appearanceMenu,slider);
     }
-    private void backgroundMenu() {
+    private void backgroundMenu() { backgroundMenu(this::appearanceMenu); }
+    private void backgroundMenu(Runnable back) {
         String bg=store.value("background","ember");
         boolean hasPhoto=!store.value("background_image","").isEmpty();
+        int savedCount=PhoneDropServer.listSavedFiles(this,store).size();
+        int slideMin=store.number("wallpaper_interval_min",0);
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
-        add(labels,actions,"§STYLE",null);
-        add(labels,actions,"App-color glow: "+("app_glow".equals(bg)?"Active":"Follows the selected app"),()->{store.set("background","app_glow");render();backgroundMenu();});
+        add(labels,actions,"§PHONE DROP (WI-FI QR)",null);
+        add(labels,actions,"@wifi|Send from phone: Scan QR",()->phoneDropPanel(()->backgroundMenu(back)));
+        add(labels,actions,"Phone gallery: "+(savedCount==0?"None saved":savedCount+" saved"),()->{
+            if(savedCount==0) phoneDropPanel(()->backgroundMenu(back));
+            else wallpaperGalleryMenu(()->backgroundMenu(back));
+        });
+        add(labels,actions,"Wallpaper slideshow: "+slideshowIntervalLabel(slideMin),()->wallpaperSlideshowMenu(()->backgroundMenu(back)));
+        add(labels,actions,"§BUILT-IN STYLES",null);
+        add(labels,actions,"App-color glow: "+("app_glow".equals(bg)?"Active":"Follows the selected app"),()->{store.set("background","app_glow");resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
         add(labels,actions,"Dynamic sky: "+("sky".equals(bg)?"Active":"Time of day"),()->{
-            store.set("background","sky");render();backgroundMenu();
+            store.set("background","sky");resetWallpaperSlideshowTimer();render();backgroundMenu(back);
         });
         add(labels,actions,"Gradient: "+("ember".equals(bg)||"midnight".equals(bg)||"ocean".equals(bg)||"forest".equals(bg)?bg.substring(0,1).toUpperCase(Locale.ROOT)+bg.substring(1):"Select"),
                 ()->choice("Gradient",new String[]{"Ember · Warm ambient glow","Midnight · Deep indigo","Ocean · Coastal blue","Forest · Pine green"},
                         Arrays.asList("ember","midnight","ocean","forest").indexOf(store.value("background","ember")),
-                        index->{store.set("background",new String[]{"ember","midnight","ocean","forest"}[index]);render();backgroundMenu();},this::backgroundMenu));
+                        index->{store.set("background",new String[]{"ember","midnight","ocean","forest"}[index]);resetWallpaperSlideshowTimer();render();backgroundMenu(back);},()->backgroundMenu(back)));
         add(labels,actions,"Solid color: "+("solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":"Select"),
                 ()->choice("Solid color",new String[]{"Pure black · OLED friendly","Deep slate"},
                         "solid_black".equals(store.value("background",""))?0:"solid_slate".equals(store.value("background",""))?1:-1,
-                        index->{store.set("background",index==0?"solid_black":"solid_slate");render();backgroundMenu();},this::backgroundMenu));
+                        index->{store.set("background",index==0?"solid_black":"solid_slate");resetWallpaperSlideshowTimer();render();backgroundMenu(back);},()->backgroundMenu(back)));
         if(hasPhoto) {
-            add(labels,actions,"Saved photo: "+("photo".equals(bg)?"Active":"Use photo"),()->{
-                store.set("background","photo");render();backgroundMenu();
+            add(labels,actions,"Photo wallpaper: "+("photo".equals(bg)?"Active":"Use photo"),()->{
+                store.set("background","photo");resetWallpaperSlideshowTimer();render();backgroundMenu(back);
             });
         }
-        add(labels,actions,hasPhoto?"Choose another photo":"Custom photo",()->pickImage("background_image"));
+        add(labels,actions,"Import from TV storage",()->pickImage("background_image"));
         add(labels,actions,"§ADJUST",null);
-        add(labels,actions,"Background dimming: "+store.number("dimming",0)+"%",this::dimmingDialog);
-        add(labels,actions,"Restore default background",()->{store.set("background","ember");store.setNumber("dimming",0);render();backgroundMenu();});
-        menu("Background",labels,actions,this::appearanceMenu);
+        add(labels,actions,"Background dimming: "+store.number("dimming",0)+"%",()->dimmingDialog(()->backgroundMenu(back)));
+        add(labels,actions,"Wallpaper tint: "+colorIntensity()+"%",this::colorIntensityDialog);
+        add(labels,actions,"Restore default background",()->{store.set("background","ember");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
+        menu("Background",labels,actions,back);
     }
-    private void dimmingDialog() {
+    private void stopPhoneDrop() {
+        if(phoneDrop!=null) {
+            phoneDrop.stop();
+            phoneDrop=null;
+        }
+    }
+    private void resetWallpaperSlideshowTimer() {
+        handler.removeCallbacks(wallpaperSlideshowTick);
+        if(destroyed || store==null) return;
+        int min=store.number("wallpaper_interval_min",0);
+        if(min>0 && "photo".equals(store.value("background","ember"))
+                && PhoneDropServer.listSavedFiles(this,store).size()>=2) {
+            handler.postDelayed(wallpaperSlideshowTick,min*60000L);
+        }
+    }
+    private void advanceWallpaperSlideshow() {
+        if(destroyed || store==null) return;
+        List<File> files=PhoneDropServer.listSavedFiles(this,store);
+        if(files.size()<2 || !"photo".equals(store.value("background","ember"))) return;
+        String cur=store.value("background_image","");
+        int idx=0;
+        for(int i=0;i<files.size();i++) {
+            if(files.get(i).toURI().toString().equals(cur)) { idx=(i+1)%files.size(); break; }
+        }
+        store.set("background_image",files.get(idx).toURI().toString());
+        render();
+        resetWallpaperSlideshowTimer();
+    }
+    private void wallpaperSlideshowMenu(Runnable back) {
+        int cur=store.number("wallpaper_interval_min",0);
+        int[] mins={0,5,15,30,60,360};
+        String[] opts={
+                "Off · Keep your chosen wallpaper fixed",
+                "Every 5 minutes · Lively photo rotation",
+                "Every 15 minutes · Balanced ambient cycle",
+                "Every 30 minutes · Gentle background shift",
+                "Every 1 hour · Subtle hourly refresh",
+                "Every 6 hours · Morning, afternoon & night"};
+        int sel=0;
+        for(int i=0;i<mins.length;i++) if(mins[i]==cur) { sel=i; break; }
+        choice("Wallpaper slideshow",opts,sel,idx->{
+            int picked=mins[idx];
+            store.setNumber("wallpaper_interval_min",picked);
+            List<File> files=PhoneDropServer.listSavedFiles(this,store);
+            if(picked>0 && !files.isEmpty()) {
+                store.set("background","photo");
+                if(store.value("background_image","").isEmpty()) {
+                    store.set("background_image",files.get(0).toURI().toString());
+                }
+            }
+            resetWallpaperSlideshowTimer();
+            render();
+            if(picked>0 && files.size()<2) toast("Send at least 2 phone wallpapers to start rotating");
+            back.run();
+        },back);
+    }
+    private void wallpaperGalleryMenu(Runnable back) {
+        List<File> files=PhoneDropServer.listSavedFiles(this,store);
+        if(files.isEmpty()) { phoneDropPanel(back); return; }
+        String activeBg=store.value("background","ember");
+        String activeUri="photo".equals(activeBg)?store.value("background_image",""):"";
+        List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
+        add(labels,actions,"§SAVED PHONE WALLPAPERS ("+files.size()+")",null);
+        for(int i=0;i<files.size();i++) {
+            final File f=files.get(i);
+            final String uri=f.toURI().toString();
+            boolean isAct=uri.equals(activeUri);
+            long kb=Math.max(1,f.length()/1024);
+            String title="Wallpaper "+(i+1)+" · "+(isAct?"Live on TV ("+kb+" KB)":kb+" KB");
+            add(labels,actions,(isAct?"✓ ":"○ ")+title,()->{
+                store.set("background_image",uri);
+                store.set("background","photo");
+                resetWallpaperSlideshowTimer();
+                render();
+                wallpaperGalleryMenu(back);
+            });
+        }
+        add(labels,actions,"§MANAGE COLLECTION",null);
+        add(labels,actions,"@wifi|Add more from phone (QR)",()->phoneDropPanel(()->wallpaperGalleryMenu(back)));
+        if(!activeUri.isEmpty()) {
+            add(labels,actions,"Delete active wallpaper",()->{
+                deleteWallpaperUri(activeUri);
+                if(PhoneDropServer.listSavedFiles(this,store).isEmpty()) back.run();
+                else wallpaperGalleryMenu(back);
+            });
+        }
+        add(labels,actions,"Clear all phone wallpapers",()->{
+            for(File f:PhoneDropServer.listSavedFiles(this,store)) {
+                try { f.delete(); } catch(Exception ignored) {}
+            }
+            store.list("wallpaper_gallery",new ArrayList<>());
+            if("photo".equals(store.value("background","ember"))) store.set("background","ember");
+            store.set("background_image","");
+            resetWallpaperSlideshowTimer();
+            render();
+            toast("Cleared saved phone wallpapers");
+            back.run();
+        });
+        menu("Phone gallery",labels,actions,back);
+    }
+    private void deleteWallpaperUri(String uri) {
+        if(uri==null || uri.isEmpty()) return;
+        try {
+            File f=new File(Uri.parse(uri).getPath());
+            String wpDir=PhoneDropServer.wallpapersDir(this).getCanonicalPath()+File.separator;
+            if(f.exists() && f.getCanonicalPath().startsWith(wpDir)) f.delete();
+        } catch(Exception ignored) {}
+        List<File> remaining=PhoneDropServer.listSavedFiles(this,store);
+        if(uri.equals(store.value("background_image",""))) {
+            if(!remaining.isEmpty()) {
+                store.set("background_image",remaining.get(0).toURI().toString());
+                store.set("background","photo");
+            } else {
+                store.set("background_image","");
+                if("photo".equals(store.value("background","ember"))) store.set("background","ember");
+            }
+        }
+        resetWallpaperSlideshowTimer();
+        render();
+    }
+    private void phoneDropPanel(Runnable back) {
+        stopPhoneDrop();
+        LinearLayout box=new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        // Live connection status pill
+        LinearLayout statusPill=new LinearLayout(this);
+        statusPill.setOrientation(LinearLayout.HORIZONTAL);
+        statusPill.setGravity(Gravity.CENTER_VERTICAL);
+        statusPill.setPadding(px(14),px(10),px(14),px(10));
+        statusPill.setBackground(shapeRadius(0x2238BDF8,0x447DD3FC,1,14));
+        View dot=new View(this);
+        dot.setBackground(shapeRadius(0xFF38BDF8,0,0,5));
+        LinearLayout.LayoutParams dp=new LinearLayout.LayoutParams(px(10),px(10));
+        dp.rightMargin=px(10);
+        statusPill.addView(dot,dp);
+        TextView statusTxt=text("Waiting for phone on same Wi-Fi…",17,0xFFE0F2FE);
+        statusTxt.setTypeface(medium);
+        statusPill.addView(statusTxt,new LinearLayout.LayoutParams(-1,-2));
+        box.addView(statusPill,new LinearLayout.LayoutParams(-1,-2));
+
+        // Live preview strip reference (updated on upload)
+        final ImageView[] thumbRef={null};
+        final TextView[] liveCaptionRef={null};
+
+        PhoneDropServer server=new PhoneDropServer(this,store,new PhoneDropServer.Listener() {
+            @Override public void onPhoneConnected() {
+                if(destroyed || phoneDrop==null) return;
+                statusPill.setBackground(shapeRadius(0x2410B981,0x5534D399,1,14));
+                dot.setBackground(shapeRadius(0xFF34D399,0,0,5));
+                statusTxt.setTextColor(0xFFA7F3D0);
+                statusTxt.setText("Phone connected · Choose photos!");
+            }
+            @Override public void onWallpaperReceived(String fileUri,int sessionCount) {
+                if(destroyed) return;
+                store.set("background_image",fileUri);
+                store.set("background","photo");
+                resetWallpaperSlideshowTimer();
+                render();
+                statusPill.setBackground(shapeRadius(0x2810B981,0x6634D399,1,14));
+                dot.setBackground(shapeRadius(0xFF34D399,0,0,5));
+                statusTxt.setTextColor(0xFFD1FAE5);
+                statusTxt.setText(sessionCount==1?"Live on TV · 1 wallpaper received":"Live on TV · "+sessionCount+" wallpapers received");
+                if(thumbRef[0]!=null) images.show(thumbRef[0],fileUri,px(220),px(124));
+                if(liveCaptionRef[0]!=null) {
+                    int total=PhoneDropServer.listSavedFiles(MainActivity.this,store).size();
+                    liveCaptionRef[0].setText("Applied live!\n"+total+" saved in TV gallery");
+                }
+            }
+            @Override public void onWallpaperSelected(String fileUri) {
+                if(destroyed) return;
+                store.set("background_image",fileUri);
+                store.set("background","photo");
+                resetWallpaperSlideshowTimer();
+                render();
+                if(thumbRef[0]!=null) images.show(thumbRef[0],fileUri,px(220),px(124));
+                if(liveCaptionRef[0]!=null) liveCaptionRef[0].setText("Switched from phone!");
+            }
+            @Override public void onWallpaperDeleted(String fileUri) {
+                if(destroyed) return;
+                deleteWallpaperUri(fileUri);
+                int total=PhoneDropServer.listSavedFiles(MainActivity.this,store).size();
+                if(liveCaptionRef[0]!=null) liveCaptionRef[0].setText(total+" saved in TV gallery");
+            }
+            @Override public void onSlideshowChanged(int minutes) {
+                if(destroyed) return;
+                store.setNumber("wallpaper_interval_min",minutes);
+                resetWallpaperSlideshowTimer();
+                if(liveCaptionRef[0]!=null) {
+                    liveCaptionRef[0].setText(minutes<=0?"Slideshow: Off":"Slideshow: Every "+slideshowIntervalLabel(minutes));
+                }
+            }
+        });
+
+        if(!server.start()) {
+            TextView err=text("Could not find an active Wi-Fi or Ethernet connection on this TV.\n\nConnect your TV to the same home network as your phone, then open Send from phone again.",19,0xEAFFFFFF);
+            err.setLineSpacing(px(4),1f);
+            LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);
+            ep.topMargin=px(16);
+            box.addView(err,ep);
+            showBladePanel("Phone Drop",box,"Wi-Fi settings",()->{
+                closeBlade();
+                openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS);
+            },back,null);
+            return;
+        }
+        phoneDrop=server;
+
+        // Crisp high-contrast QR stage
+        FrameLayout qrStage=new FrameLayout(this);
+        qrStage.setBackground(glassPanelDrawable(qrStage,20f,false));
+        qrStage.setPadding(px(16),px(16),px(16),px(16));
+        FrameLayout whiteCard=new FrameLayout(this);
+        whiteCard.setBackground(shapeRadius(0xFFFFFFFF,0,0,16));
+        whiteCard.setPadding(px(10),px(10),px(10),px(10));
+        ImageView qrImg=new ImageView(this);
+        qrImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        qrImg.setImageBitmap(QrCode.encodeBitmap(server.getUrl(),px(236),3,0xFF0B101A,0xFFFFFFFF));
+        whiteCard.addView(qrImg,new FrameLayout.LayoutParams(px(236),px(236),Gravity.CENTER));
+        qrStage.addView(whiteCard,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
+        LinearLayout.LayoutParams qp=new LinearLayout.LayoutParams(-1,-2);
+        qp.topMargin=px(14); qp.bottomMargin=px(14);
+        box.addView(qrStage,qp);
+
+        // Concise instructions + fallback URL
+        TextView steps=text("1. Point your phone camera at the QR code\n2. Pick photos from Camera Roll, Google Photos, or Drive — zero login!",17,0xEAFFFFFF);
+        steps.setLineSpacing(px(3),1f);
+        box.addView(steps,new LinearLayout.LayoutParams(-1,-2));
+
+        TextView urlPill=text(server.getUrl(),14,accent());
+        urlPill.setTypeface(medium);
+        urlPill.setPadding(px(12),px(8),px(12),px(8));
+        urlPill.setBackground(shapeRadius(0x16FFFFFF,0x24FFFFFF,1,10));
+        LinearLayout.LayoutParams up=new LinearLayout.LayoutParams(-1,-2);
+        up.topMargin=px(10);
+        box.addView(urlPill,up);
+
+        // Live thumbnail strip
+        LinearLayout liveRow=new LinearLayout(this);
+        liveRow.setOrientation(LinearLayout.HORIZONTAL);
+        liveRow.setGravity(Gravity.CENTER_VERTICAL);
+        liveRow.setPadding(px(10),px(10),px(12),px(10));
+        liveRow.setBackground(shapeRadius(0x14FFFFFF,0x22FFFFFF,1,14));
+        ImageView thumb=new ImageView(this);
+        thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        thumb.setClipToOutline(true);
+        thumb.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v,android.graphics.Outline o) { o.setRoundRect(0,0,v.getWidth(),v.getHeight(),px(9)); }
+        });
+        thumb.setBackground(shapeRadius(0xFF141C2B,0x28FFFFFF,1,9));
+        String curImg=store.value("background_image","");
+        if(!curImg.isEmpty()) images.show(thumb,curImg,px(160),px(90));
+        thumbRef[0]=thumb;
+        LinearLayout.LayoutParams tp=new LinearLayout.LayoutParams(px(116),px(66));
+        tp.rightMargin=px(12);
+        liveRow.addView(thumb,tp);
+
+        int existingCount=PhoneDropServer.listSavedFiles(this,store).size();
+        TextView liveCap=text(existingCount>0
+                ?"Watch behind this blade as photos apply live ("+existingCount+" saved)"
+                :"Private local Wi-Fi link closes as soon as you leave this screen",15,muted());
+        liveCap.setLineSpacing(px(2),1f);
+        liveCaptionRef[0]=liveCap;
+        liveRow.addView(liveCap,new LinearLayout.LayoutParams(0,-2,1f));
+
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+        lp.topMargin=px(12);
+        box.addView(liveRow,lp);
+
+        showBladePanel("Phone Drop",box,"Done",this::closeBlade,()->{
+            stopPhoneDrop();
+            if(back!=null) back.run();
+        },null);
+    }
+    private void dimmingDialog() { dimmingDialog(this::backgroundMenu); }
+    private void dimmingDialog(Runnable back) {
         LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
         TextView value=text("Dimming · "+store.number("dimming",0)+"%",22,foreground()); value.setTypeface(medium);
         box.addView(value);
@@ -2980,8 +3284,8 @@ public final class MainActivity extends Activity {
             public void onStopTrackingTouch(SeekBar bar){}
         });
         showBladePanel("Background dimming",box,"Save",()->{
-            store.setNumber("dimming",slider.getProgress());render();backgroundMenu();
-        },this::backgroundMenu,slider);
+            store.setNumber("dimming",slider.getProgress());render();back.run();
+        },back,slider);
     }
     private void recommendationMenu() {
         String access=Build.VERSION.SDK_INT<23||checkSelfPermission(TV_LISTINGS_PERMISSION)==PackageManager.PERMISSION_GRANTED
@@ -3248,7 +3552,12 @@ public final class MainActivity extends Activity {
                     String previous=store.value(target,"");
                     store.set(target,path);if(target.equals("background_image"))store.set("background","photo");
                     if(!previous.isEmpty()) {
-                        try{File old=new File(Uri.parse(previous).getPath());if(old.getCanonicalPath().startsWith(getFilesDir().getCanonicalPath()+File.separator))old.delete();}catch(Exception ignored){}
+                        try{
+                            File old=new File(Uri.parse(previous).getPath());
+                            String wpDir=PhoneDropServer.wallpapersDir(this).getCanonicalPath()+File.separator;
+                            if(old.getCanonicalPath().startsWith(getFilesDir().getCanonicalPath()+File.separator)
+                                    && !old.getCanonicalPath().startsWith(wpDir)) old.delete();
+                        }catch(Exception ignored){}
                     }
                     imageTarget="";render();toast("Image saved on this TV");
                 });
@@ -3365,6 +3674,7 @@ public final class MainActivity extends Activity {
     private void closeBlade() {
         overrideFrostPct=-1;
         activeBladeBox=null;
+        stopPhoneDrop();
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
         if (activeBlade!=null) {
             Dialog closing=activeBlade; activeBlade=null; bladeHost=null; bladeBack=null; lastBladeTitle="";
@@ -3389,16 +3699,17 @@ public final class MainActivity extends Activity {
         heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.setPadding(px(6),0,px(6),0);
         LinearLayout.LayoutParams headParams=new LinearLayout.LayoutParams(-1,-2);
-        headParams.bottomMargin=px(14);
+        headParams.topMargin=px(12);headParams.bottomMargin=px(24);
         box.addView(heading,headParams);
         View divider=new View(this);
         divider.setBackgroundColor(0x18FFFFFF);
         LinearLayout.LayoutParams divParams=new LinearLayout.LayoutParams(-1,Math.max(1,px(1)));
-        divParams.leftMargin=px(6); divParams.rightMargin=px(6); divParams.bottomMargin=px(10);
+        divParams.leftMargin=px(6); divParams.rightMargin=px(6); divParams.bottomMargin=px(20);
         box.addView(divider,divParams);
         return box;
     }
     private void presentBladeView(String title,View panel,Runnable back,View initialFocus,boolean animate) {
+        if(!"Phone Drop".equals(title)) stopPhoneDrop();
         bladeGeneration++;
         bladeBack=back;
         if (activeBlade==null || !activeBlade.isShowing() || bladeHost==null) {
@@ -3455,7 +3766,7 @@ public final class MainActivity extends Activity {
             TextView sec=text(text.substring(1),13,store.flag("contrast")?accent():muted());
             sec.setTypeface(medium);
             sec.setLetterSpacing(0.08f);
-            sec.setPadding(px(12),px(14),px(12),px(4));
+            sec.setPadding(px(12),px(28),px(12),px(12));
             return sec;
         }
         int[] icon=null;
@@ -3486,8 +3797,8 @@ public final class MainActivity extends Activity {
         LinearLayout row=new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(px(14),px(11),px(14),px(11));
-        row.setMinimumHeight(px(54));
+        row.setPadding(px(14),px(18),px(14),px(18));
+        row.setMinimumHeight(px(72));
         row.setBackground(glassControlDrawable(row,selected,13f,accent(),false,false));
 
         if(icon!=null) {
@@ -3616,7 +3927,7 @@ public final class MainActivity extends Activity {
             if(bladeGeneration==before)closeBlade();
         });
         footer.addView(save,new LinearLayout.LayoutParams(0,px(52),1f));
-        if(back!=null && onPositive!=null) {
+        if(back!=null && onPositive!=null && !"Done".equals(positiveLabel)) {
             Button cancel=button("Cancel",back);
             LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,px(52),1f);
             cp.leftMargin=px(10);
