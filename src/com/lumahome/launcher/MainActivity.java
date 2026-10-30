@@ -137,6 +137,10 @@ public final class MainActivity extends Activity {
     private float scale;
     private Typeface regular=Typeface.create("sans-serif",Typeface.NORMAL);
     private Typeface medium=Typeface.create("sans-serif-medium",Typeface.NORMAL);
+    private WeatherService weatherService;
+    private View glanceWidget;
+    private WeatherService.WeatherInfo latestWeather;
+    private TextView glanceIconView, glanceTempView, glanceCondView, glanceCityView;
     private View ambientBackground;
     private android.graphics.drawable.BitmapDrawable ambientTexture;
     private android.animation.ValueAnimator ambientAnimator;
@@ -154,7 +158,7 @@ public final class MainActivity extends Activity {
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         store=new LauncherStore(this); sfx=new UiSoundEngine(this,store); catalog=new AppCatalog(this);
-        images=new ImageLoader(this); recommendations=new RecommendationRepository(this);
+        images=new ImageLoader(this); recommendations=new RecommendationRepository(this); weatherService=new WeatherService();
         if (state!=null) { imageTarget=state.getString("imageTarget",""); drawer=state.getBoolean("drawer"); }
         refreshApps(); applyIntent(getIntent()); initializeFavorites(); syncSystemSoundMuting();
         IntentFilter filter=new IntentFilter();
@@ -193,7 +197,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
         if(blurredWallpaperBackdrop!=null) { blurredWallpaperBackdrop.recycle(); blurredWallpaperBackdrop=null; }
-        wallpaperImageView=null;
+        wallpaperImageView=null; if(weatherService!=null){weatherService.close();weatherService=null;}
         destroyed=true; stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
         unregisterReceiver(packageChanges); if(sfx!=null)sfx.close(); images.close(); recommendations.close(); super.onDestroy();
     }
@@ -1168,13 +1172,16 @@ public final class MainActivity extends Activity {
         }
         LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.BOTTOM);row.setBaselineAligned(true);
         TextClock time=new TextClock(this);time.setFormat12Hour("h:mm");time.setFormat24Hour("H:mm");
-        time.setTypeface(medium);time.setTextColor(foreground());time.setIncludeFontPadding(false);
+        time.setTypeface(clockTypeface());time.setTextColor(foreground());time.setIncludeFontPadding(false);
+        String cStyle=store.value("clock_style","modern");
+        if("thin".equals(cStyle)) time.setLetterSpacing(0.04f);
+        else if("mono".equals(cStyle)) time.setLetterSpacing(0.06f);
         time.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(store.number("clock_size",176)));
         row.addView(time,new LinearLayout.LayoutParams(-2,-2));
         View separator=new View(this);separator.setBackgroundColor(0x55FFFFFF);
         LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(px(1),px(52));sp.leftMargin=px(38);sp.rightMargin=px(32);sp.bottomMargin=px(32);row.addView(separator,sp);
         TextClock date=new TextClock(this);date.setFormat12Hour("EEEE, d MMMM");date.setFormat24Hour("EEEE, d MMMM");
-        date.setTypeface(medium);date.setTextColor(foreground());date.setIncludeFontPadding(false);
+        date.setTypeface("editorial".equals(cStyle)?Typeface.SERIF:medium);date.setTextColor(foreground());date.setIncludeFontPadding(false);
         date.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));date.setMaxLines(2);
         LinearLayout.LayoutParams dp=new LinearLayout.LayoutParams(0,-2,1f);row.addView(date,dp);
         block.addView(row,new LinearLayout.LayoutParams(-1,-2));return block;
@@ -1192,6 +1199,17 @@ public final class MainActivity extends Activity {
             FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
             pp.topMargin=px(250);pp.rightMargin=px(96);
             barHost.addView(pills,pp);
+        }
+        if(store.flag("show_glance",true)) {
+            glanceWidget=buildGlanceWidget();
+            FrameLayout.LayoutParams gp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
+            gp.topMargin=px(36);gp.rightMargin=px(96);
+            barHost.addView(glanceWidget,gp);
+            if(weatherService!=null) {
+                weatherService.fetch(store,false,this::updateGlanceWeather);
+            }
+        } else {
+            glanceWidget=null;
         }
         header.addView(barHost,new FrameLayout.LayoutParams(-1,-1)); clockPanel=barHost;
         String source=store.value("featured_source","");
@@ -2136,9 +2154,15 @@ public final class MainActivity extends Activity {
         final boolean[] held={false};
         tile.setOnKeyListener((v,code,event)->{
             boolean down=event.getAction()==KeyEvent.ACTION_DOWN;
-            if(down && code==KeyEvent.KEYCODE_DPAD_UP && !drawer && !recent && (heroPanel==null || heroPanel.getVisibility()!=View.VISIBLE) && !topPillViews.isEmpty()) {
-                topPillViews.get(0).requestFocus();
-                return true;
+            if(down && code==KeyEvent.KEYCODE_DPAD_UP && !drawer && !recent && (heroPanel==null || heroPanel.getVisibility()!=View.VISIBLE)) {
+                if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) {
+                    glanceWidget.requestFocus();
+                    return true;
+                }
+                if(!topPillViews.isEmpty()) {
+                    topPillViews.get(0).requestFocus();
+                    return true;
+                }
             }
             boolean ok=code==KeyEvent.KEYCODE_DPAD_CENTER||code==KeyEvent.KEYCODE_ENTER;
             if (!moving.isEmpty() && moving.equals(pkg)) {
@@ -2329,6 +2353,13 @@ public final class MainActivity extends Activity {
     private void wireNavigation() {
         List<List<View>> rows=new ArrayList<>();contentViews.clear();
         for(List<View> row:contentRows)if(!row.isEmpty()){rows.add(row);contentViews.addAll(row);}
+        if(glanceWidget!=null) {
+            glanceWidget.setNextFocusUpId(glanceWidget.getId());
+            if(!topPillViews.isEmpty()) glanceWidget.setNextFocusDownId(topPillViews.get(0).getId());
+            else if(focusedFavorite!=null) glanceWidget.setNextFocusDownId(focusedFavorite.getId());
+            else if(!appViews.isEmpty()) glanceWidget.setNextFocusDownId(appViews.get(0).getId());
+            else if(!dockViews.isEmpty()) glanceWidget.setNextFocusDownId(dockViews.get(0).getId());
+        }
         for(int i=0;i<topPillViews.size();i++) {
             View pill=topPillViews.get(i);
             pill.setNextFocusLeftId(topPillViews.get(Math.max(0,i-1)).getId());
@@ -2350,6 +2381,7 @@ public final class MainActivity extends Activity {
                 v.setNextFocusRightId(row.get(Math.min(row.size()-1,c+1)).getId());
                 if(r==0&&!drawer) {
                     if(heroPrimary!=null && heroPanel!=null && heroPanel.getVisibility()==View.VISIBLE) v.setNextFocusUpId(heroPrimary.getId());
+                    else if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) v.setNextFocusUpId(glanceWidget.getId());
                     else if(!topPillViews.isEmpty()) v.setNextFocusUpId(topPillViews.get(0).getId());
                 }
                 if(r>0) {
@@ -2854,7 +2886,10 @@ public final class MainActivity extends Activity {
                 "§LAYOUT & BARS",
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
+                "Clock style: "+clockStyleName(),
                 "Time-of-day greeting: "+onOff(store.flag("show_greeting",true)),
+                "Quick glance widget: "+onOff(store.flag("show_glance",true)),
+                "Weather & forecast: "+(latestWeather!=null?(latestWeather.tempDisplay()+" · "+latestWeather.city):"Open"),
                 "Bottom dock bar: "+onOff(store.flag("show_dock",true)),
                 "Always show app names: "+onOff(store.flag("labels",false)),
                 "High contrast: "+onOff(store.flag("contrast")),
@@ -2878,7 +2913,10 @@ public final class MainActivity extends Activity {
                                 columns()==8?0:columns()==6?1:2,index->{store.setNumber("columns",new int[]{8,6,4}[index]);render();appearanceMenu();},this::appearanceMenu),
                         ()->choice("Clock size",new String[]{"Small","Medium","Large"},clockSize==115?0:clockSize==138?1:2,
                                 index->{store.setNumber("clock_size",new int[]{115,138,176}[index]);render();appearanceMenu();},this::appearanceMenu),
+                        ()->clockStyleChoice(this::appearanceMenu),
                         ()->{store.setFlag("show_greeting",!store.flag("show_greeting",true));render();appearanceMenu();},
+                        ()->{store.setFlag("show_glance",!store.flag("show_glance",true));render();appearanceMenu();},
+                        this::glanceDetailsBlade,
                         ()->{
                             boolean next=!store.flag("show_dock",true);
                             store.setFlag("show_dock",next);
@@ -3757,6 +3795,172 @@ public final class MainActivity extends Activity {
     }
     private void dimmingDialog() { treatmentIntensityDialog(this::backgroundMenu); }
     private void dimmingDialog(Runnable back) { treatmentIntensityDialog(back); }
+    private Typeface clockTypeface() {
+        String style=store.value("clock_style","modern");
+        if("editorial".equals(style)) return Typeface.SERIF;
+        if("condensed".equals(style)) return Typeface.create("sans-serif-condensed",Typeface.BOLD);
+        if("mono".equals(style)) return Typeface.MONOSPACE;
+        if("thin".equals(style)) return Typeface.create("sans-serif-light",Typeface.NORMAL);
+        return medium!=null?medium:Typeface.create("sans-serif-medium",Typeface.NORMAL);
+    }
+    private String clockStyleName() {
+        String s=store.value("clock_style","modern");
+        return "editorial".equals(s)?"Editorial Serif":
+                "condensed".equals(s)?"Cinema Condensed":
+                "mono".equals(s)?"Retro Monospace":
+                "thin".equals(s)?"Ultra Light":"Modern Clean";
+    }
+    private View buildGlanceWidget() {
+        LinearLayout pill=new LinearLayout(this);
+        pill.setSoundEffectsEnabled(!muteSystem());
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setId(View.generateViewId());
+        pill.setFocusable(true);pill.setClickable(true);pill.setFocusableInTouchMode(true);
+        pill.setPadding(px(18),px(10),px(22),px(10));
+        pill.setBackground(glassControlDrawable(pill,false,-1f,accent(),true,false));
+
+        WeatherService.WeatherInfo info=latestWeather!=null?latestWeather:WeatherService.getCached(store);
+        latestWeather=info;
+
+        glanceIconView=new TextView(this);
+        glanceIconView.setText(info!=null?info.emoji:"🌤️");
+        glanceIconView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(24));
+        glanceIconView.setPadding(0,0,px(10),0);
+        pill.addView(glanceIconView);
+
+        glanceTempView=text(info!=null?info.tempDisplay():"--°",22,0xF2FFFFFF);
+        glanceTempView.setTypeface(medium);
+        pill.addView(glanceTempView);
+
+        glanceCondView=text(info!=null?("  ·  "+info.conditionText):"  ·  Weather",17,muted());
+        pill.addView(glanceCondView);
+
+        glanceCityView=text(info!=null&&!info.city.isEmpty()?("  ·  "+info.city):"",17,accent());
+        glanceCityView.setTypeface(medium);
+        pill.addView(glanceCityView);
+
+        pill.setOnFocusChangeListener((v,has)->{
+            pill.setBackground(glassControlDrawable(pill,has,-1f,accent(),true,false));
+            glanceTempView.setTextColor(has?accent():0xF2FFFFFF);
+            pill.animate().scaleX(has?1.05f:1f).scaleY(has?1.05f:1f).translationZ(has?px(12):0).setDuration(130).start();
+            if(has && sfx!=null) sfx.playFocus(v,screenWidth,1);
+        });
+
+        pill.setOnClickListener(v->{
+            if(sfx!=null) sfx.playSelect(v,screenWidth);
+            glanceDetailsBlade();
+        });
+        pill.setOnKeyListener((v,code,ev)->{
+            if(ev.getAction()==KeyEvent.ACTION_DOWN) {
+                if(code==KeyEvent.KEYCODE_DPAD_DOWN) {
+                    if(!topPillViews.isEmpty()) topPillViews.get(0).requestFocus();
+                    else if(focusedFavorite!=null) focusedFavorite.requestFocus();
+                    else if(!appViews.isEmpty()) appViews.get(0).requestFocus();
+                    else if(!dockViews.isEmpty()) dockViews.get(0).requestFocus();
+                    return true;
+                }
+                if(code==KeyEvent.KEYCODE_DPAD_CENTER||code==KeyEvent.KEYCODE_ENTER) {
+                    glanceDetailsBlade();
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        return pill;
+    }
+    private void updateGlanceWeather(WeatherService.WeatherInfo info) {
+        if(info==null) return;
+        latestWeather=info;
+        if(glanceIconView!=null) glanceIconView.setText(info.emoji);
+        if(glanceTempView!=null) glanceTempView.setText(info.tempDisplay());
+        if(glanceCondView!=null) glanceCondView.setText("  ·  "+info.conditionText);
+        if(glanceCityView!=null) glanceCityView.setText(!info.city.isEmpty()?("  ·  "+info.city):"");
+    }
+    private void glanceDetailsBlade() {
+        WeatherService.WeatherInfo info=latestWeather!=null?latestWeather:WeatherService.getCached(store);
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+
+        String loc=info!=null&&!info.city.isEmpty()?info.city:"Auto-detected location";
+        String curWeather=info!=null?(info.emoji+" "+info.tempDisplay()+" · "+info.conditionText):"Loading weather...";
+        String range=info!=null?(info.rangeDisplay()+" · Wind "+Math.round(info.windSpeed)+" km/h"):"Connecting to Open-Meteo";
+
+        add(labels,actions,"§LIVE WEATHER",null);
+        add(labels,actions,"@display|"+loc+" · "+curWeather,()->weatherLocationDialog(this::glanceDetailsBlade));
+        add(labels,actions,range,null);
+
+        if(info!=null && info.forecast!=null && !info.forecast.isEmpty()) {
+            add(labels,actions,"§5-DAY FORECAST",null);
+            for(WeatherService.ForecastDay d:info.forecast) {
+                add(labels,actions,d.dayName+" · "+d.emoji+" "+Math.round(d.maxTemp)+"° / "+Math.round(d.minTemp)+"° · "+d.conditionText,null);
+            }
+        }
+
+        add(labels,actions,"§CONTROLS & STYLES",null);
+        String unit="f".equalsIgnoreCase(store.value("temp_unit","c"))?"Fahrenheit (°F)":"Celsius (°C)";
+        add(labels,actions,"Temperature unit: "+unit,()->{
+            boolean isC=!"f".equalsIgnoreCase(store.value("temp_unit","c"));
+            store.set("temp_unit",isC?"f":"c");
+            if(weatherService!=null) weatherService.fetch(store,true,this::updateGlanceWeather);
+            render();
+            glanceDetailsBlade();
+        });
+        add(labels,actions,"Clock style: "+clockStyleName(),()->clockStyleChoice(this::glanceDetailsBlade));
+        add(labels,actions,"Location: "+(store.value("weather_custom_city","").isEmpty()?"Auto (IP detection)":store.value("weather_custom_city","")),()->weatherLocationDialog(this::glanceDetailsBlade));
+        add(labels,actions,"Refresh weather now",()->{
+            toast("Refreshing weather...");
+            if(weatherService!=null) {
+                weatherService.fetch(store,true,i->{
+                    updateGlanceWeather(i);
+                    glanceDetailsBlade();
+                });
+            }
+        });
+
+        menu("Quick Glance",labels,actions,this::closeBlade);
+    }
+    private void clockStyleChoice(Runnable back) {
+        String[] keys={"modern","editorial","condensed","mono","thin"};
+        String[] titles={
+                "Modern Clean · Contemporary geometric (Outfit)",
+                "Editorial Serif · Luxury magazine typography",
+                "Cinema Condensed · Tall cinematic architectural",
+                "Retro Monospace · Digital timepiece terminal aesthetic",
+                "Ultra Light · Airy Scandinavian minimalism"
+        };
+        int current=0;
+        String curKey=store.value("clock_style","modern");
+        for(int i=0;i<keys.length;i++) if(keys[i].equals(curKey)) { current=i; break; }
+        choice("Clock style",titles,current,idx->{
+            store.set("clock_style",keys[idx]);
+            render();
+            back.run();
+        },back);
+    }
+    private void weatherLocationDialog(Runnable back) {
+        LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
+        TextView sub=text("Enter a city name (e.g. London, Tokyo, Nairobi) or leave empty for auto-detect:",18,muted());
+        LinearLayout.LayoutParams subParams=new LinearLayout.LayoutParams(-1,-2); subParams.bottomMargin=px(16);
+        box.addView(sub,subParams);
+        EditText edit=new EditText(this);
+        edit.setText(store.value("weather_custom_city",""));
+        edit.setHint("e.g. London, New York, Tokyo");
+        edit.setSingleLine(true);
+        edit.setTextColor(foreground()); edit.setHintTextColor(muted());
+        edit.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(22));
+        edit.setPadding(px(18),px(14),px(18),px(14));
+        edit.setBackground(shapeRadius(themed(0x1AFFFFFF,0xBB182435),accent(),2,12));
+        box.addView(edit,new LinearLayout.LayoutParams(-1,px(60)));
+        showBladePanel("Weather Location",box,"Save",()->{
+            String val=edit.getText().toString().trim();
+            store.set("weather_custom_city",val);
+            if(weatherService!=null) weatherService.fetch(store,true,this::updateGlanceWeather);
+            render();
+            back.run();
+        },back,edit);
+    }
     private void recommendationMenu() {
         String access=Build.VERSION.SDK_INT<23||checkSelfPermission(TV_LISTINGS_PERMISSION)==PackageManager.PERMISSION_GRANTED
                 ?"TV listings: Allowed":"TV listings: Request access";
