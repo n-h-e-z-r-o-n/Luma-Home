@@ -103,6 +103,12 @@ public final class MainActivity extends Activity {
     private String lastBladeTitle="";
     private int lastBladeSelection=0, bladeGeneration=0;
     private SpringStage homeSpringStage, drawerSpringStage, previewSpringStage;
+    private DockSpringLens dockSpringLens;
+    private View dockBar, searchBar, activeBladeBox;
+    private android.graphics.Bitmap frostedBackdrop;
+    private android.graphics.BitmapShader frostedShader;
+    private String frostedBackdropKey="";
+    private int overrideFrostPct=-1;
     private final OvershootInterpolator liquidOvershoot=new OvershootInterpolator(0.75f);
     private final DecelerateInterpolator crispDecel=new DecelerateInterpolator(1.6f);
     private String lastFocus="", moving="", imageTarget="", search="";
@@ -296,12 +302,339 @@ public final class MainActivity extends Activity {
     private void stopSpringStages() {
         if(homeSpringStage!=null) homeSpringStage.stop();
         if(drawerSpringStage!=null) drawerSpringStage.stop();
+        if(dockSpringLens!=null) dockSpringLens.stop();
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
+    }
+
+    private String uiSurfaceStyle() { return store.value("ui_surface_style","glass"); }
+    private String uiSurfaceStyleName() {
+        String st=uiSurfaceStyle();
+        return "matte".equals(st)?"Matte":"solid".equals(st)?"Solid dark":"Liquid glass";
+    }
+    private boolean glassRefractionEnabled() { return store.flag("glass_refraction",true); }
+    private int glassFrostDepth() { return Math.max(25,Math.min(92,store.number("glass_frost",64))); }
+    private String glassFrostName(int v) { return v<45?"Crystal":v<=72?"Balanced":"Smoked"; }
+    private int glassSheenMode() { return Math.max(0,Math.min(2,store.number("glass_sheen",1))); }
+    private String glassSheenName() { int m=glassSheenMode(); return m==0?"Subtle":m==2?"Bright":"Balanced"; }
+    private float sheenMultiplier() { int m=glassSheenMode(); return m==0?0.55f:m==2?1.48f:1.0f; }
+    private String glassSurfacesSummary() {
+        if("solid".equals(uiSurfaceStyle())) return "Solid dark";
+        return uiSurfaceStyleName()+" · "+glassFrostDepth()+"%";
+    }
+
+    private static void blurBitmapInPlace(android.graphics.Bitmap bmp,int radius) {
+        int w=bmp.getWidth(), h=bmp.getHeight();
+        if(w<=2||h<=2||radius<1) return;
+        int[] src=new int[w*h], tmp=new int[w*h];
+        bmp.getPixels(src,0,w,0,0,w,h);
+        int div=radius*2+1;
+        for(int pass=0;pass<2;pass++) {
+            for(int y=0;y<h;y++) {
+                int row=y*w, rSum=0, gSum=0, bSum=0;
+                for(int i=-radius;i<=radius;i++) {
+                    int c=src[row+Math.max(0,Math.min(w-1,i))];
+                    rSum+=(c>>16)&0xFF; gSum+=(c>>8)&0xFF; bSum+=c&0xFF;
+                }
+                for(int x=0;x<w;x++) {
+                    tmp[row+x]=0xFF000000|((rSum/div)<<16)|((gSum/div)<<8)|(bSum/div);
+                    int cOut=src[row+Math.max(0,x-radius)];
+                    int cIn=src[row+Math.min(w-1,x+radius+1)];
+                    rSum+=((cIn>>16)&0xFF)-((cOut>>16)&0xFF);
+                    gSum+=((cIn>>8)&0xFF)-((cOut>>8)&0xFF);
+                    bSum+=(cIn&0xFF)-(cOut&0xFF);
+                }
+            }
+            for(int x=0;x<w;x++) {
+                int rSum=0, gSum=0, bSum=0;
+                for(int i=-radius;i<=radius;i++) {
+                    int c=tmp[Math.max(0,Math.min(h-1,i))*w+x];
+                    rSum+=(c>>16)&0xFF; gSum+=(c>>8)&0xFF; bSum+=c&0xFF;
+                }
+                for(int y=0;y<h;y++) {
+                    src[y*w+x]=0xFF000000|((rSum/div)<<16)|((gSum/div)<<8)|(bSum/div);
+                    int cOut=tmp[Math.max(0,y-radius)*w+x];
+                    int cIn=tmp[Math.min(h-1,y+radius+1)*w+x];
+                    rSum+=((cIn>>16)&0xFF)-((cOut>>16)&0xFF);
+                    gSum+=((cIn>>8)&0xFF)-((cOut>>8)&0xFF);
+                    bSum+=(cIn&0xFF)-(cOut&0xFF);
+                }
+            }
+        }
+        bmp.setPixels(src,0,w,0,0,w,h);
+    }
+
+    private void updateFrostedFromDrawable(Drawable bg,int dimAlpha,String key) {
+        if(bg==null || (key.equals(frostedBackdropKey) && frostedShader!=null)) return;
+        try {
+            int bw=240, bh=135;
+            if(frostedBackdrop==null || frostedBackdrop.getWidth()!=bw || frostedBackdrop.getHeight()!=bh) {
+                frostedBackdrop=android.graphics.Bitmap.createBitmap(bw,bh,android.graphics.Bitmap.Config.ARGB_8888);
+            }
+            android.graphics.Canvas cv=new android.graphics.Canvas(frostedBackdrop);
+            cv.drawColor(0xFF0B101A);
+            android.graphics.Rect saved=new android.graphics.Rect(bg.getBounds());
+            try { bg.setBounds(0,0,bw,bh); bg.draw(cv); } finally { bg.setBounds(saved); }
+            if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+            blurBitmapInPlace(frostedBackdrop,6);
+            frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
+                    android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+            frostedBackdropKey=key;
+        } catch(Exception|OutOfMemoryError ignored) {}
+    }
+
+    private void updateFrostedFromPhoto(android.graphics.Bitmap photo,int dimAlpha,String key) {
+        if(photo==null || (key.equals(frostedBackdropKey) && frostedShader!=null)) return;
+        try {
+            int bw=240, bh=135;
+            if(frostedBackdrop==null || frostedBackdrop.getWidth()!=bw || frostedBackdrop.getHeight()!=bh) {
+                frostedBackdrop=android.graphics.Bitmap.createBitmap(bw,bh,android.graphics.Bitmap.Config.ARGB_8888);
+            }
+            android.graphics.Canvas cv=new android.graphics.Canvas(frostedBackdrop);
+            cv.drawColor(0xFF0B101A);
+            int pw=Math.max(1,photo.getWidth()), ph=Math.max(1,photo.getHeight());
+            float scale=Math.max((float)bw/pw,(float)bh/ph);
+            float dw=pw*scale, dh=ph*scale;
+            android.graphics.RectF dst=new android.graphics.RectF((bw-dw)/2f,(bh-dh)/2f,(bw+dw)/2f,(bh+dh)/2f);
+            android.graphics.Paint bp=new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            cv.drawBitmap(photo,null,dst,bp);
+            if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+            blurBitmapInPlace(frostedBackdrop,6);
+            frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
+                    android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+            frostedBackdropKey=key;
+            refreshGlassSurfaces();
+        } catch(Exception|OutOfMemoryError ignored) {}
+    }
+
+    private void refreshGlassSurfaces() {
+        if(dockBar!=null) dockBar.invalidate();
+        if(recentSection!=null) recentSection.invalidate();
+        if(searchBar!=null) searchBar.invalidate();
+        for(View pill:topPillViews) pill.invalidate();
+        if(activeBladeBox!=null) activeBladeBox.invalidate();
+    }
+
+    private Drawable glassPanelDrawable(final View anchor,final float cornerDp,final boolean isBlade) {
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+            private final android.graphics.Matrix mat=new android.graphics.Matrix();
+            private final int[] loc=new int[2];
+
+            @Override public void draw(android.graphics.Canvas c) {
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
+                float rad=isBlade?0f:px(cornerDp);
+                String style=uiSurfaceStyle();
+                boolean isGlass="glass".equals(style);
+                boolean isSolid="solid".equals(style);
+                int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
+
+                if(!isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
+                        && anchor!=null && screenWidth>0 && screenHeight>0) {
+                    anchor.getLocationOnScreen(loc);
+                    mat.reset();
+                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
+                    mat.postTranslate(-loc[0],-loc[1]);
+                    frostedShader.setLocalMatrix(mat);
+                    p.setStyle(android.graphics.Paint.Style.FILL);
+                    p.setShader(frostedShader);
+                    if(isBlade) c.drawRect(r,p); else c.drawRoundRect(r,rad,rad,p);
+                    p.setShader(null);
+                }
+
+                int baseRgb=themed(0xFF171114,0xFF0E1725)&0x00FFFFFF;
+                int topAlpha, botAlpha;
+                if(isSolid) {
+                    topAlpha=248; botAlpha=252;
+                } else {
+                    int eff=isBlade?Math.min(94,Math.max(48,frost+12)):frost;
+                    topAlpha=Math.min(242,Math.round(eff*2.18f));
+                    botAlpha=Math.min(248,Math.round(eff*2.44f));
+                }
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                        (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));
+                if(isBlade) c.drawRect(r,p); else c.drawRoundRect(r,rad,rad,p);
+                p.setShader(null);
+
+                float sh=sheenMultiplier();
+                if(isGlass) {
+                    if(isBlade) {
+                        float gleamH=Math.min(r.height(),px(280));
+                        c.save();
+                        c.clipRect(r.left,r.top,r.right,r.top+gleamH);
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+gleamH,
+                                Color.argb(Math.min(76,Math.round(28*sh)),255,255,255),0x00FFFFFF,
+                                android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRect(r,p);
+                        c.restore();
+                    } else {
+                        c.save();
+                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.44f);
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.44f,
+                                Color.argb(Math.min(115,Math.round(44*sh)),255,255,255),0x00FFFFFF,
+                                android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRoundRect(r,rad,rad,p);
+                        c.restore();
+                    }
+                    p.setShader(null);
+                }
+
+                if(isBlade) {
+                    float sw=Math.max(1f,px(1.6f));
+                    p.setStyle(android.graphics.Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    if(store.flag("contrast")) {
+                        p.setColor(accent());
+                    } else if(isGlass) {
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                                new int[]{Color.argb(Math.min(200,Math.round(112*sh)),255,255,255),0x28FFFFFF,0x44FFFFFF},
+                                new float[]{0f,0.5f,1f},android.graphics.Shader.TileMode.CLAMP));
+                    } else {
+                        p.setColor(themed(0x28FFFFFF,0x44607D9E));
+                    }
+                    c.drawLine(r.left+sw/2f,r.top,r.left+sw/2f,r.bottom,p);
+                    p.setShader(null);
+                } else {
+                    float sw=Math.max(1f,px(store.flag("contrast")?2f:1.35f));
+                    p.setStyle(android.graphics.Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    if(store.flag("contrast")) {
+                        p.setColor(accent());
+                    } else if(isGlass) {
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                                new int[]{Color.argb(Math.min(200,Math.round(98*sh)),255,255,255),0x1EFFFFFF,0x36FFFFFF},
+                                new float[]{0f,0.55f,1f},android.graphics.Shader.TileMode.CLAMP));
+                    } else {
+                        p.setColor(themed(0x24FFFFFF,0x5547556D));
+                    }
+                    float inset=sw/2f;
+                    r.inset(inset,inset);
+                    c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+                    p.setShader(null);
+                }
+            }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
+    }
+
+    private Drawable glassControlDrawable(final View anchor,final boolean focused,final float cornerDp,
+            final int tintCol,final boolean refractBackdrop,final boolean transparentWhenIdle) {
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+            private final android.graphics.Matrix mat=new android.graphics.Matrix();
+            private final int[] loc=new int[2];
+
+            @Override public void draw(android.graphics.Canvas c) {
+                if(!focused && transparentWhenIdle) return;
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
+                float rad=cornerDp<0?r.height()/2f:px(cornerDp);
+                String style=uiSurfaceStyle();
+                boolean isGlass="glass".equals(style);
+                boolean isSolid="solid".equals(style);
+                float sh=sheenMultiplier();
+
+                if(refractBackdrop && !isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
+                        && anchor!=null && screenWidth>0 && screenHeight>0) {
+                    anchor.getLocationOnScreen(loc);
+                    mat.reset();
+                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
+                    mat.postTranslate(-loc[0],-loc[1]);
+                    frostedShader.setLocalMatrix(mat);
+                    p.setStyle(android.graphics.Paint.Style.FILL);
+                    p.setShader(frostedShader);
+                    c.drawRoundRect(r,rad,rad,p);
+                    p.setShader(null);
+                }
+
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                if(focused) {
+                    if(isGlass) {
+                        int effTint=tintCol!=0?tintCol:accent();
+                        int botTint=(effTint&0x00FFFFFF)|0x2A000000;
+                        int topWhite=Color.argb(Math.min(132,Math.round(62*sh)),255,255,255);
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                                topWhite,botTint,android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRoundRect(r,rad,rad,p);
+                        p.setShader(null);
+
+                        c.save();
+                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.45f);
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.45f,
+                                Color.argb(Math.min(148,Math.round(74*sh)),255,255,255),0x00FFFFFF,
+                                android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRoundRect(r,rad,rad,p);
+                        c.restore();
+                        p.setShader(null);
+                    } else {
+                        p.setColor(themed(0x38FFFFFF,0xFF2B4360));
+                        c.drawRoundRect(r,rad,rad,p);
+                    }
+                } else {
+                    if(refractBackdrop) {
+                        int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
+                        int baseRgb=themed(0xFF171114,0xFF0E1725)&0x00FFFFFF;
+                        int a=isSolid?244:Math.min(220,Math.round(frost*1.9f));
+                        p.setColor((a<<24)|baseRgb);
+                        c.drawRoundRect(r,rad,rad,p);
+                    } else {
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                                isGlass?0x12FFFFFF:0x0AFFFFFF,0x05FFFFFF,android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRoundRect(r,rad,rad,p);
+                        p.setShader(null);
+                    }
+                    if(isGlass) {
+                        c.save();
+                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.42f);
+                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.42f,
+                                Color.argb(Math.min(64,Math.round(22*sh)),255,255,255),0x00FFFFFF,
+                                android.graphics.Shader.TileMode.CLAMP));
+                        c.drawRoundRect(r,rad,rad,p);
+                        c.restore();
+                        p.setShader(null);
+                    }
+                }
+
+                float sw=Math.max(1f,px(focused?(store.flag("contrast")?2.8f:2.0f):1.1f));
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(sw);
+                if(focused) {
+                    if(store.flag("contrast") || !isGlass) {
+                        p.setColor(accent());
+                    } else {
+                        int tc=tintCol!=0?tintCol:accent();
+                        int rr=(((tc>>16)&0xFF)+510)/3;
+                        int gg=(((tc>>8)&0xFF)+510)/3;
+                        int bb=((tc&0xFF)+510)/3;
+                        p.setColor(0xEC000000|(Math.min(255,rr)<<16)|(Math.min(255,gg)<<8)|Math.min(255,bb));
+                    }
+                } else if(isGlass) {
+                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                            Color.argb(Math.min(120,Math.round(58*sh)),255,255,255),0x16FFFFFF,
+                            android.graphics.Shader.TileMode.CLAMP));
+                } else {
+                    p.setColor(0x1EFFFFFF);
+                }
+                float inset=sw/2f;
+                r.inset(inset,inset);
+                c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+                p.setShader(null);
+            }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
     }
 
     private void render() {
         if (destroyed) return;
-        stopSpringStages(); homeSpringStage=null; drawerSpringStage=null;
+        stopSpringStages(); homeSpringStage=null; drawerSpringStage=null; dockSpringLens=null;
+        dockBar=null; searchBar=null;
         stopHeroVideo();handler.removeCallbacks(heroRotation);heroPanel=null;heroPrimary=null;
         refreshWallpaperPalette();
         final String desiredFocus=lastFocus;
@@ -348,20 +681,32 @@ public final class MainActivity extends Activity {
             GradientDrawable plum=new GradientDrawable();plum.setGradientType(GradientDrawable.RADIAL_GRADIENT);plum.setGradientCenter(1f,1.1f);plum.setGradientRadius(px(1000));plum.setColors(new int[]{0x2EAA3C8C,0x00AA3C8C});
             root.setBackground(new android.graphics.drawable.LayerDrawable(new Drawable[]{base,warm,plum}));
         }
+        int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
+        final int dimAlpha=Math.round(dim*2.55f);
+        final String frostKey=paletteKey()+":dim="+dim;
         if ("photo".equals(style)) {
             String path=store.value("background_image","");
             if (!path.isEmpty()) {
                 final String backgroundPaletteKey=paletteKey();
                 ImageView image=new ImageView(this){
-                    @Override public void setImageBitmap(android.graphics.Bitmap bitmap){super.setImageBitmap(bitmap);if(bitmap!=null&&!destroyed)extractWallpaperColors(bitmap,backgroundPaletteKey);}
+                    @Override public void setImageBitmap(android.graphics.Bitmap bitmap){
+                        super.setImageBitmap(bitmap);
+                        if(bitmap!=null&&!destroyed){
+                            extractWallpaperColors(bitmap,backgroundPaletteKey);
+                            updateFrostedFromPhoto(bitmap,dimAlpha,frostKey);
+                        }
+                    }
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 root.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+            } else {
+                updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
             }
+        } else {
+            updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
         }
         View shade=new View(this);
-        int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
-        shade.setBackgroundColor(Color.argb(Math.round(dim*2.55f),0,0,0));
+        shade.setBackgroundColor(Color.argb(dimAlpha,0,0,0));
         root.addView(shade,new FrameLayout.LayoutParams(-1,-1));
     }
     private void renderHome() {
@@ -436,7 +781,7 @@ public final class MainActivity extends Activity {
         pill.setId(View.generateViewId());
         pill.setFocusable(true);pill.setClickable(true);pill.setFocusableInTouchMode(true);
         pill.setPadding(px(18),px(10),px(20),px(10));
-        pill.setBackground(glassPillDrawable(false));
+        pill.setBackground(glassControlDrawable(pill,false,-1f,accent(),true,false));
         ImageView icon=new ImageView(this);
         icon.setImageDrawable(new LineIcon(iconOps,0xEAFFFFFF));
         LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(px(20),px(20));
@@ -447,7 +792,7 @@ public final class MainActivity extends Activity {
         tv.setSingleLine(true);
         pill.addView(tv);
         pill.setOnFocusChangeListener((v,has)->{
-            pill.setBackground(glassPillDrawable(has));
+            pill.setBackground(glassControlDrawable(pill,has,-1f,accent(),true,false));
             icon.setImageDrawable(new LineIcon(iconOps,has?accent():0xEAFFFFFF));
             tv.setTextColor(has?foreground():0xEAFFFFFF);
             pill.animate().scaleX(has?1.06f:1f).scaleY(has?1.06f:1f).translationZ(has?px(14):0).setDuration(130).start();
@@ -687,9 +1032,12 @@ public final class MainActivity extends Activity {
         }
         drawerPage.addView(top,new LinearLayout.LayoutParams(-1,px(266)));
         EditText filter=new EditText(this); filter.setId(View.generateViewId()); filter.setSingleLine(true);
+        searchBar=filter;
         filter.setTextColor(foreground()); filter.setHintTextColor(muted()); filter.setHint("Search all apps");
         filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
-        filter.setPadding(px(24),0,px(24),0); filter.setBackground(shape(themed(0x18FFFFFF,0xBB182435),themed(0x33FFFFFF,0xFF40516A),1));
+        filter.setPadding(px(24),0,px(24),0);
+        filter.setBackground(glassControlDrawable(filter,false,22f,accent(),true,false));
+        filter.setOnFocusChangeListener((v,has)->filter.setBackground(glassControlDrawable(filter,has,22f,accent(),true,false)));
         filter.setText(search); filter.setSelectAllOnFocus(true);
         filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
         LinearLayout.LayoutParams searchParams=new LinearLayout.LayoutParams(-1,px(64));searchParams.topMargin=px(16);searchParams.bottomMargin=px(36);
@@ -1486,11 +1834,126 @@ public final class MainActivity extends Activity {
         });
         views.put(pkg,tile); return tile;
     }
+    private final class DockSpringLens implements Choreographer.FrameCallback {
+        final FrameLayout shell;
+        final View lens;
+        View activeItem;
+        float x, vx, targetX, w, vw, targetW;
+        boolean shown, running;
+        long lastNanos;
+
+        DockSpringLens(FrameLayout dockShell,View lensView) {
+            this.shell=dockShell;
+            this.lens=lensView;
+        }
+        boolean enabled() { return store.flag("dock_spring_lens",true) && springFocusActive(); }
+        void onItemFocused(View item) {
+            activeItem=item;
+            if(!enabled()) { hideImmediate(); return; }
+            if(item.getWidth()<=0 || shell.getWidth()<=0) {
+                item.post(()->{ if(!destroyed && item.isFocused() && activeItem==item) commit(item); });
+            } else commit(item);
+        }
+        private void commit(View item) {
+            int lx=0, ly=0;
+            View cur=item;
+            while(cur!=null && cur!=shell) {
+                lx+=cur.getLeft(); ly+=cur.getTop();
+                ViewParent vp=cur.getParent();
+                cur=(vp instanceof View)?(View)vp:null;
+            }
+            int ih=item.getHeight();
+            if(lens.getHeight()!=ih) {
+                FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(Math.max(1,item.getWidth()),ih);
+                lp.topMargin=ly;
+                lens.setLayoutParams(lp);
+            }
+            targetX=lx;
+            targetW=item.getWidth();
+            lens.setBackground(glassControlDrawable(null,true,18f,accent(),false,false));
+            if(!shown || lens.getAlpha()<0.08f) {
+                stop();
+                x=targetX; w=targetW; vx=0f; vw=0f;
+                apply();
+                lens.animate().cancel();
+                lens.setScaleX(0.95f); lens.setScaleY(0.95f);
+                lens.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(165).start();
+                shown=true;
+            } else {
+                lens.animate().cancel();
+                lens.setAlpha(1f); lens.setScaleX(1f); lens.setScaleY(1f);
+                if(!running) { running=true; lastNanos=0L; Choreographer.getInstance().postFrameCallback(this); }
+            }
+        }
+        void onItemUnfocused(View item) {
+            shell.post(()->{
+                if(destroyed) return;
+                if(activeItem==item && !item.isFocused()) {
+                    activeItem=null;
+                    lens.animate().alpha(0f).scaleX(0.95f).scaleY(0.95f).setDuration(140)
+                            .withEndAction(()->{ if(activeItem==null) shown=false; }).start();
+                }
+            });
+        }
+        void hideImmediate() {
+            stop(); shown=false; activeItem=null;
+            lens.animate().cancel(); lens.setAlpha(0f);
+        }
+        private void apply() {
+            int curW=Math.max(1,Math.round(w));
+            if(lens.getLayoutParams()!=null && lens.getLayoutParams().width!=curW) {
+                lens.getLayoutParams().width=curW;
+                lens.requestLayout();
+            }
+            lens.setTranslationX(x);
+        }
+        void stop() {
+            if(running) { running=false; Choreographer.getInstance().removeFrameCallback(this); }
+        }
+        @Override public void doFrame(long nanos) {
+            if(!running || destroyed) { running=false; return; }
+            float dt=lastNanos==0L?0.016f:Math.min(0.034f,Math.max(0.001f,(nanos-lastNanos)*1e-9f));
+            lastNanos=nanos;
+            boolean crisp="crisp".equals(focusMotionStyle());
+            float speedFactor=(float)Math.pow(focusSpringSpeed()/100.0,1.45);
+            float k=(crisp?490f:340f)*speedFactor;
+            float c=2f*(crisp?1.0f:0.78f)*(float)Math.sqrt(k);
+            int steps=Math.max(1,(int)Math.ceil(dt/0.008f));
+            float h=dt/steps;
+            for(int i=0;i<steps;i++) {
+                float ax=-k*(x-targetX)-c*vx;
+                float aw=-k*(w-targetW)-c*vw;
+                vx+=ax*h; vw+=aw*h;
+                x+=vx*h; w+=vw*h;
+            }
+            apply();
+            if(Math.abs(x-targetX)<0.4f && Math.abs(w-targetW)<0.5f && Math.abs(vx)<3f && Math.abs(vw)<3f) {
+                x=targetX; w=targetW; vx=0f; vw=0f; apply(); running=false;
+            } else {
+                Choreographer.getInstance().postFrameCallback(this);
+            }
+        }
+    }
+
     private void buildDock() {
+        FrameLayout shell=new FrameLayout(this);
+        dockBar=shell;
+        shell.setClipChildren(false); shell.setClipToPadding(false);
+        shell.setBackground(glassPanelDrawable(shell,26f,false));
+        View lens=new View(this);
+        lens.setAlpha(0f);
+        lens.setClickable(false); lens.setFocusable(false);
+        lens.setLayerType(View.LAYER_TYPE_HARDWARE,null);
+        shell.addView(lens,new FrameLayout.LayoutParams(0,0));
+        dockSpringLens=new DockSpringLens(shell,lens);
+
         LinearLayout dock=new LinearLayout(this); dock.setOrientation(LinearLayout.HORIZONTAL);
-        dock.setPadding(px(12),px(12),px(12),px(12)); dock.setBackground(shape(themed(0xB3161113,0xDB101A28),themed(0x22FFFFFF,0x6647556D),1));
+        dock.setClipChildren(false); dock.setClipToPadding(false);
+        dock.setPadding(px(12),px(12),px(12),px(12));
+        shell.addView(dock,new FrameLayout.LayoutParams(-1,-1));
+
         LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(28);place.bottomMargin=px(24);
-        (drawer?drawerPage:homePage).addView(dock,place);
+        (drawer?drawerPage:homePage).addView(shell,place);
         List<TvInputInfo> inputs=hdmiInputs();
         addDock(dock,ALL,drawer?"Home":"All Apps",null,()->{ hideKeyboard(); drawer=!drawer; search=""; lastFocus=""; render(); });
         for (TvInputInfo input:inputs) addDock(dock,input.getId(),inputName(input),LineIcon.HDMI,()->openInput(input.getId()));
@@ -1503,12 +1966,22 @@ public final class MainActivity extends Activity {
         LinearLayout tile=new LinearLayout(this); tile.setOrientation(LinearLayout.VERTICAL); tile.setGravity(Gravity.CENTER);
         tile.setId(View.generateViewId()); tile.setFocusable(true); tile.setClickable(true); tile.setContentDescription(label);
         tile.setFocusableInTouchMode(true);
-        if (symbol!=null) { ImageView image=new ImageView(this); image.setImageDrawable(new LineIcon(symbol)); tile.addView(image,new LinearLayout.LayoutParams(px(30),px(30))); }
-        TextView text=text(label,24,foreground()); text.setSingleLine(true); text.setEllipsize(android.text.TextUtils.TruncateAt.END); text.setGravity(Gravity.CENTER);
+        final ImageView iconView=symbol!=null?new ImageView(this):null;
+        if (iconView!=null) { iconView.setImageDrawable(new LineIcon(symbol,0xE8FFFFFF)); tile.addView(iconView,new LinearLayout.LayoutParams(px(30),px(30))); }
+        TextView text=text(label,24,0xECFFFFFF); text.setSingleLine(true); text.setEllipsize(android.text.TextUtils.TruncateAt.END); text.setGravity(Gravity.CENTER);
         tile.addView(text,new LinearLayout.LayoutParams(-1,px(44)));
-        tile.setBackground(shape(0x00000000,0,0));
+        tile.setBackground(glassControlDrawable(tile,false,18f,accent(),false,true));
         tile.setOnFocusChangeListener((v,has)->{
-            tile.setBackground(shape(has?themed(0x38FFFFFF,0xFF2A405B):0x00000000,has?themed(0x66FFFFFF,accent()):0,has?1:0));
+            boolean useDockSpring=dockSpringLens!=null && dockSpringLens.enabled();
+            tile.setBackground(glassControlDrawable(tile,has && !useDockSpring,18f,accent(),false,true));
+            if(iconView!=null) iconView.setImageDrawable(new LineIcon(symbol,has?accent():0xE8FFFFFF));
+            text.setTextColor(has?foreground():0xECFFFFFF);
+            if(has) text.setTypeface(medium); else text.setTypeface(Typeface.DEFAULT);
+            tile.animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f).setDuration(150).start();
+            if(dockSpringLens!=null) {
+                if(has && useDockSpring) dockSpringLens.onItemFocused(tile);
+                else dockSpringLens.onItemUnfocused(tile);
+            }
             if(has) {
                 lastFocus=key;
                 final ScrollView page=drawer?drawerScroll:homeScroll;
@@ -1677,8 +2150,9 @@ public final class MainActivity extends Activity {
         for(String pkg:store.list("recent_apps"))if(byPackage.containsKey(pkg))recent.add(pkg);
         if(recent.isEmpty())return;
         recentSection=new LinearLayout(this);recentSection.setOrientation(LinearLayout.VERTICAL);
+        recentSection.setClipChildren(false);recentSection.setClipToPadding(false);
         recentSection.setPadding(px(12),px(12),px(12),px(12));
-        recentSection.setBackground(shape(themed(0x0DFFFFFF,0x55101A28),0,0));
+        recentSection.setBackground(glassPanelDrawable(recentSection,26f,false));
         int count=hdmiInputs().size()+2;
         LinearLayout row=null;List<View> rowViews=null;
         for(int i=0;i<recent.size();i++) {
@@ -1696,8 +2170,12 @@ public final class MainActivity extends Activity {
             icon.setImageDrawable(catalog.artwork(pkg,true).drawable);tile.addView(icon,new LinearLayout.LayoutParams(px(48),px(48)));
             TextView label=text(name(pkg),21,foreground());label.setSingleLine(true);label.setGravity(Gravity.CENTER);
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);tile.addView(label,new LinearLayout.LayoutParams(-1,px(36)));
-            tile.setBackground(shape(0,0,0));
-            tile.setOnFocusChangeListener((v,has)->tile.setBackground(shape(has?themed(0x38FFFFFF,0xFF2A405B):0,has?accent():0,has?1:0)));
+            final int recTint=extractAppColor(pkg);
+            tile.setBackground(glassControlDrawable(tile,false,18f,recTint,false,true));
+            tile.setOnFocusChangeListener((v,has)->{
+                tile.setBackground(glassControlDrawable(tile,has,18f,recTint,false,true));
+                tile.animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f).setDuration(150).start();
+            });
             tile.setOnClickListener(v->launch(pkg));
             LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(0,-1,1);cell.leftMargin=px(5);cell.rightMargin=px(5);
             row.addView(tile,cell);rowViews.add(tile);
@@ -1825,6 +2303,7 @@ public final class MainActivity extends Activity {
         String recState=store.flag("recommendations_master")?recommendationSizeName(recommendationSize()):"Off";
         add(labels,actions,"§PERSONALIZE",null);
         add(labels,actions,"@palette|Appearance: "+themeName(),this::appearanceMenu);
+        add(labels,actions,"@sparkles|Glass & surfaces: "+glassSurfacesSummary(),()->glassSurfacesMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus glow: "+glowSummary(),()->focusGlowMenu(this::settingsMenu));
         add(labels,actions,"@sparkles|Focus motion: "+focusMotionSummary(),()->focusMotionMenu(this::settingsMenu));
         add(labels,actions,"@banner|Featured banner: "+bannerState,this::bannerMenu);
@@ -1876,6 +2355,7 @@ public final class MainActivity extends Activity {
                 "§THEME & WALLPAPER",
                 "Background: "+bgLabel,
                 "Menu theme: "+themeName(),
+                "Glass & surfaces: "+glassSurfacesSummary(),
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
@@ -1897,6 +2377,7 @@ public final class MainActivity extends Activity {
                         ()->choice("Menu theme",new String[]{"Warm glass · Translucent warm dark tint","Cool slate · Crisp deep blue-grey","From wallpaper · Sampled from your background"},
                                 "wallpaper".equals(store.value("theme","warm"))?2:"cool".equals(store.value("theme","warm"))?1:0,
                                 index->{store.set("theme",new String[]{"warm","cool","wallpaper"}[index]);render();appearanceMenu();},this::appearanceMenu),
+                        ()->glassSurfacesMenu(this::appearanceMenu),
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
@@ -1926,6 +2407,114 @@ public final class MainActivity extends Activity {
                                 idleMin<=0?0:idleMin==5?1:idleMin==10?2:3,
                                 index->{store.setNumber("idle_clock_minutes",new int[]{0,5,10,15}[index]);resetIdleTimer();appearanceMenu();},this::appearanceMenu),
                         ()->{closeBlade();showIdleClock();}),this::settingsMenu);
+    }
+    private void glassSurfacesMenu(Runnable back) {
+        String st=uiSurfaceStyle();
+        int frost=glassFrostDepth();
+        int sheenIdx=glassSheenMode();
+        menu("Glass & surfaces",Arrays.asList(
+                "§GLASS MATERIAL",
+                "Surface style: "+uiSurfaceStyleName(),
+                "Frosted refraction: "+onOff(glassRefractionEnabled()),
+                "Glass frost: "+frost+"% · "+glassFrostName(frost),
+                "Specular sheen: "+glassSheenName(),
+                "§WIDGET LENS",
+                "Dock spring lens: "+onOff(store.flag("dock_spring_lens",true)),
+                "§RESET",
+                "Restore glass defaults"),
+                Arrays.asList(
+                        null,
+                        ()->choice("Surface style",new String[]{
+                                "Liquid glass · Specular lens reflections & beveled rims",
+                                "Matte translucent · Soft frosted tint without specular glare",
+                                "Solid dark · Opaque high-contrast panels"},
+                                "matte".equals(st)?1:"solid".equals(st)?2:0,
+                                idx->{
+                                    store.set("ui_surface_style",new String[]{"glass","matte","solid"}[idx]);
+                                    render();glassSurfacesMenu(back);
+                                },()->glassSurfacesMenu(back)),
+                        ()->{
+                            store.setFlag("glass_refraction",!glassRefractionEnabled());
+                            render();glassSurfacesMenu(back);
+                        },
+                        ()->glassFrostSliderDialog(back),
+                        ()->choice("Specular sheen",new String[]{
+                                "Subtle · Delicate top highlight",
+                                "Balanced · Natural optical glass reflection",
+                                "Bright · High-gloss crystal catchlight"},
+                                sheenIdx,
+                                idx->{
+                                    store.setNumber("glass_sheen",idx);
+                                    render();glassSurfacesMenu(back);
+                                },()->glassSurfacesMenu(back)),
+                        null,
+                        ()->{
+                            store.setFlag("dock_spring_lens",!store.flag("dock_spring_lens",true));
+                            render();glassSurfacesMenu(back);
+                        },
+                        null,
+                        ()->{
+                            store.set("ui_surface_style","glass");
+                            store.setFlag("glass_refraction",true);
+                            store.setNumber("glass_frost",64);
+                            store.setNumber("glass_sheen",1);
+                            store.setFlag("dock_spring_lens",true);
+                            render();toast("Glass surfaces restored to defaults");glassSurfacesMenu(back);
+                        }),back);
+    }
+    private void glassFrostSliderDialog(Runnable back) {
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+        TextView value=text("",22,foreground());value.setTypeface(medium);box.addView(value);
+        TextView hint=text("Left / Right adjusts frosted tint depth across widgets and this blade live.",18,muted());
+        LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.topMargin=px(4);box.addView(hint,hp);
+
+        LinearLayout card=new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(px(20),px(18),px(20),px(18));
+        card.setBackground(glassPanelDrawable(card,20f,false));
+        TextView ct=text("Liquid Glass Surface",22,foreground());ct.setTypeface(medium);card.addView(ct);
+        TextView cs=text("Wallpaper colors refract softly underneath while text stays crisp.",17,muted());
+        LinearLayout.LayoutParams csp=new LinearLayout.LayoutParams(-1,-2);csp.topMargin=px(4);card.addView(cs,csp);
+        TextView pillSample=text("Focused Glass Lens",19,foreground());
+        pillSample.setTypeface(medium);
+        pillSample.setGravity(Gravity.CENTER);
+        pillSample.setBackground(glassControlDrawable(pillSample,true,14f,accent(),false,false));
+        LinearLayout.LayoutParams psp=new LinearLayout.LayoutParams(-1,px(48));psp.topMargin=px(14);
+        card.addView(pillSample,psp);
+        LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.topMargin=px(16);cp.bottomMargin=px(16);
+        box.addView(card,cp);
+
+        SeekBar slider=new SeekBar(this);
+        slider.setFocusableInTouchMode(true);
+        slider.setMax(67);
+        slider.setProgress(glassFrostDepth()-25);
+        slider.setKeyProgressIncrement(4);
+        slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
+        box.addView(slider,new LinearLayout.LayoutParams(-1,px(60)));
+
+        Runnable update=()->{
+            int f=slider.getProgress()+25;
+            overrideFrostPct=f;
+            value.setText("Glass frost · "+f+"% ("+glassFrostName(f)+")");
+            card.invalidate();
+            pillSample.invalidate();
+            refreshGlassSurfaces();
+        };
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar bar,int progress,boolean user){update.run();}
+            public void onStartTrackingTouch(SeekBar bar){}
+            public void onStopTrackingTouch(SeekBar bar){}
+        });
+        update.run();
+
+        showBladePanel("Glass frost",box,"Save",()->{
+            int f=slider.getProgress()+25;
+            overrideFrostPct=-1;
+            if("solid".equals(uiSurfaceStyle())) store.set("ui_surface_style","glass");
+            store.setNumber("glass_frost",f);
+            render();glassSurfacesMenu(back);
+        },()->{ overrideFrostPct=-1; refreshGlassSurfaces(); glassSurfacesMenu(back); },slider);
     }
     private void appGlowMenu(String pkg) {
         String cur=store.value("glow_app."+pkg,"default");
@@ -2738,6 +3327,8 @@ public final class MainActivity extends Activity {
         handler.postDelayed(drift[0],2000);
     }
     private void closeBlade() {
+        overrideFrostPct=-1;
+        activeBladeBox=null;
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
         if (activeBlade!=null) {
             Dialog closing=activeBlade; activeBlade=null; bladeHost=null; bladeBack=null; lastBladeTitle="";
@@ -2745,20 +3336,11 @@ public final class MainActivity extends Activity {
         }
     }
     private LinearLayout createBladeContainer(String title,Runnable back) {
-        LinearLayout box=new LinearLayout(this) {
-            private final android.graphics.Paint border=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            @Override protected void dispatchDraw(android.graphics.Canvas canvas) {
-                super.dispatchDraw(canvas);
-                border.setColor(store.flag("contrast")?accent():themed(0x28FFFFFF,0x44607D9E));
-                border.setStrokeWidth(Math.max(1f,px(1.5f)));
-                canvas.drawLine(0,0,0,getHeight(),border);
-            }
-        };
+        LinearLayout box=new LinearLayout(this);
+        activeBladeBox=box;
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(px(28),px(38),px(28),px(28));
-        GradientDrawable bg=new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{themed(0xFA181315,0xFA101926),themed(0xF6110D0F,0xF60B111B)});
-        box.setBackground(bg);
+        box.setBackground(glassPanelDrawable(box,0f,true));
         if (back!=null) {
             TextView crumb=text("‹  Back",17,accent());
             crumb.setTypeface(medium);
@@ -2808,7 +3390,7 @@ public final class MainActivity extends Activity {
             if(window!=null){
                 window.setBackgroundDrawableResource(android.R.color.transparent);
                 window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                window.setDimAmount(.38f);
+                window.setDimAmount("solid".equals(uiSurfaceStyle())?.40f:.24f);
             }
             activeBlade=dialog;
             bladeHost=host;
@@ -2870,8 +3452,7 @@ public final class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(px(14),px(11),px(14),px(11));
         row.setMinimumHeight(px(54));
-        row.setBackground(shapeRadius(selected?themed(0x36FFFFFF,0xFF233852):0x06FFFFFF,
-                selected?accent():0x0FFFFFFF,selected?2:1,12));
+        row.setBackground(glassControlDrawable(row,selected,13f,accent(),false,false));
 
         if(icon!=null) {
             ImageView iv=new ImageView(this);
@@ -3067,9 +3648,12 @@ public final class MainActivity extends Activity {
     private Button button(String label,Runnable action) {
         Button button=new Button(this);button.setText(label);button.setAllCaps(false);button.setTextColor(foreground());
         button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(23));button.setPadding(px(12),0,px(12),0);
-        button.setBackground(shape(themed(0x18FFFFFF,0xDD1C2C40),themed(0x33FFFFFF,0xFF516987),1));button.setId(View.generateViewId());
+        button.setBackground(glassControlDrawable(button,false,16f,accent(),false,false));button.setId(View.generateViewId());
         button.setFocusableInTouchMode(true);
-        button.setOnFocusChangeListener((v,has)->button.setBackground(shape(has?themed(0x38FFFFFF,0xFF365879):themed(0x18FFFFFF,0xDD1C2C40),has?accent():themed(0x33FFFFFF,0xFF516987),has?2:1)));
+        button.setOnFocusChangeListener((v,has)->{
+            button.setBackground(glassControlDrawable(button,has,16f,accent(),false,false));
+            button.animate().scaleX(has?1.03f:1f).scaleY(has?1.03f:1f).setDuration(130).start();
+        });
         button.setOnClickListener(v->action.run());return button;
     }
     private GradientDrawable shape(int color,int stroke,int width) {
@@ -3108,7 +3692,13 @@ public final class MainActivity extends Activity {
         } catch(Exception|OutOfMemoryError error) {return new android.graphics.drawable.ColorDrawable(0xFF26374C);}
     }
     private ScrollView scroll() {
-        ScrollView view=new ScrollView(this);view.setFillViewport(false);view.setClipToPadding(false);
+        ScrollView view=new ScrollView(this) {
+            @Override protected void onScrollChanged(int l,int t,int oldl,int oldt) {
+                super.onScrollChanged(l,t,oldl,oldt);
+                if(t!=oldt && glassRefractionEnabled()) refreshGlassSurfaces();
+            }
+        };
+        view.setFillViewport(false);view.setClipToPadding(false);
         view.setClipChildren(false);
         view.setVerticalFadingEdgeEnabled(false);
         view.setVerticalScrollBarEnabled(false);view.setOverScrollMode(View.OVER_SCROLL_NEVER);return view;
