@@ -63,7 +63,7 @@ final class UiSoundEngine {
     }
 
     String pack() {
-        String p = store.value("ui_sounds_pack", "glass");
+        String p = store.value("ui_sounds_pack", "wood");
         for (String id : PACK_IDS) if (id.equals(p)) return p;
         return "glass";
     }

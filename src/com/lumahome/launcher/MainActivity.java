@@ -328,9 +328,9 @@ public final class MainActivity extends Activity {
     private int colorIntensity(){return Math.max(0,Math.min(100,store.number("color_intensity",45)));}
     private int themed(int warm,int cool) { return wallpaperTheme()?ThemePalette.tint(wallpaperSeed,warm,colorIntensity()):"cool".equals(store.value("theme","warm"))?cool:warm; }
     private String themeName(){String theme=store.value("theme","warm");return "wallpaper".equals(theme)?"From wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
-    private String paletteKey(){return "v1:"+store.value("background","ember")+":"+store.value("background_image","");}
+    private String paletteKey(){return "v1:"+store.value("background","app_glow")+":"+store.value("background_image","");}
     private void refreshWallpaperPalette(){
-        String style=store.value("background","ember");
+        String style=store.value("background","app_glow");
         if("photo".equals(style))wallpaperSeed=paletteKey().equals(store.value("palette_source",""))?store.number("palette_seed",0):0;
         else if("sky".equals(style))wallpaperSeed=skyPaletteSeed();
         else wallpaperSeed="forest".equals(style)?0xFF276849:"ocean".equals(style)?0xFF286A91:"midnight".equals(style)?0xFF465B9A:"ember".equals(style)?0xFF9A6A52:0;
@@ -364,7 +364,7 @@ public final class MainActivity extends Activity {
         return new android.graphics.drawable.LayerDrawable(new Drawable[]{base,glow});
     }
     private void extractWallpaperColors(android.graphics.Bitmap bitmap,final String key){
-        if(!key.equals(paletteKey())||!"photo".equals(store.value("background","ember")))return;
+        if(!key.equals(paletteKey())||!"photo".equals(store.value("background","app_glow")))return;
         if(key.equals(store.value("palette_source",""))||key.equals(palettePending))return;
         palettePending=key;
         paletteWorker.execute(()->{
@@ -403,10 +403,10 @@ public final class MainActivity extends Activity {
         String st=uiSurfaceStyle();
         return "matte".equals(st)?"Matte":"solid".equals(st)?"Solid dark":"Liquid glass";
     }
-    private boolean glassRefractionEnabled() { return store.flag("glass_refraction",true); }
-    private int glassFrostDepth() { return Math.max(25,Math.min(92,store.number("glass_frost",64))); }
+    private boolean glassRefractionEnabled() { return store.flag("glass_refraction",false); }
+    private int glassFrostDepth() { return Math.max(25,Math.min(92,store.number("glass_frost",25))); }
     private String glassFrostName(int v) { return v<45?"Crystal":v<=72?"Balanced":"Smoked"; }
-    private int glassSheenMode() { return Math.max(0,Math.min(2,store.number("glass_sheen",1))); }
+    private int glassSheenMode() { return Math.max(0,Math.min(2,store.number("glass_sheen",0))); }
     private String glassSheenName() { int m=glassSheenMode(); return m==0?"Subtle":m==2?"Bright":"Balanced"; }
     private float sheenMultiplier() { int m=glassSheenMode(); return m==0?0.55f:m==2?1.48f:1.0f; }
     private String glassSurfacesSummary() {
@@ -471,7 +471,7 @@ public final class MainActivity extends Activity {
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
-            if(treatmentBlurLayer!=null && !"photo".equals(store.value("background","ember"))) {
+            if(treatmentBlurLayer!=null && !"photo".equals(store.value("background","app_glow"))) {
                 treatmentBlurLayer.setImageBitmap(frostedBackdrop);
                 syncTreatmentLayers();
             }
@@ -806,7 +806,7 @@ public final class MainActivity extends Activity {
         }
     }
     private void applyBackground() {
-        String style=store.value("background","ember");
+        String style=store.value("background","app_glow");
         int[] colors;
         switch (style) {
             case "ocean": colors=new int[]{0xFF102D40,0xFF07121F}; break;
@@ -986,7 +986,7 @@ public final class MainActivity extends Activity {
 
         boolean needsBlur="blur".equals(style)||"studio".equals(style);
         if(treatmentBlurLayer!=null) {
-            android.graphics.Bitmap blurBmp="photo".equals(store.value("background","ember"))?blurredWallpaperBackdrop:frostedBackdrop;
+            android.graphics.Bitmap blurBmp="photo".equals(store.value("background","app_glow"))?blurredWallpaperBackdrop:frostedBackdrop;
             if(blurBmp!=null) treatmentBlurLayer.setImageBitmap(blurBmp);
             if(needsBlur && intensity>0 && blurBmp!=null) {
                 treatmentBlurLayer.setVisibility(View.VISIBLE);
@@ -1012,7 +1012,7 @@ public final class MainActivity extends Activity {
             treatmentOverlayLayer.setVisibility(View.GONE);
         }
     }
-    private boolean backgroundGlow(){return "app_glow".equals(store.value("background","ember"));}
+    private boolean backgroundGlow(){return "app_glow".equals(store.value("background","app_glow"));}
     private void updateAmbient(String pkg){
         if(!backgroundGlow()||ambientTexture==null)return;
         int color=extractAppColor(pkg)|0xFF000000;
@@ -1663,8 +1663,8 @@ public final class MainActivity extends Activity {
         appColorCache.put(pkg,color);
         return color;
     }
-    private int glowIntensity() { return Math.max(10,Math.min(100,store.number("glow_intensity",80))); }
-    private int glowRadiusSetting() { return Math.max(20,Math.min(96,store.number("glow_radius",56))); }
+    private int glowIntensity() { return Math.max(10,Math.min(100,store.number("glow_intensity",10))); }
+    private int glowRadiusSetting() { return Math.max(20,Math.min(96,store.number("glow_radius",20))); }
     private String glowRadiusName(int r) { return r<=34?"Subtle":r<=62?"Balanced":r<=80?"Wide":"Expansive"; }
     private String glowHueName(int hue) {
         int h=((hue%360)+360)%360;
@@ -1678,7 +1678,7 @@ public final class MainActivity extends Activity {
         return "App color";
     }
     private String glowSummary() {
-        if(!store.flag("ambient_glow",true)) return "Off";
+        if(!store.flag("ambient_glow",false)) return "Off";
         return glowColorModeName()+" · "+glowIntensity()+"%";
     }
     private int resolveGlowColor(String pkg) {
@@ -2017,7 +2017,7 @@ public final class MainActivity extends Activity {
                 glowView.setLayoutParams(new FrameLayout.LayoutParams(glowW,glowH));
             }
             float cornerPx=oval?zoomedR:(px(22)*zoom);
-            boolean glowEnabled=store.flag("ambient_glow",true) && !backgroundGlow() && glowCol!=0;
+            boolean glowEnabled=store.flag("ambient_glow",false) && !backgroundGlow() && glowCol!=0;
 
             targetX=tx; targetY=ty;
             if(!shown || glassView.getAlpha()<0.08f) {
@@ -2298,7 +2298,7 @@ public final class MainActivity extends Activity {
                 else stage.onTileUnfocused(tile,iconSlot);
             } else {
                 if(stage!=null) stage.hideImmediate();
-                boolean showGlow=has&&store.flag("ambient_glow",true)&&!backgroundGlow()&&glowColor!=0;
+                boolean showGlow=has&&store.flag("ambient_glow",false)&&!backgroundGlow()&&glowColor!=0;
                 if(showGlow) {
                     glow.setVisibility(View.VISIBLE);
                     glow.animate().alpha(1f).scaleX(1.15f).scaleY(1.15f).setDuration(focusDuration(180)).start();
@@ -2750,7 +2750,7 @@ public final class MainActivity extends Activity {
                             }
                         } else {
                             if(rowStage!=null) rowStage.hideImmediate();
-                            boolean showGlow=has&&store.flag("ambient_glow",true)&&!backgroundGlow()&&glowColor!=0;
+                            boolean showGlow=has&&store.flag("ambient_glow",false)&&!backgroundGlow()&&glowColor!=0;
                             glow.setVisibility(showGlow?View.VISIBLE:View.INVISIBLE);
                             glow.animate().cancel();
                             if(showGlow) {
@@ -3083,7 +3083,7 @@ public final class MainActivity extends Activity {
         startSafely(new Intent(Settings.ACTION_SETTINGS));
     }
     private String backgroundSummary() {
-        String bg=store.value("background","ember");
+        String bg=store.value("background","app_glow");
         if("photo".equals(bg)) {
             int slide=store.number("wallpaper_interval_min",0);
             int saved=PhoneDropServer.listSavedFiles(this,store).size();
@@ -3205,9 +3205,9 @@ public final class MainActivity extends Activity {
                         null,
                         ()->{
                             store.set("ui_surface_style","glass");
-                            store.setFlag("glass_refraction",true);
-                            store.setNumber("glass_frost",64);
-                            store.setNumber("glass_sheen",1);
+                            store.setFlag("glass_refraction",false);
+                            store.setNumber("glass_frost",25);
+                            store.setNumber("glass_sheen",0);
                             store.setFlag("dock_spring_lens",true);
                             render();toast("Glass surfaces restored to defaults");glassSurfacesMenu(back);
                         }),back);
@@ -3282,7 +3282,7 @@ public final class MainActivity extends Activity {
         int customHue=store.number("glow_custom_hue",190);
         menu("Focus glow",Arrays.asList(
                 "§GLOW PARAMETERS",
-                "Focus glow: "+onOff(store.flag("ambient_glow",true)),
+                "Focus glow: "+onOff(store.flag("ambient_glow",false)),
                 "Intensity: "+glowIntensity()+"%",
                 "Radius: "+rad+"px · "+glowRadiusName(rad),
                 "§GLOW COLOR",
@@ -3292,7 +3292,7 @@ public final class MainActivity extends Activity {
                 "Restore glow defaults"),
                 Arrays.asList(
                         null,
-                        ()->{store.setFlag("ambient_glow",!store.flag("ambient_glow",true));render();focusGlowMenu(back);},
+                        ()->{store.setFlag("ambient_glow",!store.flag("ambient_glow",false));render();focusGlowMenu(back);},
                         ()->glowSliderDialog(true,back),
                         ()->glowSliderDialog(false,back),
                         null,
@@ -3310,9 +3310,9 @@ public final class MainActivity extends Activity {
                         ()->glowCustomColorMenu(back),
                         null,
                         ()->{
-                            store.setFlag("ambient_glow",true);
-                            store.setNumber("glow_intensity",80);
-                            store.setNumber("glow_radius",56);
+                            store.setFlag("ambient_glow",false);
+                            store.setNumber("glow_intensity",10);
+                            store.setNumber("glow_radius",20);
                             store.set("glow_color_mode","auto");
                             render();toast("Focus glow restored to defaults");focusGlowMenu(back);
                         }),back);
@@ -3570,7 +3570,7 @@ public final class MainActivity extends Activity {
         showBladePanel(isIntensity?"Glow intensity":"Glow radius",box,"Save",()->{
             if(isIntensity) store.setNumber("glow_intensity",slider.getProgress()+10);
             else store.setNumber("glow_radius",slider.getProgress()+20);
-            store.setFlag("ambient_glow",true);
+            store.setFlag("ambient_glow",false);
             render();focusGlowMenu(back);
         },()->focusGlowMenu(back),slider);
     }
@@ -3613,7 +3613,7 @@ public final class MainActivity extends Activity {
         showBladePanel("Custom glow hue",box,"Save",()->{
             store.set("glow_color_mode","custom");
             store.setNumber("glow_custom_hue",slider.getProgress());
-            store.setFlag("ambient_glow",true);
+            store.setFlag("ambient_glow",false);
             render();focusGlowMenu(back);
         },()->glowCustomColorMenu(back),slider);
     }
@@ -3653,7 +3653,7 @@ public final class MainActivity extends Activity {
     }
     private void backgroundMenu() { backgroundMenu(this::appearanceMenu); }
     private void backgroundMenu(Runnable back) {
-        String bg=store.value("background","ember");
+        String bg=store.value("background","app_glow");
         boolean hasPhoto=!store.value("background_image","").isEmpty();
         int savedCount=PhoneDropServer.listSavedFiles(this,store).size();
         int slideMin=store.number("wallpaper_interval_min",0);
@@ -3672,7 +3672,7 @@ public final class MainActivity extends Activity {
         });
         add(labels,actions,"Gradient: "+("ember".equals(bg)||"midnight".equals(bg)||"ocean".equals(bg)||"forest".equals(bg)?bg.substring(0,1).toUpperCase(Locale.ROOT)+bg.substring(1):"Select"),
                 ()->choice("Gradient",new String[]{"Ember · Warm ambient glow","Midnight · Deep indigo","Ocean · Coastal blue","Forest · Pine green"},
-                        Arrays.asList("ember","midnight","ocean","forest").indexOf(store.value("background","ember")),
+                        Arrays.asList("ember","midnight","ocean","forest").indexOf(store.value("background","app_glow")),
                         index->{store.set("background",new String[]{"ember","midnight","ocean","forest"}[index]);resetWallpaperSlideshowTimer();render();backgroundMenu(back);},()->backgroundMenu(back)));
         add(labels,actions,"Solid color: "+("solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":"Select"),
                 ()->choice("Solid color",new String[]{"Pure black · OLED friendly","Deep slate"},
@@ -3688,7 +3688,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"Treatment style: "+treatmentStyleName(),()->treatmentStyleChoice(()->backgroundMenu(back)));
         add(labels,actions,"Treatment intensity: "+treatmentIntensity()+"%",()->treatmentIntensityDialog(()->backgroundMenu(back)));
         add(labels,actions,"Wallpaper tint: "+colorIntensity()+"%",this::colorIntensityDialog);
-        add(labels,actions,"Restore default background",()->{store.set("background","ember");store.set("background_treatment","dim");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
+        add(labels,actions,"Restore default background",()->{store.set("background","app_glow");store.set("background_treatment","dim");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
         menu("Background",labels,actions,back);
     }
     private void stopPhoneDrop() {
@@ -3701,7 +3701,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacks(wallpaperSlideshowTick);
         if(destroyed || store==null) return;
         int min=store.number("wallpaper_interval_min",0);
-        if(min>0 && "photo".equals(store.value("background","ember"))
+        if(min>0 && "photo".equals(store.value("background","app_glow"))
                 && PhoneDropServer.listSavedFiles(this,store).size()>=2) {
             handler.postDelayed(wallpaperSlideshowTick,min*60000L);
         }
@@ -3709,7 +3709,7 @@ public final class MainActivity extends Activity {
     private void advanceWallpaperSlideshow() {
         if(destroyed || store==null) return;
         List<File> files=PhoneDropServer.listSavedFiles(this,store);
-        if(files.size()<2 || !"photo".equals(store.value("background","ember"))) return;
+        if(files.size()<2 || !"photo".equals(store.value("background","app_glow"))) return;
         String cur=store.value("background_image","");
         int idx=0;
         for(int i=0;i<files.size();i++) {
@@ -3750,7 +3750,7 @@ public final class MainActivity extends Activity {
     private void wallpaperGalleryMenu(Runnable back) {
         List<File> files=PhoneDropServer.listSavedFiles(this,store);
         if(files.isEmpty()) { phoneDropPanel(back); return; }
-        String activeBg=store.value("background","ember");
+        String activeBg=store.value("background","app_glow");
         String activeUri="photo".equals(activeBg)?store.value("background_image",""):"";
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         add(labels,actions,"§SAVED PHONE WALLPAPERS ("+files.size()+")",null);
@@ -3782,7 +3782,7 @@ public final class MainActivity extends Activity {
                 try { f.delete(); } catch(Exception ignored) {}
             }
             store.list("wallpaper_gallery",new ArrayList<>());
-            if("photo".equals(store.value("background","ember"))) store.set("background","ember");
+            if("photo".equals(store.value("background","app_glow"))) store.set("background","app_glow");
             store.set("background_image","");
             resetWallpaperSlideshowTimer();
             render();
@@ -3805,7 +3805,7 @@ public final class MainActivity extends Activity {
                 store.set("background","photo");
             } else {
                 store.set("background_image","");
-                if("photo".equals(store.value("background","ember"))) store.set("background","ember");
+                if("photo".equals(store.value("background","app_glow"))) store.set("background","app_glow");
             }
         }
         resetWallpaperSlideshowTimer();
@@ -4591,7 +4591,7 @@ public final class MainActivity extends Activity {
     private void resetIdleTimer() {
         handler.removeCallbacks(idleClockTrigger);
         if(destroyed || store==null) return;
-        int min=store.number("idle_clock_minutes",5);
+        int min=store.number("idle_clock_minutes",30);
         if(min>0 && hasWindowFocus() && (idleClockDialog==null || !idleClockDialog.isShowing())) {
             handler.postDelayed(idleClockTrigger,min*60000L);
         }
@@ -4599,10 +4599,10 @@ public final class MainActivity extends Activity {
     private String screensaverStyle() { return store.value("screensaver_style","cinema"); }
     private String screensaverMotion() { return store.value("screensaver_motion","cinematic"); }
     private String screensaverClockPos() { return store.value("screensaver_clock_pos","bottom_left"); }
-    private int screensaverSlideSec() { return Math.max(5,Math.min(120,store.number("screensaver_slide_sec",15))); }
+    private int screensaverSlideSec() { return Math.max(5,Math.min(120,store.number("screensaver_slide_sec",60))); }
     private int screensaverDimming() { return Math.max(0,Math.min(75,store.number("screensaver_dimming",15))); }
     private String screensaverSummary() {
-        int min=store.number("idle_clock_minutes",5);
+        int min=store.number("idle_clock_minutes",30);
         if(min<=0) return "Off";
         String st="minimal".equals(screensaverStyle())?"OLED clock":"Cinema frame";
         return st+" · "+min+" min";
@@ -4693,14 +4693,14 @@ public final class MainActivity extends Activity {
                         null,
                         ()->{
                             store.setFlag("ui_sounds_enabled",true);
-                            store.set("ui_sounds_pack","glass");
+                            store.set("ui_sounds_pack","wood");
                             store.setNumber("ui_sounds_volume",65);
                             store.setFlag("ui_sounds_spatial",true);
                             store.setFlag("ui_sounds_pitch",true);
                             store.setFlag("ui_sounds_detents",true);
                             store.setFlag("ui_sounds_mute_system",true);
                             syncSystemSoundMuting();
-                            if(sfx!=null) sfx.preview("glass",UiSoundEngine.roleSelect(),65);
+                            if(sfx!=null) sfx.preview("wood",UiSoundEngine.roleSelect(),65);
                             toast("UI sounds restored to defaults");
                             soundMenu(back);
                         }),back);
@@ -4779,7 +4779,7 @@ public final class MainActivity extends Activity {
         },()->soundMenu(back),slider);
     }
     private void screensaverMenu(Runnable back) {
-        int idleMin=store.number("idle_clock_minutes",5);
+        int idleMin=store.number("idle_clock_minutes",30);
         String style=screensaverStyle();
         String motion=screensaverMotion();
         String clockPos=screensaverClockPos();
@@ -4867,10 +4867,10 @@ public final class MainActivity extends Activity {
                 },()->screensaverMenu(back)));
         add(labels,actions,"Night dimming: "+dim+"%",()->screensaverDimmingDialog(back));
         add(labels,actions,"Restore screensaver defaults",()->{
-            store.setNumber("idle_clock_minutes",5);
+            store.setNumber("idle_clock_minutes",30);
             store.set("screensaver_style","cinema");
             store.setFlag("screensaver_keep_awake",true);
-            store.setNumber("screensaver_slide_sec",15);
+            store.setNumber("screensaver_slide_sec",60);
             store.set("screensaver_motion","cinematic");
             store.setFlag("screensaver_shuffle",true);
             store.set("screensaver_clock_pos","bottom_left");

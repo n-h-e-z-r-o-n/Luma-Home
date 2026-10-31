@@ -81,7 +81,10 @@ def main():
     shutil.copyfile(ROOT / "LICENSE", legal / "LICENSE")
     shutil.copyfile(ROOT / "FONT-LICENSE-OFL.txt", legal / "FONT-LICENSE-OFL.txt")
     apps_file = Path(os.environ.get("APPS", str(ROOT / "apps.txt")))
-    apps = [line.strip() for line in apps_file.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if apps_file.is_file():
+        apps = [line.strip() for line in apps_file.read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    else:
+        apps = ["com.google.android.youtube.tv", "com.netflix.ninja", "com.amazon.amazonvideo.livingroom", "com.disney.disneyplus", "com.hulu.livingroomplus", "com.wbd.stream"]
     if any(not all(c.isalnum() or c in "._" for c in pkg) for pkg in apps):
         raise SystemExit("apps.txt contains an invalid package name")
     (generated / "Apps.java").write_text(

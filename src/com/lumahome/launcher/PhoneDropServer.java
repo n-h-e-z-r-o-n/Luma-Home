@@ -368,7 +368,7 @@ final class PhoneDropServer {
 
     private String buildGalleryJson() {
         List<File> files = listSavedFiles(context, store);
-        String activeBg = store.value("background", "ember");
+        String activeBg = store.value("background", "app_glow");
         String activeUri = "photo".equals(activeBg) ? store.value("background_image", "") : "";
         String activeId = "";
         if (!activeUri.isEmpty()) {
