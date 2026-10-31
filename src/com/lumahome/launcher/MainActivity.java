@@ -2211,6 +2211,7 @@ public final class MainActivity extends Activity {
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent)lastFocus=pkg;
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
+                else if(allApps && drawerScroll!=null) drawerScroll.post(()->centerDrawerChild(tile));
             }
         });
         tile.setOnClickListener(v->launch(pkg));
@@ -2705,6 +2706,29 @@ public final class MainActivity extends Activity {
         int target=Math.max(0,bounds.top-room/2);
         target=Math.min(target,Math.max(0,homePage.getHeight()-homeScroll.getHeight()));
         homeScroll.smoothScrollTo(0,target);
+    }
+    private void centerDrawerChild(View focused) {
+        if(destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
+        if(focused==searchBar) {
+            drawerScroll.smoothScrollTo(0,0);
+            return;
+        }
+        if(dockViews.contains(focused)) {
+            drawerScroll.smoothScrollTo(0,Math.max(0,drawerPage.getHeight()-drawerScroll.getHeight()));
+            return;
+        }
+        if(!appRows.isEmpty() && appRows.get(0).contains(focused)) {
+            drawerScroll.smoothScrollTo(0,0);
+            return;
+        }
+        android.graphics.Rect bounds=new android.graphics.Rect(0,0,focused.getWidth(),focused.getHeight());
+        drawerPage.offsetDescendantRectToMyCoords(focused,bounds);
+        int viewH=drawerScroll.getHeight()>0?drawerScroll.getHeight():screenHeight;
+        int room=Math.max(0,viewH-bounds.height());
+        int target=Math.max(0,bounds.top-room/2);
+        int maxScroll=Math.max(0,drawerPage.getHeight()-viewH);
+        target=Math.min(target,maxScroll);
+        drawerScroll.smoothScrollTo(0,target);
     }
     private void revealHorizontalFocus(View view,int verticalPad) {
         // Reveal room for the focus lift and full radial glow halo, not only the unscaled tile bounds.
@@ -5584,12 +5608,13 @@ public final class MainActivity extends Activity {
             @Override public void requestChildFocus(View child,View focused) {
                 super.requestChildFocus(child,focused);
                 if(this==homeScroll)post(()->{if(this==homeScroll)positionHomeSection(focused);});
+                else if(this==drawerScroll)post(()->{if(this==drawerScroll)centerDrawerChild(focused);});
             }
             @Override protected int computeScrollDeltaToGetChildRectOnScreen(android.graphics.Rect rect) {
-                return this==homeScroll?0:super.computeScrollDeltaToGetChildRectOnScreen(rect);
+                return (this==homeScroll||this==drawerScroll)?0:super.computeScrollDeltaToGetChildRectOnScreen(rect);
             }
             @Override public boolean requestChildRectangleOnScreen(View child,android.graphics.Rect rect,boolean immediate) {
-                return this==homeScroll?false:super.requestChildRectangleOnScreen(child,rect,immediate);
+                return (this==homeScroll||this==drawerScroll)?false:super.requestChildRectangleOnScreen(child,rect,immediate);
             }
             @Override public void playSoundEffect(int soundConstant) {
                 if(muteSystem()) return;
