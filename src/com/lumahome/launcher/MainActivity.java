@@ -3888,13 +3888,13 @@ public final class MainActivity extends Activity {
         String range=info!=null?(info.rangeDisplay()+" · Wind "+Math.round(info.windSpeed)+" km/h"):"Connecting to Open-Meteo";
 
         add(labels,actions,"§LIVE WEATHER",null);
-        add(labels,actions,"@display|"+loc+" · "+curWeather,()->weatherLocationDialog(this::glanceDetailsBlade));
-        add(labels,actions,range,null);
+        add(labels,actions," LIVE WEATHER",null);
+        add(labels,actions,"@display|"+loc+" · "+curWeather+"\n"+range,()->weatherLocationDialog(this::glanceDetailsBlade));
 
         if(info!=null && info.forecast!=null && !info.forecast.isEmpty()) {
-            add(labels,actions,"§5-DAY FORECAST",null);
+            add(labels,actions," 5-DAY FORECAST",null);
             for(WeatherService.ForecastDay d:info.forecast) {
-                add(labels,actions,d.dayName+" · "+d.emoji+" "+Math.round(d.maxTemp)+"° / "+Math.round(d.minTemp)+"° · "+d.conditionText,null);
+                add(labels,actions,d.dayName+" · "+d.emoji+" "+d.conditionText+": "+Math.round(d.maxTemp)+"° / "+Math.round(d.minTemp)+"°",null);
             }
         }
 
@@ -5161,6 +5161,9 @@ public final class MainActivity extends Activity {
         if(initialFocus!=null) initialFocus.post(initialFocus::requestFocus);
     }
     private View buildMenuRow(String raw,boolean selected) {
+        return buildMenuRow(raw,selected,true);
+    }
+    private View buildMenuRow(String raw,boolean selected,boolean actionable) {
         String text=raw==null?"":raw;
         if(text.startsWith("§")) {
             TextView sec=text(text.substring(1),13,store.flag("contrast")?accent():muted());
@@ -5182,6 +5185,12 @@ public final class MainActivity extends Activity {
         if(external) text=text.substring(0,text.length()-2);
 
         String primary=text, secondary="", rightValue=null;
+        if(text.contains("\n")) {
+            int nl=text.indexOf("\n");
+            secondary=text.substring(nl+1);
+            text=text.substring(0,nl);
+            primary=text;
+        }
         int toggle=0;
         if(text.endsWith(": On")) { toggle=1; primary=text.substring(0,text.length()-4); }
         else if(text.endsWith(": Off")) { toggle=2; primary=text.substring(0,text.length()-5); }
@@ -5250,14 +5259,14 @@ public final class MainActivity extends Activity {
             rp.leftMargin=px(10);
             row.addView(ring,rp);
         } else if(rightValue!=null) {
-            TextView val=text(rightValue+"  ›",17,selected?accent():muted());
+            TextView val=text(rightValue+(actionable?"  ›":""),17,selected?accent():muted());
             val.setSingleLine(true);
             val.setEllipsize(android.text.TextUtils.TruncateAt.END);
             val.setMaxWidth(px(165));
             LinearLayout.LayoutParams vp=new LinearLayout.LayoutParams(-2,-2);
             vp.leftMargin=px(8);
             row.addView(val,vp);
-        } else {
+        } else if(actionable) {
             TextView chev=text(external?"↗":"›",19,selected?accent():muted());
             LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);
             cp.leftMargin=px(8);
@@ -5287,7 +5296,8 @@ public final class MainActivity extends Activity {
             }
             @Override public View getView(int position,View convert,ViewGroup parent) {
                 boolean selected=list.isFocused() && list.getSelectedItemPosition()==position;
-                return buildMenuRow(labels.get(position),selected);
+                boolean actionable=isEnabled(position);
+                return buildMenuRow(labels.get(position),selected,actionable);
             }
         };
         list.setAdapter(adapter);
@@ -5491,6 +5501,10 @@ public final class MainActivity extends Activity {
                         while(ancestor!=null && ancestor!=this)
                             ancestor=ancestor.getParent() instanceof View?(View)ancestor.getParent():null;
                         if(next!=null && next!=focused && ancestor==this)next.requestFocus(direction);
+                        else if(direction==View.FOCUS_UP) {
+                            if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) glanceWidget.requestFocus();
+                            else if(!topPillViews.isEmpty()) topPillViews.get(0).requestFocus();
+                        }
                     }
                     return true;
                 }

@@ -70,7 +70,7 @@ final class WeatherService {
         }
 
         String rangeDisplay() {
-            return "H: " + Math.round(todayMax) + "°  L: " + Math.round(todayMin) + "°";
+            return "High " + Math.round(todayMax) + "° · Low " + Math.round(todayMin) + "°";
         }
     }
 
