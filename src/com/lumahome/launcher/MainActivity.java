@@ -161,7 +161,7 @@ public final class MainActivity extends Activity {
             medium=getResources().getFont(getResources().getIdentifier("outfit_medium","font",getPackageName()));
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
-        store=new LauncherStore(this); sfx=new UiSoundEngine(this,store); catalog=new AppCatalog(this);
+        store=new LauncherStore(this); sfx=new UiSoundEngine(this,store); catalog=new AppCatalog(this); BillingManager.get(this,store);
         images=new ImageLoader(this); recommendations=new RecommendationRepository(this); weatherService=new WeatherService();
         if (state!=null) { imageTarget=state.getString("imageTarget",""); drawer=state.getBoolean("drawer"); }
         refreshApps(); applyIntent(getIntent()); initializeFavorites(); syncSystemSoundMuting();
@@ -3069,6 +3069,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@wifi|Wi-Fi & network ↗",()->openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS));
         add(labels,actions,"@sparkles|Manage apps ↗",()->openSystemIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS));
         add(labels,actions,"@settings|All TV settings ↗",()->openSystemIntent(Settings.ACTION_SETTINGS));
+        add(labels,actions,"@heart|Support the developer: Tip jar",this::supportDeveloperMenu);
         add(labels,actions,"@info|About Luma Home: v"+versionName(),this::aboutMenu);
         menu("Luma Settings",labels,actions,null);
     }
@@ -4415,6 +4416,79 @@ public final class MainActivity extends Activity {
         if(labels.isEmpty())info("Other home screens","No other enabled home screen is available. Use the saved computer-side recovery commands if you previously disabled one.",this::defaultLauncherMenu);
         else menu("Open another home",labels,actions,this::defaultLauncherMenu);
     }
+    private void supportDeveloperMenu() {
+        BillingManager bm=BillingManager.get(this,store);
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+        boolean isSupporter=bm.isSupporter();
+        int tipCount=bm.getTipsCount();
+
+        if (isSupporter) {
+            add(labels,actions,"\u00A7SUPPORTER STATUS",null);
+            add(labels,actions,"@heart|Active Supporter: "+tipCount+" tip"+(tipCount>1?"s":""),()->{
+                info("Thank You!","Your support directly funds independent, ad-free development of Luma Home. Thank you for making this launcher possible!",this::supportDeveloperMenu);
+            });
+        }
+
+        add(labels,actions,"\u00A7SUPPORT TIERS ($1 AND UP)",null);
+        for(BillingManager.Tier tier:BillingManager.TIERS) {
+            String price=bm.getFormattedPrice(tier.id);
+            add(labels,actions,"@heart|"+tier.title+": "+price,()->{
+                bm.launchPurchase(this,tier.id,new BillingManager.BillingCallback() {
+                    @Override public void onSuccess(String productId) {
+                        toast("Thank you so much for your support!");
+                        supportDeveloperMenu();
+                    }
+                    @Override public void onError(String message) {
+                        info("Support Developer",message,MainActivity.this::supportDeveloperMenu);
+                    }
+                    @Override public void onCanceled() {}
+                });
+            });
+        }
+
+        add(labels,actions,"\u00A7ALTERNATIVE WAYS TO SUPPORT",null);
+        add(labels,actions,"@wifi|Scan phone QR code to tip: Mobile",()->tipQrPanel(this::supportDeveloperMenu));
+        add(labels,actions,"@info|About Developer Support: Details",()->{
+            info("Developer Support","Luma Home is 100% ad-free, tracks no user data, and contains no paywalls. Tipping is completely voluntary and directly supports continuous improvements, TV optimizations, and new features.",this::supportDeveloperMenu);
+        });
+
+        menu("Support Developer",labels,actions,this::settingsMenu);
+    }
+    private void tipQrPanel(Runnable back) {
+        LinearLayout box=new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(px(16),px(16),px(16),px(16));
+
+        TextView intro=text("Point your phone camera at the QR code below to open the developer support page on your mobile device.",18,0xEAFFFFFF);
+        intro.setLineSpacing(px(4),1f);
+        box.addView(intro,new LinearLayout.LayoutParams(-1,-2));
+
+        FrameLayout qrStage=new FrameLayout(this);
+        qrStage.setBackground(glassPanelDrawable(qrStage,20f,false));
+        qrStage.setPadding(px(16),px(16),px(16),px(16));
+        FrameLayout whiteCard=new FrameLayout(this);
+        whiteCard.setBackground(shapeRadius(0xFFFFFFFF,0,0,16));
+        whiteCard.setPadding(px(10),px(10),px(10),px(10));
+        ImageView qrImg=new ImageView(this);
+        qrImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        String tipUrl=store.value("tip_qr_url","https://buymeacoffee.com/lumahome");
+        qrImg.setImageBitmap(QrCode.encodeBitmap(tipUrl,px(240),3,0xFF0B101A,0xFFFFFFFF));
+        whiteCard.addView(qrImg,new FrameLayout.LayoutParams(px(240),px(240),Gravity.CENTER));
+        qrStage.addView(whiteCard,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
+        LinearLayout.LayoutParams qp=new LinearLayout.LayoutParams(-1,-2);
+        qp.topMargin=px(16); qp.bottomMargin=px(14);
+        box.addView(qrStage,qp);
+
+        TextView urlPill=text(tipUrl,15,accent());
+        urlPill.setTypeface(medium);
+        urlPill.setPadding(px(12),px(8),px(12),px(8));
+        urlPill.setBackground(shapeRadius(0x16FFFFFF,0x24FFFFFF,1,10));
+        urlPill.setGravity(Gravity.CENTER);
+        box.addView(urlPill,new LinearLayout.LayoutParams(-1,-2));
+
+        showBladePanel("Tip from Phone",box,"Done",back,back,null);
+    }
     private void aboutMenu() {
         menu("About Luma Home",Arrays.asList("Version: "+versionName(),"Your privacy","Open-source license"),Arrays.asList(
                 ()->info("Luma Home","A personal Android TV home screen. Home apps, visual choices, recommendation switches and banner source are stored locally on this TV.",this::aboutMenu),
@@ -4501,6 +4575,7 @@ public final class MainActivity extends Activity {
             case "home": return LineIcon.HOME;
             case "settings": return LineIcon.SETTINGS;
             case "gear": return LineIcon.GEAR;
+            case "heart": return LineIcon.HEART;
             case "info": return LineIcon.INFO;
             case "wifi": return LineIcon.WIFI;
             case "display": return LineIcon.DISPLAY;

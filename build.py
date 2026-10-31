@@ -99,16 +99,25 @@ def main():
     if args.debug:
         link.append("--debug-mode")
     run(link)
-    run([java_tool("javac"), "-nowarn", "-Xlint:-options", "-source", "1.8", "-target", "1.8",
-         "-bootclasspath", str(jar) + os.pathsep + str(tool / "core-lambda-stubs.jar"),
-         "-d", classes, *sorted((ROOT / "src").rglob("*.java")), generated / "Apps.java"])
+    lib_jars = sorted((ROOT / "lib").glob("*.jar"))
+    extra_cp = [str(j) for j in lib_jars]
+    javac_args = [java_tool("javac"), "-encoding", "UTF-8", "-nowarn", "-Xlint:-options", "-source", "1.8", "-target", "1.8"]
+    if extra_cp:
+        javac_args += ["-classpath", os.pathsep.join(extra_cp)]
+    javac_args += ["-bootclasspath", str(jar) + os.pathsep + str(tool / "core-lambda-stubs.jar"),
+                   "-d", classes, *sorted((ROOT / "src").rglob("*.java")), generated / "Apps.java"]
+    run(javac_args)
     child_env = os.environ.copy()
     if java:
         child_env["JAVA_HOME"] = str(java.parent)
         child_env["PATH"] = str(java) + os.pathsep + child_env.get("PATH", "")
+    app_classes_jar = build / "app-classes.jar"
+    with zipfile.ZipFile(app_classes_jar, "w") as zf:
+        for c in classes.rglob("*.class"):
+            zf.write(c, c.relative_to(classes).as_posix())
     d8 = tool / ("d8.bat" if os.name == "nt" else "d8")
     run([d8, "--min-api", "21", "--release", "--lib", jar, "--output", dex,
-         *sorted(classes.rglob("*.class"))], env=child_env)
+         str(app_classes_jar), *extra_cp], env=child_env)
     unsigned = build / "unsigned.apk"
     shutil.copyfile(base, unsigned)
     with zipfile.ZipFile(unsigned, "a") as archive:
