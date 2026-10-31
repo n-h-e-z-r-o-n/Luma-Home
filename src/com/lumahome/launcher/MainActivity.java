@@ -1014,7 +1014,7 @@ public final class MainActivity extends Activity {
         if(color==ambientColor)return;
         final android.graphics.drawable.BitmapDrawable texture=ambientTexture;
         ambientAnimator=android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(),ambientColor,color);
-        ambientAnimator.setDuration(360);
+        ambientAnimator.setDuration(focusDuration(360));
         ambientAnimator.addUpdateListener(a->{ambientColor=(Integer)a.getAnimatedValue();texture.setTint(ambientColor);});
         ambientAnimator.start();
     }
@@ -1031,7 +1031,7 @@ public final class MainActivity extends Activity {
         FrameLayout heading=new FrameLayout(this);
         TextView title=text("Home",38,foreground()); title.setTypeface(medium);
         heading.addView(title,at(0,0,px(500),px(52)));
-        TextView hint=text(moving.isEmpty()?"Hold OK to personalize · All Apps keeps everything accessible":"Move with arrows · OK or Back to finish",21,muted());
+        TextView hint=text(moving.isEmpty()?"":"",21,muted());
         hint.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);
         heading.addView(hint,at(px(480),px(5),innerWidth()-px(480),px(44)));
         LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(42);
@@ -1113,7 +1113,7 @@ public final class MainActivity extends Activity {
             pill.setBackground(glassControlDrawable(pill,has,-1f,accent(),true,false));
             icon.setImageDrawable(new LineIcon(iconOps,has?accent():0xEAFFFFFF));
             tv.setTextColor(has?foreground():0xEAFFFFFF);
-            pill.animate().scaleX(has?1.06f:1f).scaleY(has?1.06f:1f).translationZ(has?px(14):0).setDuration(130).start();
+            pill.animate().scaleX(has&&!instantFocus()?1.06f:1f).scaleY(has&&!instantFocus()?1.06f:1f).translationZ(has?px(14):0).setDuration(focusDuration(130)).start();
             if(has){lastFocus=key;if(!drawer&&homeScroll!=null)homeScroll.post(()->homeScroll.smoothScrollTo(0,0));}
         });
         pill.setOnClickListener(v->{
@@ -1609,26 +1609,32 @@ public final class MainActivity extends Activity {
         };
     }
     private String focusMotionStyle() { return store.value("focus_motion_style","liquid"); }
-    private boolean springFocusActive() { return !"classic".equals(focusMotionStyle()); }
+    private boolean instantFocus(){return "instant".equals(focusMotionStyle());}
+    private boolean springFocusActive(){String s=focusMotionStyle();return "liquid".equals(s)||"crisp".equals(s)||"magnetic".equals(s);}
+    private long focusDuration(int ms){return instantFocus()?0:Math.round(ms*100f/focusSpringSpeed());}
+    private float focusLift(){return instantFocus()?0f:"soft".equals(focusMotionStyle())?-px(8):springFocusActive()?-px(4):0f;}
+    private int motionStyleIndex(){String[] modes={"liquid","crisp","classic","soft","magnetic","instant"};for(int i=0;i<modes.length;i++)if(modes[i].equals(focusMotionStyle()))return i;return 0;}
     private int focusSpringSpeed() { return Math.max(50,Math.min(150,store.number("focus_spring_speed",100))); }
     private String focusGlassStyle() { return store.value("focus_glass_style","full"); }
     private int focusZoomMode() { return Math.max(0,Math.min(2,store.number("focus_zoom_mode",1))); }
     private float focusZoomScale(boolean allApps) {
+        if(instantFocus())return 1f;
         int m=focusZoomMode();
         float homeScale=m==0?1.06f:m==2?1.17f:1.12f;
+        if("soft".equals(focusMotionStyle()))homeScale=Math.min(homeScale,1.08f);
         return allApps?Math.min(1.09f,1f+(homeScale-1f)*0.72f):homeScale;
     }
     private String focusZoomName() { int m=focusZoomMode(); return m==0?"Subtle (1.06x)":m==2?"Bold (1.17x)":"Balanced (1.12x)"; }
     private String focusMotionStyleName() {
         String s=focusMotionStyle();
-        return "crisp".equals(s)?"Crisp glide":"classic".equals(s)?"Classic":"Liquid spring";
+        return "soft".equals(s)?"Soft lift":"magnetic".equals(s)?"Magnetic":"instant".equals(s)?"Instant":"crisp".equals(s)?"Crisp glide":"classic".equals(s)?"Classic":"Liquid spring";
     }
     private String focusGlassStyleName() {
         String s=focusGlassStyle();
         return "rim".equals(s)?"Clean rim":"none".equals(s)?"Glow only":"Specular glass";
     }
     private String focusMotionSummary() {
-        if(!springFocusActive()) return "Classic";
+        if(instantFocus()||"classic".equals(focusMotionStyle()))return focusMotionStyleName();
         return focusMotionStyleName()+" · "+focusSpringSpeed()+"%";
     }
     private static int lerpRgb(int c1,int c2,float t) {
@@ -1839,7 +1845,7 @@ public final class MainActivity extends Activity {
                 cur=(vp instanceof View)?(View)vp:null;
             }
             float zoom=focusZoomScale(!oval);
-            float liftY=-px(4);
+            float liftY=focusLift();
             float tx=lx+tileW/2f;
             float ty=ly+tileH/2f+liftY;
 
@@ -1931,6 +1937,10 @@ public final class MainActivity extends Activity {
             glowView.setTranslationY(cy-glowH/2f);
             glassView.setTranslationX(cx-glassW/2f);
             glassView.setTranslationY(cy-glassH/2f);
+            if("magnetic".equals(focusMotionStyle())){
+                float stretch=Math.min(.16f,Math.abs(targetX-cx)/Math.max(1,glassW)*.14f);
+                glassView.setScaleX(1f+stretch);glassView.setScaleY(1f-stretch*.3f);
+            }
         }
 
         private void startSpring() {
@@ -1956,8 +1966,8 @@ public final class MainActivity extends Activity {
             boolean crisp="crisp".equals(focusMotionStyle());
             int speedPct=overrideSpeedPct>0?overrideSpeedPct:focusSpringSpeed();
             float speedFactor=(float)Math.pow(speedPct/100.0,1.45);
-            float stiffness=(crisp?490f:340f)*speedFactor;
-            float zeta=crisp?1.0f:0.76f;
+            float stiffness=("magnetic".equals(focusMotionStyle())?420f:crisp?490f:340f)*speedFactor;
+            float zeta="magnetic".equals(focusMotionStyle())?.88f:crisp?1.0f:.76f;
             float damping=2f*zeta*(float)Math.sqrt(stiffness);
 
             int steps=Math.max(1,(int)Math.ceil(dt/0.008f));
@@ -2095,17 +2105,17 @@ public final class MainActivity extends Activity {
             android.view.animation.Interpolator interp=useSpring&&liquid?liquidOvershoot:crispDecel;
             int dur=has?(useSpring?220:140):(useSpring?170:140);
 
-            tile.animate().translationZ(has?px(16):0).setDuration(dur).start();
+            tile.animate().translationZ(has?px(16):0).setDuration(focusDuration(dur)).start();
             picture.setBackground(glassSurface(!allApps,bannerStyle,has&&!useSpring,surfaceTint));
             picture.invalidate();
             picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
-                    .translationY(has&&useSpring?-px(4):0f)
+                    .translationY(has?focusLift():0f)
                     .translationZ(has?px(12):0)
-                    .setInterpolator(interp).setDuration(dur).start();
+                    .setInterpolator(interp).setDuration(focusDuration(dur)).start();
 
-            if(store.flag("focus_parallax",true) && (!allApps || bannerStyle)) {
-                image.animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f)
-                        .setInterpolator(crispDecel).setDuration(has?280:180).start();
+            if(!instantFocus()&&store.flag("focus_parallax",true) && (!allApps || bannerStyle)) {
+                image.animate().scaleX(has&&!instantFocus()?1.045f:1f).scaleY(has&&!instantFocus()?1.045f:1f)
+                        .setInterpolator(crispDecel).setDuration(focusDuration(has?280:180)).start();
             } else {
                 image.setScaleX(1f); image.setScaleY(1f);
             }
@@ -2114,11 +2124,11 @@ public final class MainActivity extends Activity {
                 caption.animate().cancel();
                 if(alwaysLabels) {
                     caption.setVisibility(View.VISIBLE);
-                    caption.animate().alpha(has?1f:0.84f).translationY(has&&useSpring?px(3):0f).setDuration(180).start();
+                    caption.animate().alpha(has?1f:0.84f).translationY(has&&useSpring?px(3):0f).setDuration(focusDuration(180)).start();
                 } else if(slideLabels) {
                     caption.setVisibility(View.VISIBLE);
-                    caption.animate().alpha(has?1f:0f).translationY(has?px(3):-px(5))
-                            .setInterpolator(crispDecel).setDuration(has?210:150).start();
+                    caption.animate().alpha(has?1f:0f).translationY(instantFocus()?0f:has?px(3):-px(5))
+                            .setInterpolator(crispDecel).setDuration(focusDuration(has?210:150)).start();
                 } else {
                     caption.setAlpha(1f); caption.setTranslationY(0f);
                     caption.setVisibility(has?View.VISIBLE:View.INVISIBLE);
@@ -2137,9 +2147,9 @@ public final class MainActivity extends Activity {
                 boolean showGlow=has&&store.flag("ambient_glow",true)&&!backgroundGlow()&&glowColor!=0;
                 if(showGlow) {
                     glow.setVisibility(View.VISIBLE);
-                    glow.animate().alpha(1f).scaleX(1.15f).scaleY(1.15f).setDuration(180).start();
+                    glow.animate().alpha(1f).scaleX(1.15f).scaleY(1.15f).setDuration(focusDuration(180)).start();
                 } else {
-                    glow.animate().alpha(0f).scaleX(0.92f).scaleY(0.92f).setDuration(130)
+                    glow.animate().alpha(0f).scaleX(0.92f).scaleY(0.92f).setDuration(focusDuration(130))
                         .withEndAction(()->{if(!tile.isFocused())glow.setVisibility(View.INVISIBLE);}).start();
                 }
             }
@@ -2256,6 +2266,10 @@ public final class MainActivity extends Activity {
                 lens.requestLayout();
             }
             lens.setTranslationX(x);
+            if("magnetic".equals(focusMotionStyle())){
+                float stretch=Math.min(.14f,Math.abs(targetX-x)/Math.max(1,w)*.12f);
+                lens.setScaleX(1f+stretch);lens.setScaleY(1f-stretch*.25f);
+            }
         }
         void stop() {
             if(running) { running=false; Choreographer.getInstance().removeFrameCallback(this); }
@@ -2266,8 +2280,8 @@ public final class MainActivity extends Activity {
             lastNanos=nanos;
             boolean crisp="crisp".equals(focusMotionStyle());
             float speedFactor=(float)Math.pow(focusSpringSpeed()/100.0,1.45);
-            float k=(crisp?490f:340f)*speedFactor;
-            float c=2f*(crisp?1.0f:0.78f)*(float)Math.sqrt(k);
+            float k=("magnetic".equals(focusMotionStyle())?420f:crisp?490f:340f)*speedFactor;
+            float c=2f*("magnetic".equals(focusMotionStyle())?.88f:crisp?1.0f:.78f)*(float)Math.sqrt(k);
             int steps=Math.max(1,(int)Math.ceil(dt/0.008f));
             float h=dt/steps;
             for(int i=0;i<steps;i++) {
@@ -2328,7 +2342,7 @@ public final class MainActivity extends Activity {
             if(iconView!=null) iconView.setImageDrawable(new LineIcon(symbol,has?accent():0xE8FFFFFF));
             text.setTextColor(has?foreground():0xECFFFFFF);
             if(has) text.setTypeface(medium); else text.setTypeface(regular);
-            tile.animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f).setDuration(150).start();
+            tile.animate().scaleX(has&&!instantFocus()?1.045f:1f).scaleY(has&&!instantFocus()?1.045f:1f).setDuration(focusDuration(150)).start();
             if(dockSpringLens!=null) {
                 if(has && useDockSpring) dockSpringLens.onItemFocused(tile);
                 else dockSpringLens.onItemUnfocused(tile);
@@ -2535,18 +2549,18 @@ public final class MainActivity extends Activity {
                         android.view.animation.Interpolator interp=useSpring&&liquid?liquidOvershoot:crispDecel;
                         int dur=has?(useSpring?220:140):(useSpring?170:140);
 
-                        card.animate().translationZ(has?px(16):0).setDuration(dur).start();
+                        card.animate().translationZ(has?px(16):0).setDuration(focusDuration(dur)).start();
                         picture.setBackground(glassSurface(false,true,has&&!useSpring,surfaceTint));
                         picture.invalidate();
                         picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
-                                .translationY(has&&useSpring?-px(4):0f)
+                                .translationY(has?focusLift():0f)
                                 .translationZ(has?px(12):0)
-                                .setInterpolator(interp).setDuration(dur).start();
+                                .setInterpolator(interp).setDuration(focusDuration(dur)).start();
 
                         if(imgRef[0]!=null) {
-                            if(store.flag("focus_parallax",true)) {
-                                imgRef[0].animate().scaleX(has?1.045f:1f).scaleY(has?1.045f:1f)
-                                        .setInterpolator(crispDecel).setDuration(has?280:180).start();
+                            if(!instantFocus()&&store.flag("focus_parallax",true)) {
+                                imgRef[0].animate().scaleX(has&&!instantFocus()?1.045f:1f).scaleY(has&&!instantFocus()?1.045f:1f)
+                                        .setInterpolator(crispDecel).setDuration(focusDuration(has?280:180)).start();
                             } else {
                                 imgRef[0].setScaleX(1f); imgRef[0].setScaleY(1f);
                             }
@@ -2555,7 +2569,7 @@ public final class MainActivity extends Activity {
                         title.animate().cancel();
                         title.animate().alpha(has?1f:0.76f)
                                 .translationY(has&&useSpring?px(3):0f)
-                                .setInterpolator(crispDecel).setDuration(has?200:150).start();
+                                .setInterpolator(crispDecel).setDuration(focusDuration(has?200:150)).start();
                         title.setTextColor(has?foreground():muted());
 
                         if(useSpring && rowStage!=null) {
@@ -2576,7 +2590,7 @@ public final class MainActivity extends Activity {
                             glow.animate().cancel();
                             if(showGlow) {
                                 glow.setScaleX(0.88f); glow.setScaleY(0.88f);
-                                glow.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180).start();
+                                glow.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(focusDuration(180)).start();
                             } else {
                                 glow.setAlpha(0f);
                             }
@@ -3110,10 +3124,13 @@ public final class MainActivity extends Activity {
                         ()->choice("Motion style",new String[]{
                                 "Liquid spring · CleanYourTV glide with subtle cushion",
                                 "Crisp glide · Travelling focus with zero bounce",
-                                "Classic · Stationary per-tile fade"},
-                                "crisp".equals(style)?1:"classic".equals(style)?2:0,
+                                "Classic \u00b7 Stationary per-tile fade",
+                                "Soft lift \u00b7 Gentle rise without bounce",
+                                "Magnetic \u00b7 Stretching highlight that catches up",
+                                "Instant \u00b7 Immediate focus without movement"},
+                                motionStyleIndex(),
                                 idx->{
-                                    store.set("focus_motion_style",new String[]{"liquid","crisp","classic"}[idx]);
+                                    store.set("focus_motion_style",new String[]{"liquid","crisp","classic","soft","magnetic","instant"}[idx]);
                                     render();focusMotionMenu(back);
                                 },()->focusMotionMenu(back)),
                         ()->focusSpeedSliderDialog(back),
@@ -3228,9 +3245,9 @@ public final class MainActivity extends Activity {
             int idx=ping[0]%2;
             int other=1-idx;
             float z=focusZoomScale(false);
-            slots[idx].animate().scaleX(z).scaleY(z).translationY(-px(4)).setInterpolator("crisp".equals(focusMotionStyle())?crispDecel:liquidOvershoot).setDuration(220).start();
+            slots[idx].animate().scaleX(z).scaleY(z).translationY(focusLift()).setInterpolator("liquid".equals(focusMotionStyle())?liquidOvershoot:crispDecel).setDuration(focusDuration(220)).start();
             slots[other].animate().scaleX(1f).scaleY(1f).translationY(0f).setInterpolator(crispDecel).setDuration(170).start();
-            stage.commitTarget(slots[idx],iconSz,iconSz,idx==0?colA:colB);
+            if(springFocusActive())stage.commitTarget(slots[idx],iconSz,iconSz,idx==0?colA:colB);else stage.hideImmediate();
             ping[0]++;
             handler.postDelayed(ticker[0],1150);
         };
@@ -3238,7 +3255,6 @@ public final class MainActivity extends Activity {
 
         showBladePanel("Glide speed",box,"Save",()->{
             int sp=slider.getProgress()+50;
-            if("classic".equals(focusMotionStyle())) store.set("focus_motion_style","liquid");
             store.setNumber("focus_spring_speed",sp);
             stage.stop(); previewSpringStage=null;
             render();focusMotionMenu(back);
@@ -3843,7 +3859,7 @@ public final class MainActivity extends Activity {
         pill.setOnFocusChangeListener((v,has)->{
             pill.setBackground(glassControlDrawable(pill,has,-1f,accent(),true,false));
             glanceTempView.setTextColor(has?accent():0xF2FFFFFF);
-            pill.animate().scaleX(has?1.05f:1f).scaleY(has?1.05f:1f).translationZ(has?px(12):0).setDuration(130).start();
+            pill.animate().scaleX(has&&!instantFocus()?1.05f:1f).scaleY(has&&!instantFocus()?1.05f:1f).translationZ(has?px(12):0).setDuration(focusDuration(130)).start();
             if(has && sfx!=null) sfx.playFocus(v,screenWidth,1);
         });
 
@@ -5441,7 +5457,7 @@ public final class MainActivity extends Activity {
         button.setFocusableInTouchMode(true);
         button.setOnFocusChangeListener((v,has)->{
             button.setBackground(glassControlDrawable(button,has,16f,accent(),false,false));
-            button.animate().scaleX(has?1.03f:1f).scaleY(has?1.03f:1f).setDuration(130).start();
+            button.animate().scaleX(has&&!instantFocus()?1.03f:1f).scaleY(has&&!instantFocus()?1.03f:1f).setDuration(focusDuration(130)).start();
         });
         button.setOnClickListener(v->{
             boolean auditionPad="Focus Tap".equals(label)||"Select Bloom".equals(label)||"Menu Glide".equals(label)||"Back Settle".equals(label);
