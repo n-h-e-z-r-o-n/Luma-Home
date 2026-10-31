@@ -3069,7 +3069,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@wifi|Wi-Fi & network ↗",()->openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS));
         add(labels,actions,"@sparkles|Manage apps ↗",()->openSystemIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS));
         add(labels,actions,"@settings|All TV settings ↗",()->openSystemIntent(Settings.ACTION_SETTINGS));
-        add(labels,actions,"@heart|Support the developer: Tip jar",this::supportDeveloperMenu);
+        add(labels,actions,"@heart|Support the developer: M-Pesa & tips",this::supportDeveloperMenu);
         add(labels,actions,"@info|About Luma Home: v"+versionName(),this::aboutMenu);
         menu("Luma Settings",labels,actions,null);
     }
@@ -4447,8 +4447,9 @@ public final class MainActivity extends Activity {
             });
         }
 
-        add(labels,actions,"\u00A7ALTERNATIVE WAYS TO SUPPORT",null);
-        add(labels,actions,"@wifi|Scan phone QR code to tip: Mobile",()->tipQrPanel(this::supportDeveloperMenu));
+        add(labels,actions,"\u00A7M-PESA & MOBILE PAYMENT",null);
+        add(labels,actions,"@wifi|Pay with M-Pesa: Scan QR",()->tipQrPanel(this::supportDeveloperMenu));
+        add(labels,actions,"\u00A7ABOUT SUPPORT",null);
         add(labels,actions,"@info|About Developer Support: Details",()->{
             info("Developer Support","Luma Home is 100% ad-free, tracks no user data, and contains no paywalls. Tipping is completely voluntary and directly supports continuous improvements, TV optimizations, and new features.",this::supportDeveloperMenu);
         });
@@ -4460,7 +4461,7 @@ public final class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(px(16),px(16),px(16),px(16));
 
-        TextView intro=text("Point your phone camera at the QR code below to open the developer support page on your mobile device.",18,0xEAFFFFFF);
+        TextView intro=text("Point your phone camera at the QR code below to pay securely with M-Pesa or card on your mobile device.",18,0xEAFFFFFF);
         intro.setLineSpacing(px(4),1f);
         box.addView(intro,new LinearLayout.LayoutParams(-1,-2));
 
@@ -4472,7 +4473,11 @@ public final class MainActivity extends Activity {
         whiteCard.setPadding(px(10),px(10),px(10),px(10));
         ImageView qrImg=new ImageView(this);
         qrImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        String tipUrl=store.value("tip_qr_url","https://buymeacoffee.com/lumahome");
+        String tipUrl=store.value("tip_qr_url","https://payments.zadhron.com/pay/pl_4a5c5234");
+        if("https://buymeacoffee.com/lumahome".equals(tipUrl)) {
+            tipUrl="https://payments.zadhron.com/pay/pl_4a5c5234";
+            store.set("tip_qr_url",tipUrl);
+        }
         qrImg.setImageBitmap(QrCode.encodeBitmap(tipUrl,px(240),3,0xFF0B101A,0xFFFFFFFF));
         whiteCard.addView(qrImg,new FrameLayout.LayoutParams(px(240),px(240),Gravity.CENTER));
         qrStage.addView(whiteCard,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
@@ -4480,14 +4485,14 @@ public final class MainActivity extends Activity {
         qp.topMargin=px(16); qp.bottomMargin=px(14);
         box.addView(qrStage,qp);
 
-        TextView urlPill=text(tipUrl,15,accent());
+        TextView urlPill=text(tipUrl,13,accent());
         urlPill.setTypeface(medium);
         urlPill.setPadding(px(12),px(8),px(12),px(8));
         urlPill.setBackground(shapeRadius(0x16FFFFFF,0x24FFFFFF,1,10));
         urlPill.setGravity(Gravity.CENTER);
         box.addView(urlPill,new LinearLayout.LayoutParams(-1,-2));
 
-        showBladePanel("Tip from Phone",box,"Done",back,back,null);
+        showBladePanel("Pay with M-Pesa",box,"Done",back,back,null);
     }
     private void aboutMenu() {
         menu("About Luma Home",Arrays.asList("Version: "+versionName(),"Your privacy","Open-source license"),Arrays.asList(
