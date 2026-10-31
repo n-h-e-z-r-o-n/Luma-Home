@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.lumahome.launcher" android:versionCode="29" android:versionName="0.5.16">
+    package="com.lumahome.launcher" android:versionCode="30" android:versionName="0.5.17">
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
@@ -22,6 +22,12 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="com.android.vending.billing.InAppBillingService.BIND" />
+        </intent>
+        <intent>
+            <action android:name="com.google.android.apps.play.billingtestcompanion.BillingOverrideService.BIND" />
+        </intent>
     </queries>
     <uses-feature android:name="android.software.leanback" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -29,6 +35,21 @@
         android:icon="@mipmap/ic_launcher" android:banner="@drawable/tv_banner"
         android:usesCleartextTraffic="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <meta-data
+            android:name="com.google.android.play.billingclient.version"
+            android:value="8.0.0" />
+
+        <activity
+            android:name="com.android.billingclient.api.ProxyBillingActivity"
+            android:configChanges="keyboard|keyboardHidden|screenLayout|screenSize|orientation"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <activity
+            android:name="com.android.billingclient.api.ProxyBillingActivityV2"
+            android:configChanges="keyboard|keyboardHidden|screenLayout|screenSize|orientation"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <activity android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask" android:stateNotNeeded="true"

@@ -8,6 +8,8 @@ import com.android.billingclient.api.BillingClient;
 import com.android.billingclient.api.BillingClientStateListener;
 import com.android.billingclient.api.BillingFlowParams;
 import com.android.billingclient.api.BillingResult;
+import com.android.billingclient.api.PendingPurchasesParams;
+import com.android.billingclient.api.QueryProductDetailsResult;
 import com.android.billingclient.api.ConsumeParams;
 import com.android.billingclient.api.ProductDetails;
 import com.android.billingclient.api.Purchase;
@@ -75,7 +77,7 @@ public final class BillingManager implements PurchasesUpdatedListener {
         try {
             billingClient = BillingClient.newBuilder(appContext)
                     .setListener(this)
-                    .enablePendingPurchases()
+                    .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
                     .build();
             connect(null);
         } catch (Exception ignored) {
@@ -126,11 +128,11 @@ public final class BillingManager implements PurchasesUpdatedListener {
         QueryProductDetailsParams params = QueryProductDetailsParams.newBuilder()
                 .setProductList(list)
                 .build();
-        billingClient.queryProductDetailsAsync(params, (billingResult, productDetailsList) -> {
-            if (billingResult.getResponseCode() == BillingClient.BillingResponseCode.OK && productDetailsList != null) {
+        billingClient.queryProductDetailsAsync(params, (billingResult, queryResult) -> {
+            if (billingResult.getResponseCode() == BillingClient.BillingResponseCode.OK && queryResult != null && queryResult.getProductDetailsList() != null) {
                 synchronized (productDetailsMap) {
                     productDetailsMap.clear();
-                    for (ProductDetails details : productDetailsList) {
+                    for (ProductDetails details : queryResult.getProductDetailsList()) {
                         productDetailsMap.put(details.getProductId(), details);
                     }
                 }
