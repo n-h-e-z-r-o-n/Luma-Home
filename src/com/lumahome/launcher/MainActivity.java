@@ -115,6 +115,8 @@ public final class MainActivity extends Activity {
     private final List<SpringStage> recommendationSpringStages=new ArrayList<>();
     private DockSpringLens dockSpringLens;
     private View dockBar, searchBar, activeBladeBox;
+    private TextView drawerFocusTitle;
+    private android.animation.ValueAnimator drawerSearchAnimator;
     private UiSoundEngine sfx;
     private long lastUserNavMs;
     private int lastUserNavDir=1;
@@ -309,7 +311,7 @@ public final class MainActivity extends Activity {
     private int px(float value) { return Math.max(1,Math.round(value*scale)); }
     private int columns() { return store.number("columns",6); }
     private int innerWidth() { return screenWidth-px(192); }
-    private int drawerWidth() { return screenWidth-px(96); }
+    private int drawerWidth() { return screenWidth-px(192); }
     private int recommendationSize() {return Math.max(0,Math.min(3,store.number("recommendation_size",1)));}
     private int recommendationWidth(int size) {return new int[]{224,256,336,416}[size];}
     private int recommendationTitleHeight(int size) {return new int[]{44,48,56,64}[size];}
@@ -756,6 +758,8 @@ public final class MainActivity extends Activity {
     private void render() {
         if (destroyed) return;
         stopSpringStages(); homeSpringStage=null; drawerSpringStage=null; recentSpringStage=null; dockSpringLens=null;
+        if(drawerSearchAnimator!=null)drawerSearchAnimator.cancel();
+        drawerFocusTitle=null;
         dockBar=null; searchBar=null;
         stopHeroVideo();handler.removeCallbacks(heroRotation);heroPanel=null;heroPrimary=null;
         refreshWallpaperPalette();
@@ -782,7 +786,7 @@ public final class MainActivity extends Activity {
         root.setClipChildren(false);
         root.addView(content,at(0,0,screenWidth,screenHeight));
         if (drawer) renderDrawer(); else renderHome();
-        if (store.flag("show_dock",true)) buildDock();
+        if (drawer||store.flag("show_dock",true)) buildDock();
         setContentView(root);
         syncSystemSoundMuting();
         root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
@@ -1343,48 +1347,58 @@ public final class MainActivity extends Activity {
         if(focus)hero.post(()->{if(heroPanel==hero&&heroWantsFocus)open.requestFocus();});
         wireNavigation();if(store.flag("hero_rotate"))handler.postDelayed(heroRotation,10000);
     }
+    private void resizeDrawerSearch(EditText filter,boolean expanded){
+        if(drawerSearchAnimator!=null)drawerSearchAnimator.cancel();
+        int target=expanded?drawerWidth():px(220);
+        int from=filter.getWidth()>0?filter.getWidth():filter.getLayoutParams().width;
+        if(from==target)return;
+        drawerSearchAnimator=android.animation.ValueAnimator.ofInt(from,target);
+        drawerSearchAnimator.setDuration(focusDuration(220));drawerSearchAnimator.setInterpolator(crispDecel);
+        drawerSearchAnimator.addUpdateListener(anim->{
+            ViewGroup.LayoutParams lp=filter.getLayoutParams();lp.width=(Integer)anim.getAnimatedValue();filter.setLayoutParams(lp);
+        });drawerSearchAnimator.start();
+    }
     private void renderDrawer() {
-        ScrollView page=scroll();
-        drawerScroll=page;
-        page.setClipChildren(false);
+        ScrollView page=scroll();drawerScroll=page;page.setClipChildren(false);page.setClipToPadding(false);
         content.addView(page,new FrameLayout.LayoutParams(-1,-1));
-        drawerPage=new LinearLayout(this); drawerPage.setOrientation(LinearLayout.VERTICAL);
-        drawerPage.setPadding(px(48),px(92),px(48),px(96));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
+        drawerPage=new LinearLayout(this);drawerPage.setOrientation(LinearLayout.VERTICAL);
+        drawerPage.setPadding(px(96),px(36),px(96),px(120));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
         page.addView(drawerPage,new ScrollView.LayoutParams(-1,-2));
-        FrameLayout top=new FrameLayout(this);
-        LinearLayout clock=clockBlock();top.addView(clock,new FrameLayout.LayoutParams(-1,-1));
         topPillViews.clear();
-        if(topControlsVisible()) {
-            View pills=buildTopPillBar();
-            FrameLayout.LayoutParams pp=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.RIGHT);
-            pp.topMargin=px(220);top.addView(pills,pp);
-        } else {
-            Button back=button("Back to Home",()->{ hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); });
-            top.addView(back,at(drawerWidth()-px(330),0,px(330),px(66)));
-            topPillViews.add(back);
-        }
-        drawerPage.addView(top,new LinearLayout.LayoutParams(-1,px(topControlsVisible()?310:266)));
-        EditText filter=new EditText(this); filter.setId(View.generateViewId()); filter.setSingleLine(true);
-        filter.setSoundEffectsEnabled(!muteSystem());
-        searchBar=filter;
-        filter.setTypeface(regular);filter.setTextColor(foreground()); filter.setHintTextColor(muted()); filter.setHint("Search all apps");
-        filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(28));
-        filter.setPadding(px(24),0,px(24),0);
-        filter.setBackground(glassControlDrawable(filter,false,22f,accent(),true,false));
-        filter.setOnFocusChangeListener((v,has)->filter.setBackground(glassControlDrawable(filter,has,22f,accent(),true,false)));
-        filter.setText(search); filter.setSelectAllOnFocus(true);
-        filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
-        LinearLayout.LayoutParams searchParams=new LinearLayout.LayoutParams(-1,px(64));searchParams.topMargin=px(32);searchParams.bottomMargin=px(64);
-        drawerPage.addView(filter,searchParams);
-        FrameLayout grid=new FrameLayout(this);
-        grid.setClipChildren(false);grid.setClipToPadding(false);
-        drawerPage.addView(grid,new LinearLayout.LayoutParams(-1,-2));
-        filter.addTextChangedListener(new TextWatcher() {
-            public void beforeTextChanged(CharSequence s,int start,int count,int after) {}
-            public void onTextChanged(CharSequence s,int start,int before,int count) { search=s.toString(); populateDrawer(grid,filter); }
-            public void afterTextChanged(Editable e) {}
+        LinearLayout clock=clockBlock();drawerPage.addView(clock,new LinearLayout.LayoutParams(-1,px(270)));
+        LinearLayout tools=new LinearLayout(this);tools.setGravity(Gravity.CENTER_VERTICAL);tools.setBaselineAligned(false);
+        TextView heading=text("All Apps",30,muted());heading.setTypeface(medium);
+        tools.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
+        EditText filter=new EditText(this);filter.setId(View.generateViewId());filter.setSingleLine(true);
+        filter.setSoundEffectsEnabled(!muteSystem());filter.setShowSoftInputOnFocus(false);searchBar=filter;
+        filter.setTypeface(regular);filter.setTextColor(foreground());filter.setHintTextColor(muted());filter.setHint("Search apps");
+        filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(26));filter.setPadding(px(24),0,px(24),0);
+        Drawable searchIcon=getDrawable(android.R.drawable.ic_menu_search).mutate();searchIcon.setTint(foreground());searchIcon.setBounds(0,0,px(28),px(28));
+        filter.setCompoundDrawables(searchIcon,null,null,null);filter.setCompoundDrawablePadding(px(14));
+        filter.setBackground(glassControlDrawable(filter,false,32f,accent(),true,false));
+        filter.setText(search);filter.setSelectAllOnFocus(true);filter.setContentDescription("Search all apps");
+        filter.setOnFocusChangeListener((v,has)->{
+            filter.setBackground(glassControlDrawable(filter,has,32f,accent(),true,false));
+            resizeDrawerSearch(filter,has||!filter.getText().toString().isEmpty());
+            if(has&&drawerFocusTitle!=null)drawerFocusTitle.setText("Find an app");
+            if(!has)hideKeyboard();
         });
-        views.put("search",filter); populateDrawer(grid,filter);
+        filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
+        filter.setOnKeyListener((v,key,event)->{
+            if(key==KeyEvent.KEYCODE_DPAD_DOWN&&event.getAction()==KeyEvent.ACTION_DOWN&&!appViews.isEmpty()){appViews.get(0).requestFocus();return true;}
+            return false;
+        });
+        tools.addView(filter,new LinearLayout.LayoutParams(search.isEmpty()?px(220):drawerWidth(),px(64)));
+        LinearLayout.LayoutParams toolbarParams=new LinearLayout.LayoutParams(-1,px(64));toolbarParams.topMargin=px(24);toolbarParams.bottomMargin=px(44);drawerPage.addView(tools,toolbarParams);
+        drawerFocusTitle=text("Your apps",72,foreground());drawerFocusTitle.setSingleLine(true);drawerFocusTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams titleParams=new LinearLayout.LayoutParams(-1,px(100));titleParams.bottomMargin=px(32);drawerPage.addView(drawerFocusTitle,titleParams);
+        FrameLayout grid=new FrameLayout(this);grid.setClipChildren(false);grid.setClipToPadding(false);drawerPage.addView(grid,new LinearLayout.LayoutParams(-1,-2));
+        filter.addTextChangedListener(new TextWatcher(){
+            public void beforeTextChanged(CharSequence s,int start,int count,int after){}
+            public void onTextChanged(CharSequence value,int start,int before,int count){search=value.toString();populateDrawer(grid,filter);}
+            public void afterTextChanged(Editable value){}
+        });
+        views.put("search",filter);filter.setNextFocusUpId(filter.getId());populateDrawer(grid,filter);
     }
     private void populateDrawer(FrameLayout grid,EditText searchView) {
         List<String> visible=new ArrayList<>(); String query=search.toLowerCase(Locale.ROOT).trim();
@@ -1415,8 +1429,10 @@ public final class MainActivity extends Activity {
     }
     private LinearLayout gridRows(List<String> packages,boolean allApps) {
         LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(24),0,px(28));
-        int width=allApps?drawerWidth():innerWidth(), count=columns(), gap=px(36);
-        int tileWidth=(width-gap*(count-1))/count, tileHeight=tileWidth*9/16;
+        int width=allApps?drawerWidth():innerWidth(), count=columns(), gap=px(allApps?56:36);
+        int tileWidth=(width-gap*(count-1))/count;
+        if(allApps){tileWidth=Math.min(px(360),tileWidth);gap=count>1?(width-count*tileWidth)/(count-1):0;}
+        int tileHeight=tileWidth*9/16;
         LinearLayout row=null;
         List<View> navigationRow=null;
         for (int i=0;i<packages.size();i++) {
@@ -2155,6 +2171,7 @@ public final class MainActivity extends Activity {
             }
             if (has) {
                 updateAmbient(pkg);
+                if(drawer&&allApps&&drawerFocusTitle!=null)drawerFocusTitle.setText(name(pkg));
                 if(!recent)lastFocus=pkg;
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
             }
@@ -2398,6 +2415,7 @@ public final class MainActivity extends Activity {
                     else if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) v.setNextFocusUpId(glanceWidget.getId());
                     else if(!topPillViews.isEmpty()) v.setNextFocusUpId(topPillViews.get(0).getId());
                 }
+                if(r==0&&drawer&&views.get("search")!=null)v.setNextFocusUpId(views.get("search").getId());
                 if(r>0) {
                     List<View> above=appRows.get(r-1);v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
                 }
