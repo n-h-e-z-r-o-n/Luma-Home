@@ -1347,9 +1347,22 @@ public final class MainActivity extends Activity {
         if(focus)hero.post(()->{if(heroPanel==hero&&heroWantsFocus)open.requestFocus();});
         wireNavigation();if(store.flag("hero_rotate"))handler.postDelayed(heroRotation,10000);
     }
+    private void updateDrawerFocusTitle(String newTitle){
+        if(drawerFocusTitle==null||newTitle==null)return;
+        CharSequence cur=drawerFocusTitle.getText();
+        if(cur!=null&&cur.toString().equals(newTitle))return;
+        drawerFocusTitle.animate().cancel();
+        final float shift=px(18);
+        drawerFocusTitle.animate().alpha(0f).translationX(-shift).setDuration(120).withEndAction(()->{
+            if(drawerFocusTitle==null)return;
+            drawerFocusTitle.setText(newTitle);
+            drawerFocusTitle.setTranslationX(shift);
+            drawerFocusTitle.animate().alpha(1f).translationX(0f).setDuration(200).start();
+        }).start();
+    }
     private void resizeDrawerSearch(EditText filter,boolean expanded){
         if(drawerSearchAnimator!=null)drawerSearchAnimator.cancel();
-        int target=expanded?drawerWidth():px(220);
+        int target=expanded?px(520):px(220);
         int from=filter.getWidth()>0?filter.getWidth():filter.getLayoutParams().width;
         if(from==target)return;
         drawerSearchAnimator=android.animation.ValueAnimator.ofInt(from,target);
@@ -1365,22 +1378,29 @@ public final class MainActivity extends Activity {
         drawerPage.setPadding(px(96),px(36),px(96),px(120));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
         page.addView(drawerPage,new ScrollView.LayoutParams(-1,-2));
         topPillViews.clear();
-        LinearLayout clock=clockBlock();drawerPage.addView(clock,new LinearLayout.LayoutParams(-1,px(270)));
-        LinearLayout tools=new LinearLayout(this);tools.setGravity(Gravity.CENTER_VERTICAL);tools.setBaselineAligned(false);
-        TextView heading=text("All Apps",30,muted());heading.setTypeface(medium);
-        tools.addView(heading,new LinearLayout.LayoutParams(0,-2,1f));
+
+        FrameLayout headerRow=new FrameLayout(this);
+        headerRow.setClipChildren(false);headerRow.setClipToPadding(false);
+        LinearLayout clock=clockBlock();
+        headerRow.addView(clock,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.LEFT));
+
         EditText filter=new EditText(this);filter.setId(View.generateViewId());filter.setSingleLine(true);
         filter.setSoundEffectsEnabled(!muteSystem());filter.setShowSoftInputOnFocus(false);searchBar=filter;
         filter.setTypeface(regular);filter.setTextColor(foreground());filter.setHintTextColor(muted());filter.setHint("Search apps");
-        filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(26));filter.setPadding(px(24),0,px(24),0);
-        Drawable searchIcon=getDrawable(android.R.drawable.ic_menu_search).mutate();searchIcon.setTint(foreground());searchIcon.setBounds(0,0,px(28),px(28));
-        filter.setCompoundDrawables(searchIcon,null,null,null);filter.setCompoundDrawablePadding(px(14));
-        filter.setBackground(glassControlDrawable(filter,false,32f,accent(),true,false));
+        filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(24));filter.setPadding(px(22),0,px(22),0);
+        Drawable searchIcon=getDrawable(android.R.drawable.ic_menu_search).mutate();searchIcon.setTint(foreground());searchIcon.setBounds(0,0,px(26),px(26));
+        filter.setCompoundDrawables(searchIcon,null,null,null);filter.setCompoundDrawablePadding(px(12));
+        filter.setBackground(glassControlDrawable(filter,false,28f,accent(),true,false));
         filter.setText(search);filter.setSelectAllOnFocus(true);filter.setContentDescription("Search all apps");
         filter.setOnFocusChangeListener((v,has)->{
-            filter.setBackground(glassControlDrawable(filter,has,32f,accent(),true,false));
+            filter.setBackground(glassControlDrawable(filter,has,28f,accent(),true,false));
             resizeDrawerSearch(filter,has||!filter.getText().toString().isEmpty());
-            if(has&&drawerFocusTitle!=null)drawerFocusTitle.setText("Find an app");
+            if(has){
+                if(drawerScroll!=null)drawerScroll.smoothScrollTo(0,0);
+                updateDrawerFocusTitle("Find an app");
+            }else if(!has&&!appViews.isEmpty()&&lastFocus!=null&&byPackage.containsKey(lastFocus)){
+                updateDrawerFocusTitle(name(lastFocus));
+            }
             if(!has)hideKeyboard();
         });
         filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
@@ -1388,10 +1408,19 @@ public final class MainActivity extends Activity {
             if(key==KeyEvent.KEYCODE_DPAD_DOWN&&event.getAction()==KeyEvent.ACTION_DOWN&&!appViews.isEmpty()){appViews.get(0).requestFocus();return true;}
             return false;
         });
-        tools.addView(filter,new LinearLayout.LayoutParams(search.isEmpty()?px(220):drawerWidth(),px(64)));
-        LinearLayout.LayoutParams toolbarParams=new LinearLayout.LayoutParams(-1,px(64));toolbarParams.topMargin=px(24);toolbarParams.bottomMargin=px(44);drawerPage.addView(tools,toolbarParams);
-        drawerFocusTitle=text("Your apps",72,foreground());drawerFocusTitle.setSingleLine(true);drawerFocusTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams titleParams=new LinearLayout.LayoutParams(-1,px(100));titleParams.bottomMargin=px(32);drawerPage.addView(drawerFocusTitle,titleParams);
+        FrameLayout.LayoutParams searchParams=new FrameLayout.LayoutParams(search.isEmpty()?px(220):px(520),px(58),Gravity.TOP|Gravity.RIGHT);
+        searchParams.topMargin=px(18);
+        headerRow.addView(filter,searchParams);
+        drawerPage.addView(headerRow,new LinearLayout.LayoutParams(-1,-2));
+
+        String initialTitle=apps.isEmpty()?"All Apps":name(apps.get(0).pkg);
+        drawerFocusTitle=text(initialTitle,52,foreground());
+        drawerFocusTitle.setTypeface(regular);drawerFocusTitle.setLetterSpacing(-0.02f);
+        drawerFocusTitle.setSingleLine(true);drawerFocusTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams titleParams=new LinearLayout.LayoutParams(-1,px(76));
+        titleParams.topMargin=px(28);titleParams.bottomMargin=px(16);
+        drawerPage.addView(drawerFocusTitle,titleParams);
+
         FrameLayout grid=new FrameLayout(this);grid.setClipChildren(false);grid.setClipToPadding(false);drawerPage.addView(grid,new LinearLayout.LayoutParams(-1,-2));
         filter.addTextChangedListener(new TextWatcher(){
             public void beforeTextChanged(CharSequence s,int start,int count,int after){}
@@ -1419,7 +1448,7 @@ public final class MainActivity extends Activity {
         }
         drawerSpringStage=new SpringStage(groups,false);
         grid.addView(drawerSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
-        for (int i=0;i<Math.min(columns(),appViews.size());i++) appViews.get(i).setNextFocusUpId(searchView.getId());
+        for (int i=0;i<Math.min(4,appViews.size());i++) appViews.get(i).setNextFocusUpId(searchView.getId());
         wireNavigation();
         applyViewSoundPolicy(grid);
         if (visible.isEmpty()) {
@@ -1428,11 +1457,18 @@ public final class MainActivity extends Activity {
         }
     }
     private LinearLayout gridRows(List<String> packages,boolean allApps) {
-        LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(24),0,px(28));
-        int width=allApps?drawerWidth():innerWidth(), count=columns(), gap=px(allApps?56:36);
-        int tileWidth=(width-gap*(count-1))/count;
-        if(allApps){tileWidth=Math.min(px(360),tileWidth);gap=count>1?(width-count*tileWidth)/(count-1):0;}
-        int tileHeight=tileWidth*9/16;
+        LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(16),0,px(24));
+        int width=allApps?drawerWidth():innerWidth(), count=allApps?4:columns();
+        int tileWidth;
+        int gap;
+        if(allApps){
+            tileWidth=px(380);
+            gap=count>1?(width-count*tileWidth)/(count-1):px(48);
+        } else {
+            gap=px(36);
+            tileWidth=(width-gap*(count-1))/count;
+        }
+        int tileHeight=Math.round(tileWidth*9f/16f);
         LinearLayout row=null;
         List<View> navigationRow=null;
         for (int i=0;i<packages.size();i++) {
@@ -2086,10 +2122,11 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
-            if(appArt.drawable!=null)image.setImageDrawable(fitDrawable(appArt.drawable,px(64),px(64)));
-            image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(px(64),px(64)));
-            TextView inside=text(name(pkg),24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(12),0,px(12),0);
-            LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(40));labelParams.topMargin=px(8);plain.addView(inside,labelParams);
+            int iconSize=allApps?px(96):px(64);
+            if(appArt.drawable!=null)image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
+            image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(iconSize,iconSize));
+            TextView inside=text(name(pkg),allApps?26:24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(16),0,px(16),0);
+            LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(44));labelParams.topMargin=px(allApps?14:8);plain.addView(inside,labelParams);
             picture.addView(plain,new FrameLayout.LayoutParams(-1,-1));
         }
         iconSlot.addView(picture,new FrameLayout.LayoutParams(-1,-1));
@@ -2171,7 +2208,7 @@ public final class MainActivity extends Activity {
             }
             if (has) {
                 updateAmbient(pkg);
-                if(drawer&&allApps&&drawerFocusTitle!=null)drawerFocusTitle.setText(name(pkg));
+                if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent)lastFocus=pkg;
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
             }
