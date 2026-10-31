@@ -1362,7 +1362,7 @@ public final class MainActivity extends Activity {
     }
     private void resizeDrawerSearch(EditText filter,boolean expanded){
         if(drawerSearchAnimator!=null)drawerSearchAnimator.cancel();
-        int target=expanded?px(520):px(220);
+        int target=expanded?px(440):px(190);
         int from=filter.getWidth()>0?filter.getWidth():filter.getLayoutParams().width;
         if(from==target)return;
         drawerSearchAnimator=android.animation.ValueAnimator.ofInt(from,target);
@@ -1384,20 +1384,37 @@ public final class MainActivity extends Activity {
         LinearLayout clock=clockBlock();
         headerRow.addView(clock,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP|Gravity.LEFT));
 
+        LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);actions.setClipChildren(false);actions.setClipToPadding(false);
+
         EditText filter=new EditText(this);filter.setId(View.generateViewId());filter.setSingleLine(true);
         filter.setSoundEffectsEnabled(!muteSystem());filter.setShowSoftInputOnFocus(false);searchBar=filter;
-        filter.setTypeface(regular);filter.setTextColor(foreground());filter.setHintTextColor(muted());filter.setHint("Search apps");
+        filter.setTypeface(regular);filter.setTextColor(foreground());filter.setHintTextColor(muted());filter.setHint("Search");
         filter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(24));filter.setPadding(px(22),0,px(22),0);
         Drawable searchIcon=getDrawable(android.R.drawable.ic_menu_search).mutate();searchIcon.setTint(foreground());searchIcon.setBounds(0,0,px(26),px(26));
         filter.setCompoundDrawables(searchIcon,null,null,null);filter.setCompoundDrawablePadding(px(12));
         filter.setBackground(glassControlDrawable(filter,false,28f,accent(),true,false));
-        filter.setText(search);filter.setSelectAllOnFocus(true);filter.setContentDescription("Search all apps");
+        filter.setText(search);filter.setSelectAllOnFocus(true);filter.setContentDescription("Search");
+
+        FrameLayout homeBtn=new FrameLayout(this);homeBtn.setId(View.generateViewId());
+        homeBtn.setFocusable(true);homeBtn.setFocusableInTouchMode(true);homeBtn.setSoundEffectsEnabled(!muteSystem());
+        homeBtn.setBackground(glassControlDrawable(homeBtn,false,28f,accent(),true,false));homeBtn.setContentDescription("Home");
+        ImageView homeIcon=new ImageView(this);homeIcon.setImageDrawable(new LineIcon(LineIcon.HOME,0xEAFFFFFF));
+        homeBtn.addView(homeIcon,new FrameLayout.LayoutParams(px(26),px(26),Gravity.CENTER));
+
+        FrameLayout settingsBtn=new FrameLayout(this);settingsBtn.setId(View.generateViewId());
+        settingsBtn.setFocusable(true);settingsBtn.setFocusableInTouchMode(true);settingsBtn.setSoundEffectsEnabled(!muteSystem());
+        settingsBtn.setBackground(glassControlDrawable(settingsBtn,false,28f,accent(),true,false));settingsBtn.setContentDescription("Settings");
+        ImageView settingsIcon=new ImageView(this);settingsIcon.setImageDrawable(new LineIcon(LineIcon.GEAR,0xEAFFFFFF));
+        settingsBtn.addView(settingsIcon,new FrameLayout.LayoutParams(px(26),px(26),Gravity.CENTER));
+
         filter.setOnFocusChangeListener((v,has)->{
             filter.setBackground(glassControlDrawable(filter,has,28f,accent(),true,false));
             resizeDrawerSearch(filter,has||!filter.getText().toString().isEmpty());
             if(has){
+                lastFocus="search";
                 if(drawerScroll!=null)drawerScroll.smoothScrollTo(0,0);
-                updateDrawerFocusTitle("Find an app");
+                updateDrawerFocusTitle("Search");
             }else if(!has&&!appViews.isEmpty()&&lastFocus!=null&&byPackage.containsKey(lastFocus)){
                 updateDrawerFocusTitle(name(lastFocus));
             }
@@ -1405,12 +1422,89 @@ public final class MainActivity extends Activity {
         });
         filter.setOnClickListener(v->((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(filter,InputMethodManager.SHOW_IMPLICIT));
         filter.setOnKeyListener((v,key,event)->{
-            if(key==KeyEvent.KEYCODE_DPAD_DOWN&&event.getAction()==KeyEvent.ACTION_DOWN&&!appViews.isEmpty()){appViews.get(0).requestFocus();return true;}
+            if(event.getAction()==KeyEvent.ACTION_DOWN){
+                if(key==KeyEvent.KEYCODE_DPAD_DOWN&&!appViews.isEmpty()){appViews.get(0).requestFocus();return true;}
+                if(key==KeyEvent.KEYCODE_DPAD_RIGHT&&(filter.getText().length()==0||filter.getSelectionEnd()>=filter.getText().length())){
+                    homeBtn.requestFocus();return true;
+                }
+            }
             return false;
         });
-        FrameLayout.LayoutParams searchParams=new FrameLayout.LayoutParams(search.isEmpty()?px(220):px(520),px(58),Gravity.TOP|Gravity.RIGHT);
-        searchParams.topMargin=px(18);
-        headerRow.addView(filter,searchParams);
+        filter.setNextFocusUpId(filter.getId());
+        filter.setNextFocusRightId(homeBtn.getId());
+
+        homeBtn.setOnFocusChangeListener((v,has)->{
+            homeBtn.setBackground(glassControlDrawable(homeBtn,has,28f,accent(),true,false));
+            homeIcon.setImageDrawable(new LineIcon(LineIcon.HOME,has?accent():0xEAFFFFFF));
+            homeBtn.animate().scaleX(has&&!instantFocus()?1.08f:1f).scaleY(has&&!instantFocus()?1.08f:1f).translationZ(has?px(14):0).setDuration(focusDuration(130)).start();
+            if(has){
+                lastFocus="drawer.home";
+                if(drawerScroll!=null)drawerScroll.smoothScrollTo(0,0);
+                updateDrawerFocusTitle("Home");
+            }else if(!has&&!appViews.isEmpty()&&lastFocus!=null&&byPackage.containsKey(lastFocus)){
+                updateDrawerFocusTitle(name(lastFocus));
+            }
+        });
+        homeBtn.setOnClickListener(v->{
+            if(sfx!=null)sfx.playBack();
+            hideKeyboard();
+            drawer=false;
+            search="";
+            lastFocus=ALL;
+            render();
+        });
+        homeBtn.setOnKeyListener((v,key,event)->{
+            if(event.getAction()==KeyEvent.ACTION_DOWN){
+                if(key==KeyEvent.KEYCODE_DPAD_LEFT){filter.requestFocus();return true;}
+                if(key==KeyEvent.KEYCODE_DPAD_RIGHT){settingsBtn.requestFocus();return true;}
+                if(key==KeyEvent.KEYCODE_DPAD_DOWN&&!appViews.isEmpty()){
+                    appViews.get(Math.min(2,appViews.size()-1)).requestFocus();return true;
+                }
+            }
+            return false;
+        });
+        homeBtn.setNextFocusUpId(homeBtn.getId());
+        homeBtn.setNextFocusLeftId(filter.getId());
+        homeBtn.setNextFocusRightId(settingsBtn.getId());
+
+        settingsBtn.setOnFocusChangeListener((v,has)->{
+            settingsBtn.setBackground(glassControlDrawable(settingsBtn,has,28f,accent(),true,false));
+            settingsIcon.setImageDrawable(new LineIcon(LineIcon.GEAR,has?accent():0xEAFFFFFF));
+            settingsBtn.animate().scaleX(has&&!instantFocus()?1.08f:1f).scaleY(has&&!instantFocus()?1.08f:1f).translationZ(has?px(14):0).setDuration(focusDuration(130)).start();
+            if(has){
+                lastFocus="drawer.settings";
+                if(drawerScroll!=null)drawerScroll.smoothScrollTo(0,0);
+                updateDrawerFocusTitle("Settings");
+            }else if(!has&&!appViews.isEmpty()&&lastFocus!=null&&byPackage.containsKey(lastFocus)){
+                updateDrawerFocusTitle(name(lastFocus));
+            }
+        });
+        settingsBtn.setOnClickListener(v->settingsMenu());
+        settingsBtn.setOnKeyListener((v,key,event)->{
+            if(event.getAction()==KeyEvent.ACTION_DOWN){
+                if(key==KeyEvent.KEYCODE_DPAD_LEFT){homeBtn.requestFocus();return true;}
+                if(key==KeyEvent.KEYCODE_DPAD_DOWN&&!appViews.isEmpty()){
+                    appViews.get(Math.min(3,appViews.size()-1)).requestFocus();return true;
+                }
+            }
+            return false;
+        });
+        settingsBtn.setNextFocusUpId(settingsBtn.getId());
+        settingsBtn.setNextFocusLeftId(homeBtn.getId());
+        settingsBtn.setNextFocusRightId(settingsBtn.getId());
+
+        LinearLayout.LayoutParams filterLp=new LinearLayout.LayoutParams(search.isEmpty()?px(190):px(440),px(58));
+        actions.addView(filter,filterLp);
+        LinearLayout.LayoutParams homeLp=new LinearLayout.LayoutParams(px(58),px(58));
+        homeLp.leftMargin=px(14);
+        actions.addView(homeBtn,homeLp);
+        LinearLayout.LayoutParams settingsLp=new LinearLayout.LayoutParams(px(58),px(58));
+        settingsLp.leftMargin=px(12);
+        actions.addView(settingsBtn,settingsLp);
+
+        FrameLayout.LayoutParams actionsParams=new FrameLayout.LayoutParams(-2,px(58),Gravity.TOP|Gravity.RIGHT);
+        actionsParams.topMargin=px(18);
+        headerRow.addView(actions,actionsParams);
         drawerPage.addView(headerRow,new LinearLayout.LayoutParams(-1,-2));
 
         String initialTitle=apps.isEmpty()?"All Apps":name(apps.get(0).pkg);
@@ -1427,7 +1521,7 @@ public final class MainActivity extends Activity {
             public void onTextChanged(CharSequence value,int start,int before,int count){search=value.toString();populateDrawer(grid,filter);}
             public void afterTextChanged(Editable value){}
         });
-        views.put("search",filter);filter.setNextFocusUpId(filter.getId());populateDrawer(grid,filter);
+        views.put("search",filter);views.put("drawer.home",homeBtn);views.put("drawer.settings",settingsBtn);filter.setNextFocusUpId(filter.getId());populateDrawer(grid,filter);
     }
     private void populateDrawer(FrameLayout grid,EditText searchView) {
         List<String> visible=new ArrayList<>(); String query=search.toLowerCase(Locale.ROOT).trim();
@@ -1448,7 +1542,12 @@ public final class MainActivity extends Activity {
         }
         drawerSpringStage=new SpringStage(groups,false);
         grid.addView(drawerSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
-        for (int i=0;i<Math.min(4,appViews.size());i++) appViews.get(i).setNextFocusUpId(searchView.getId());
+        for (int i=0;i<Math.min(4,appViews.size());i++) {
+            View upTarget=searchView;
+            if(i==2&&views.get("drawer.home")!=null) upTarget=views.get("drawer.home");
+            else if(i>=3&&views.get("drawer.settings")!=null) upTarget=views.get("drawer.settings");
+            appViews.get(i).setNextFocusUpId(upTarget.getId());
+        }
         wireNavigation();
         applyViewSoundPolicy(grid);
         if (visible.isEmpty()) {
@@ -2453,7 +2552,12 @@ public final class MainActivity extends Activity {
                     else if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) v.setNextFocusUpId(glanceWidget.getId());
                     else if(!topPillViews.isEmpty()) v.setNextFocusUpId(topPillViews.get(0).getId());
                 }
-                if(r==0&&drawer&&views.get("search")!=null)v.setNextFocusUpId(views.get("search").getId());
+                if(r==0&&drawer) {
+                    View upTarget=views.get("search");
+                    if(c==2&&views.get("drawer.home")!=null) upTarget=views.get("drawer.home");
+                    else if(c>=3&&views.get("drawer.settings")!=null) upTarget=views.get("drawer.settings");
+                    if(upTarget!=null) v.setNextFocusUpId(upTarget.getId());
+                }
                 if(r>0) {
                     List<View> above=appRows.get(r-1);v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
                 }
@@ -2709,7 +2813,7 @@ public final class MainActivity extends Activity {
     }
     private void centerDrawerChild(View focused) {
         if(destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
-        if(focused==searchBar) {
+        if(focused==searchBar || (views.get("drawer.home")!=null&&focused==views.get("drawer.home")) || (views.get("drawer.settings")!=null&&focused==views.get("drawer.settings"))) {
             drawerScroll.smoothScrollTo(0,0);
             return;
         }
@@ -4366,6 +4470,7 @@ public final class MainActivity extends Activity {
             case "hdmi": return LineIcon.HDMI;
             case "home": return LineIcon.HOME;
             case "settings": return LineIcon.SETTINGS;
+            case "gear": return LineIcon.GEAR;
             case "info": return LineIcon.INFO;
             case "wifi": return LineIcon.WIFI;
             case "display": return LineIcon.DISPLAY;
