@@ -117,6 +117,8 @@ public final class MainActivity extends Activity {
     private View dockBar, searchBar, activeBladeBox;
     private TextView drawerFocusTitle;
     private android.animation.ValueAnimator drawerSearchAnimator;
+    private int drawerScrollTarget = -1;
+    private android.animation.ValueAnimator drawerScrollAnimator;
     private UiSoundEngine sfx;
     private long lastUserNavMs;
     private int lastUserNavDir=1;
@@ -765,7 +767,7 @@ public final class MainActivity extends Activity {
         refreshWallpaperPalette();
         final String desiredFocus=lastFocus;
         serial++; views.clear(); appViews.clear();appRows.clear(); dockViews.clear(); contentViews.clear();contentRows.clear(); topPillViews.clear();
-        focusedFavorite=null; drawerScroll=null;homeScroll=null;homePage=null;drawerPage=null;recentSection=null;
+        focusedFavorite=null; if(drawerScrollAnimator!=null){drawerScrollAnimator.cancel();drawerScrollAnimator=null;}drawerScrollTarget=-1;drawerScroll=null;homeScroll=null;homePage=null;drawerPage=null;recentSection=null;
         screenWidth=getResources().getDisplayMetrics().widthPixels;
         screenHeight=getResources().getDisplayMetrics().heightPixels;
         scale=Math.min(screenWidth/1920f,screenHeight/1080f);
@@ -1561,8 +1563,8 @@ public final class MainActivity extends Activity {
         int tileWidth;
         int gap;
         if(allApps){
-            tileWidth=px(380);
-            gap=count>1?(width-count*tileWidth)/(count-1):px(48);
+            tileWidth=px(400);
+            gap=count>1?(width-count*tileWidth)/(count-1):px(42);
         } else {
             gap=px(36);
             tileWidth=(width-gap*(count-1))/count;
@@ -2221,7 +2223,7 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
-            int iconSize=allApps?px(96):px(64);
+            int iconSize=allApps?px(102):px(64);
             if(appArt.drawable!=null)image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(iconSize,iconSize));
             TextView inside=text(name(pkg),allApps?26:24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(16),0,px(16),0);
@@ -2310,7 +2312,10 @@ public final class MainActivity extends Activity {
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent)lastFocus=pkg;
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
-                else if(allApps && drawerScroll!=null) drawerScroll.post(()->centerDrawerChild(tile));
+                else if(allApps && drawerScroll!=null) {
+                    if(drawerScroll.getHeight()>0) centerDrawerChild(tile);
+                    else drawerScroll.post(()->centerDrawerChild(tile));
+                }
             }
         });
         tile.setOnClickListener(v->launch(pkg));
@@ -2811,18 +2816,43 @@ public final class MainActivity extends Activity {
         target=Math.min(target,Math.max(0,homePage.getHeight()-homeScroll.getHeight()));
         homeScroll.smoothScrollTo(0,target);
     }
+    private void glideDrawerScrollTo(int target) {
+        if(destroyed || drawerScroll==null) return;
+        final int currentY = drawerScroll.getScrollY();
+        if(currentY == target) {
+            drawerScrollTarget = target;
+            return;
+        }
+        if(drawerScrollTarget == target && drawerScrollAnimator != null && drawerScrollAnimator.isRunning()) {
+            return;
+        }
+        drawerScrollTarget = target;
+        if(drawerScrollAnimator != null) drawerScrollAnimator.cancel();
+
+        int distance = Math.abs(target - currentY);
+        int duration = (int)focusDuration(Math.min(460, Math.max(340, 300 + distance / 4)));
+        drawerScrollAnimator = android.animation.ValueAnimator.ofInt(currentY, target);
+        drawerScrollAnimator.setDuration(duration);
+        drawerScrollAnimator.setInterpolator(new android.view.animation.PathInterpolator(0.18f, 1f, 0.32f, 1f));
+        drawerScrollAnimator.addUpdateListener(anim -> {
+            if(drawerScroll != null) {
+                drawerScroll.scrollTo(0, (Integer) anim.getAnimatedValue());
+            }
+        });
+        drawerScrollAnimator.start();
+    }
     private void centerDrawerChild(View focused) {
         if(destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
         if(focused==searchBar || (views.get("drawer.home")!=null&&focused==views.get("drawer.home")) || (views.get("drawer.settings")!=null&&focused==views.get("drawer.settings"))) {
-            drawerScroll.smoothScrollTo(0,0);
+            glideDrawerScrollTo(0);
             return;
         }
         if(dockViews.contains(focused)) {
-            drawerScroll.smoothScrollTo(0,Math.max(0,drawerPage.getHeight()-drawerScroll.getHeight()));
+            glideDrawerScrollTo(Math.max(0,drawerPage.getHeight()-drawerScroll.getHeight()));
             return;
         }
         if(!appRows.isEmpty() && appRows.get(0).contains(focused)) {
-            drawerScroll.smoothScrollTo(0,0);
+            glideDrawerScrollTo(0);
             return;
         }
         android.graphics.Rect bounds=new android.graphics.Rect(0,0,focused.getWidth(),focused.getHeight());
@@ -2832,7 +2862,7 @@ public final class MainActivity extends Activity {
         int target=Math.max(0,bounds.top-room/2);
         int maxScroll=Math.max(0,drawerPage.getHeight()-viewH);
         target=Math.min(target,maxScroll);
-        drawerScroll.smoothScrollTo(0,target);
+        glideDrawerScrollTo(target);
     }
     private void revealHorizontalFocus(View view,int verticalPad) {
         // Reveal room for the focus lift and full radial glow halo, not only the unscaled tile bounds.
@@ -5691,7 +5721,7 @@ public final class MainActivity extends Activity {
         ScrollView view=new ScrollView(this) {
             @Override public boolean executeKeyEvent(KeyEvent event) {
                 int key=event.getKeyCode();
-                if(this==homeScroll && (key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) {
+                if((this==homeScroll || this==drawerScroll) && (key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)) {
                     // A vertical press changes sections or stays put; it never pans behind stationary focus.
                     if(event.getAction()==KeyEvent.ACTION_DOWN) {
                         View focused=findFocus();
@@ -5700,10 +5730,15 @@ public final class MainActivity extends Activity {
                         View ancestor=next;
                         while(ancestor!=null && ancestor!=this)
                             ancestor=ancestor.getParent() instanceof View?(View)ancestor.getParent():null;
-                        if(next!=null && next!=focused && ancestor==this)next.requestFocus(direction);
-                        else if(direction==View.FOCUS_UP) {
-                            if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) glanceWidget.requestFocus();
-                            else if(!topPillViews.isEmpty()) topPillViews.get(0).requestFocus();
+                        if(next!=null && next!=focused && ancestor==this) {
+                            next.requestFocus(direction);
+                        } else if(direction==View.FOCUS_UP) {
+                            if(this==homeScroll) {
+                                if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) glanceWidget.requestFocus();
+                                else if(!topPillViews.isEmpty()) topPillViews.get(0).requestFocus();
+                            } else if(this==drawerScroll && views.get("search")!=null) {
+                                views.get("search").requestFocus();
+                            }
                         }
                     }
                     return true;
@@ -5713,7 +5748,10 @@ public final class MainActivity extends Activity {
             @Override public void requestChildFocus(View child,View focused) {
                 super.requestChildFocus(child,focused);
                 if(this==homeScroll)post(()->{if(this==homeScroll)positionHomeSection(focused);});
-                else if(this==drawerScroll)post(()->{if(this==drawerScroll)centerDrawerChild(focused);});
+                else if(this==drawerScroll) {
+                    if(getHeight()>0) centerDrawerChild(focused);
+                    else post(()->{if(this==drawerScroll)centerDrawerChild(focused);});
+                }
             }
             @Override protected int computeScrollDeltaToGetChildRectOnScreen(android.graphics.Rect rect) {
                 return (this==homeScroll||this==drawerScroll)?0:super.computeScrollDeltaToGetChildRectOnScreen(rect);
