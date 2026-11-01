@@ -759,11 +759,63 @@ public final class MainActivity extends Activity {
         };
     }
 
+    private Drawable buildWorkspaceBackground() {
+        int tintRgb=accent()&0x00FFFFFF;
+        GradientDrawable base=new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF0E131C,0xFF080B10,0xFF05070A}
+        );
+        GradientDrawable glow=new GradientDrawable();
+        glow.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        glow.setGradientCenter(0.34f,0.50f);
+        glow.setGradientRadius(Math.max(screenWidth,screenHeight)*0.75f);
+        glow.setColors(new int[]{
+                (tintRgb|0x1C000000),
+                (tintRgb|0x08000000),
+                0x00000000
+        });
+        GradientDrawable vignette=new GradientDrawable();
+        vignette.setGradientType(GradientDrawable.RADIAL_GRADIENT);
+        vignette.setGradientCenter(0.5f,0.5f);
+        vignette.setGradientRadius(Math.max(screenWidth,screenHeight)*0.9f);
+        vignette.setColors(new int[]{0x00000000,0x66000000});
+        return new android.graphics.drawable.LayerDrawable(new Drawable[]{base,glow,vignette});
+    }
+
+    private Drawable buildStageBezelDrawable() {
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+
+            @Override public void draw(android.graphics.Canvas c) {
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
+                float rad=px(20);
+                float sw=Math.max(1.2f,px(1.35f));
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(sw);
+                p.setShader(new android.graphics.LinearGradient(
+                        0,0,r.right,r.bottom,
+                        new int[]{0x45FFFFFF,0x22FFFFFF,0x10FFFFFF},
+                        new float[]{0f,0.45f,1f},
+                        android.graphics.Shader.TileMode.CLAMP
+                ));
+                float inset=sw/2f;
+                r.inset(inset,inset);
+                c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+                p.setShader(null);
+            }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
+    }
+
     private void applyHomeStage3D(ViewGroup stage, boolean animate) {
         if(stage==null) return;
         float density=getResources().getDisplayMetrics().density;
-        stage.setCameraDistance(density*8000f);
-        stage.setPivotX(screenWidth*0.5f);
+        stage.setCameraDistance(density*1700f);
+        stage.setPivotX(0f);
         stage.setPivotY(screenHeight*0.5f);
         final int cornerRad=px(20);
         stage.setOutlineProvider(new android.view.ViewOutlineProvider() {
@@ -772,16 +824,16 @@ public final class MainActivity extends Activity {
             }
         });
         stage.setClipToOutline(true);
-        stage.setElevation(px(16));
+        stage.setElevation(px(22));
         stage.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         if(homeStageBorder!=null) {
             homeStageBorder.setVisibility(View.VISIBLE);
-            homeStageBorder.setBackground(shapeRadius(0x00000000,0x30FFFFFF,1,20));
+            homeStageBorder.setBackground(buildStageBezelDrawable());
         }
 
-        float targetScale=0.74f;
-        float targetTx=-screenWidth*0.125f;
-        float targetRotY=7.5f;
+        float targetScale=0.85f;
+        float targetTx=px(36);
+        float targetRotY=13.5f;
 
         if(animate) {
             stage.animate().cancel();
@@ -790,8 +842,8 @@ public final class MainActivity extends Activity {
                     .scaleY(targetScale)
                     .translationX(targetTx)
                     .rotationY(targetRotY)
-                    .setDuration(300)
-                    .setInterpolator(new DecelerateInterpolator(1.6f))
+                    .setDuration(320)
+                    .setInterpolator(new DecelerateInterpolator(1.7f))
                     .start();
         } else {
             stage.animate().cancel();
@@ -859,7 +911,7 @@ public final class MainActivity extends Activity {
             }
         };
         root.setSoundEffectsEnabled(!muteSystem());
-        root.setBackgroundColor(0xFF070A0E);
+        root.setBackground(buildWorkspaceBackground());
         root.setClipChildren(false);
 
         homeStage=new FrameLayout(this);
@@ -5582,7 +5634,7 @@ public final class MainActivity extends Activity {
             if(closingHost!=null && closingHost.getChildCount()>0) {
                 View closingPanel=closingHost.getChildAt(0);
                 closingPanel.animate()
-                        .translationX(px(55))
+                        .translationX(px(60))
                         .alpha(0f)
                         .setDuration(260)
                         .setInterpolator(new DecelerateInterpolator(1.5f))
@@ -5645,12 +5697,12 @@ public final class MainActivity extends Activity {
         if(!"Phone Drop".equals(title)) stopPhoneDrop();
         bladeGeneration++;
         bladeBack=back;
-        int panelWidth=Math.min(screenWidth-px(96),px(440));
+        int panelWidth=Math.min(Math.round(screenWidth*0.28f),px(410));
         FrameLayout.LayoutParams floatingLp=new FrameLayout.LayoutParams(panelWidth,FrameLayout.LayoutParams.MATCH_PARENT);
         floatingLp.gravity=Gravity.RIGHT|Gravity.CENTER_VERTICAL;
-        floatingLp.topMargin=px(28);
-        floatingLp.bottomMargin=px(28);
-        floatingLp.rightMargin=px(32);
+        floatingLp.topMargin=px(24);
+        floatingLp.bottomMargin=px(24);
+        floatingLp.rightMargin=px(28);
 
         if (activeBlade==null || !activeBlade.isShowing() || bladeHost==null) {
             if(sfx!=null) sfx.playBladeOpen();
@@ -5729,8 +5781,8 @@ public final class MainActivity extends Activity {
                     applyViewSoundPolicy(window.getDecorView());
                 }
             }
-            panel.setTranslationX(px(55)); panel.setAlpha(0f);
-            panel.animate().translationX(0).alpha(1f).setDuration(300).setInterpolator(new DecelerateInterpolator(1.6f)).start();
+            panel.setTranslationX(px(65)); panel.setAlpha(0f);
+            panel.animate().translationX(0).alpha(1f).setDuration(320).setInterpolator(new DecelerateInterpolator(1.7f)).start();
         } else {
             bladeHost.removeAllViews();
             bladeHost.addView(panel,floatingLp);
