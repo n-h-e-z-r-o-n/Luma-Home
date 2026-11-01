@@ -850,7 +850,7 @@ public final class MainActivity extends Activity {
     private String getSettingsPreviewSizeSummary() {
         int pct=store.number("settings_3d_scale_pct",100);
         if(pct==100) return "100% · Default";
-        return pct+"% · "+(pct<100?"Compact":"Expanded");
+        return pct+"% · "+(pct<100?(pct<=70?"Compact":"Reduced"):"Expanded");
     }
 
     private void applyHomeStage3D(ViewGroup stage, boolean animate) {
@@ -878,9 +878,9 @@ public final class MainActivity extends Activity {
         int panelWidth=Math.min(Math.round(screenWidth*0.27f),px(395));
         int panelRightMargin=px(28);
         int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
-        int minGap=px(28);
+        int minGap=px(24);
         int minLeftMargin=px(24);
-        int minVerticalMargin=px(20);
+        int minVerticalMargin=px(18);
 
         double theta=Math.toRadians(rotY);
         double cosT=Math.cos(theta);
@@ -888,28 +888,29 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double maxAvailableWidth=(panelLeftEdge-minGap)-minLeftMargin;
+        double workspaceLeft=minLeftMargin;
+        double workspaceRight=panelLeftEdge-minGap;
+        double maxAvailableWidth=workspaceRight-workspaceLeft;
+        double workspaceCenter=(workspaceLeft+workspaceRight)*0.5;
+
         float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
         float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
         float absMaxScale=Math.min(maxScaleX,maxScaleY);
 
-        float baseScale=rotY<=0.1f?0.69f:rotY<=7.6f?0.745f:rotY<=10.1f?0.77f:0.795f;
+        float baseScale=rotY<=0.1f?0.67f:rotY<=7.6f?0.71f:rotY<=10.1f?0.74f:0.77f;
         baseScale=Math.min(baseScale,absMaxScale);
 
         int userPct=store.number("settings_3d_scale_pct",100);
         float userMultiplier=userPct/100.0f;
         float targetScale=baseScale*userMultiplier;
 
-        float minScale=Math.max(0.50f,baseScale*0.70f);
+        float minScale=baseScale*0.60f;
         if(targetScale<minScale) targetScale=minScale;
         if(targetScale>absMaxScale) targetScale=absMaxScale;
 
         double projectedWidth=screenWidth*cosT*P*targetScale;
-        float targetTx=minLeftMargin;
-        float slack=(float)(maxAvailableWidth-projectedWidth);
-        if(slack>0) {
-            targetTx=minLeftMargin+slack*0.45f;
-        }
+        // Visual Anchor: lock horizontal center strictly to workspaceCenter to prevent drifting
+        float targetTx=(float)(workspaceCenter-(projectedWidth*0.5));
 
         if(animate) {
             stage.animate().cancel();
@@ -968,9 +969,9 @@ public final class MainActivity extends Activity {
         int panelWidth=Math.min(Math.round(screenWidth*0.27f),px(395));
         int panelRightMargin=px(28);
         int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
-        int minGap=px(28);
+        int minGap=px(24);
         int minLeftMargin=px(24);
-        int minVerticalMargin=px(20);
+        int minVerticalMargin=px(18);
 
         double theta=Math.toRadians(rotY);
         double cosT=Math.cos(theta);
@@ -978,21 +979,25 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double maxAvailableWidth=(panelLeftEdge-minGap)-minLeftMargin;
+        double workspaceLeft=minLeftMargin;
+        double workspaceRight=panelLeftEdge-minGap;
+        double maxAvailableWidth=workspaceRight-workspaceLeft;
+        double workspaceCenter=(workspaceLeft+workspaceRight)*0.5;
+
         float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
         float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
         float absMaxScale=Math.min(maxScaleX,maxScaleY);
 
-        float baseScale=rotY<=0.1f?0.69f:rotY<=7.6f?0.745f:rotY<=10.1f?0.77f:0.795f;
+        float baseScale=rotY<=0.1f?0.67f:rotY<=7.6f?0.71f:rotY<=10.1f?0.74f:0.77f;
         baseScale=Math.min(baseScale,absMaxScale);
 
-        final int minPct=70;
+        final int minPct=60;
         final int maxPct=Math.max(100,Math.round((absMaxScale/baseScale)*100f));
         final int origPct=Math.max(minPct,Math.min(maxPct,store.number("settings_3d_scale_pct",100)));
 
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
         TextView value=text("",22,foreground());value.setTypeface(medium);box.addView(value);
-        TextView hint=text("Left / Right on D-pad adjusts the 3D home screen height live.",18,muted());
+        TextView hint=text("Left / Right on D-pad adjusts the 3D home screen height live around a stable visual anchor.",18,muted());
         LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.topMargin=px(4);box.addView(hint,hp);
 
         LinearLayout card=new LinearLayout(this);
@@ -1018,16 +1023,17 @@ public final class MainActivity extends Activity {
 
         final float finalBaseScale=baseScale;
         final float finalAbsMaxScale=absMaxScale;
+        final float finalMinScale=baseScale*0.60f;
         Runnable update=()->{
             int pct=slider.getProgress()+minPct;
             float s=finalBaseScale*(pct/100.0f);
-            if(s<finalBaseScale*0.70f) s=finalBaseScale*0.70f;
+            if(s<finalMinScale) s=finalMinScale;
             if(s>finalAbsMaxScale) s=finalAbsMaxScale;
             int renderedH=Math.round(screenHeight*s);
             int pctOfScreen=Math.round((renderedH/(float)screenHeight)*100f);
-            String desc=pct==100?"Default":pct<100?"Compact":pct>=maxPct?"Maximum safe size":"Expanded";
+            String desc=pct==100?"Default":pct<100?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum safe size":"Expanded";
             value.setText("Preview size · "+pct+"% ("+desc+")");
-            cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Safe clearance guaranteed");
+            cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Stable anchored workspace");
             store.setNumber("settings_3d_scale_pct",pct);
             if(homeStage!=null) applyHomeStage3D(homeStage,false);
         };
