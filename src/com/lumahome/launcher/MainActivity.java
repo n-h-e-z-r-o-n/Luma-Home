@@ -85,7 +85,9 @@ public final class MainActivity extends Activity {
     private final List<List<View>> appRows=new ArrayList<>();
     private final List<List<View>> contentRows=new ArrayList<>();
     private final Map<String,Integer> appColorCache=new HashMap<>();
-    private FrameLayout root, content, header;
+    private FrameLayout root, content, header, homeStage;
+    private View homeStageBorder;
+    private boolean isBladeActive = false;
     private LinearLayout contentRail, drawerPage, homePage, recentSection;
     private ScrollView drawerScroll, homeScroll;
     private View clockPanel, focusedFavorite;
@@ -757,6 +759,83 @@ public final class MainActivity extends Activity {
         };
     }
 
+    private void applyHomeStage3D(ViewGroup stage, boolean animate) {
+        if(stage==null) return;
+        float density=getResources().getDisplayMetrics().density;
+        stage.setCameraDistance(density*8000f);
+        stage.setPivotX(screenWidth*0.5f);
+        stage.setPivotY(screenHeight*0.5f);
+        final int cornerRad=px(20);
+        stage.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View view, android.graphics.Outline outline) {
+                outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),cornerRad);
+            }
+        });
+        stage.setClipToOutline(true);
+        stage.setElevation(px(16));
+        stage.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        if(homeStageBorder!=null) {
+            homeStageBorder.setVisibility(View.VISIBLE);
+            homeStageBorder.setBackground(shapeRadius(0x00000000,0x30FFFFFF,1,20));
+        }
+
+        float targetScale=0.74f;
+        float targetTx=-screenWidth*0.125f;
+        float targetRotY=7.5f;
+
+        if(animate) {
+            stage.animate().cancel();
+            stage.animate()
+                    .scaleX(targetScale)
+                    .scaleY(targetScale)
+                    .translationX(targetTx)
+                    .rotationY(targetRotY)
+                    .setDuration(300)
+                    .setInterpolator(new DecelerateInterpolator(1.6f))
+                    .start();
+        } else {
+            stage.animate().cancel();
+            stage.setScaleX(targetScale);
+            stage.setScaleY(targetScale);
+            stage.setTranslationX(targetTx);
+            stage.setRotationY(targetRotY);
+        }
+    }
+
+    private void resetHomeStage3D(ViewGroup stage, boolean animate) {
+        if(stage==null) return;
+        if(homeStageBorder!=null) {
+            homeStageBorder.setVisibility(View.GONE);
+        }
+        if(animate) {
+            stage.animate().cancel();
+            stage.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .translationX(0f)
+                    .rotationY(0f)
+                    .setDuration(280)
+                    .setInterpolator(new DecelerateInterpolator(1.5f))
+                    .withEndAction(()->{
+                        if(!isBladeActive && stage!=null) {
+                            stage.setClipToOutline(false);
+                            stage.setElevation(0f);
+                            stage.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+                        }
+                    })
+                    .start();
+        } else {
+            stage.animate().cancel();
+            stage.setScaleX(1.0f);
+            stage.setScaleY(1.0f);
+            stage.setTranslationX(0f);
+            stage.setRotationY(0f);
+            stage.setClipToOutline(false);
+            stage.setElevation(0f);
+            stage.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        }
+    }
+
     private void render() {
         if (destroyed) return;
         stopSpringStages(); homeSpringStage=null; drawerSpringStage=null; recentSpringStage=null; dockSpringLens=null;
@@ -780,15 +859,33 @@ public final class MainActivity extends Activity {
             }
         };
         root.setSoundEffectsEnabled(!muteSystem());
-        root.setBackgroundColor(0xFF0B101A);
+        root.setBackgroundColor(0xFF070A0E);
+        root.setClipChildren(false);
+
+        homeStage=new FrameLayout(this);
+        homeStage.setClipChildren(false);
+        homeStage.setClipToPadding(false);
+        root.addView(homeStage,at(0,0,screenWidth,screenHeight));
+
         applyBackground();
         contentHeight=screenHeight;
         content=new FrameLayout(this);
         content.setClipChildren(false);
-        root.setClipChildren(false);
-        root.addView(content,at(0,0,screenWidth,screenHeight));
+        homeStage.addView(content,at(0,0,screenWidth,screenHeight));
+
+        homeStageBorder=new View(this);
+        homeStageBorder.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        homeStage.addView(homeStageBorder,new FrameLayout.LayoutParams(-1,-1));
+
         if (drawer) renderDrawer(); else renderHome();
         if (drawer||store.flag("show_dock",true)) buildDock();
+
+        if (isBladeActive) {
+            applyHomeStage3D(homeStage, false);
+        } else {
+            resetHomeStage3D(homeStage, false);
+        }
+
         setContentView(root);
         syncSystemSoundMuting();
         root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
@@ -817,14 +914,14 @@ public final class MainActivity extends Activity {
             case "solid_slate": colors=new int[]{0xFF18202B,0xFF18202B}; break;
             default: colors=new int[]{0xFF33211D,0xFF140E16}; break;
         }
-        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,colors));
+        homeStage.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,colors));
         if("sky".equals(style)) {
-            root.setBackground(buildSkyBackground());
+            homeStage.setBackground(buildSkyBackground());
         } else if("ember".equals(style)) {
             GradientDrawable base=new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xFF15100F,0xFF0A0809,0xFF050405});
             GradientDrawable warm=new GradientDrawable();warm.setGradientType(GradientDrawable.RADIAL_GRADIENT);warm.setGradientCenter(.08f,-.12f);warm.setGradientRadius(px(1250));warm.setColors(new int[]{0x36FF8048,0x00FF8048});
             GradientDrawable plum=new GradientDrawable();plum.setGradientType(GradientDrawable.RADIAL_GRADIENT);plum.setGradientCenter(1f,1.1f);plum.setGradientRadius(px(1000));plum.setColors(new int[]{0x2EAA3C8C,0x00AA3C8C});
-            root.setBackground(new android.graphics.drawable.LayerDrawable(new Drawable[]{base,warm,plum}));
+            homeStage.setBackground(new android.graphics.drawable.LayerDrawable(new Drawable[]{base,warm,plum}));
         }
         int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
         final int dimAlpha=Math.round(dim*2.55f);
@@ -837,7 +934,7 @@ public final class MainActivity extends Activity {
         } else if(frostedBackdrop!=null) {
             treatmentBlurLayer.setImageBitmap(frostedBackdrop);
         }
-        root.addView(treatmentBlurLayer,new FrameLayout.LayoutParams(-1,-1));
+        homeStage.addView(treatmentBlurLayer,new FrameLayout.LayoutParams(-1,-1));
 
         if ("photo".equals(style)) {
             String path=store.value("background_image","");
@@ -854,15 +951,15 @@ public final class MainActivity extends Activity {
                     }
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 wallpaperImageView=image;
-                root.addView(image,new FrameLayout.LayoutParams(-1,-1));
+                homeStage.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
             } else {
                 wallpaperImageView=null;
-                updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
+                updateFrostedFromDrawable(homeStage.getBackground(),dimAlpha,frostKey);
             }
         } else {
             wallpaperImageView=null;
-            updateFrostedFromDrawable(root.getBackground(),dimAlpha,frostKey);
+            updateFrostedFromDrawable(homeStage.getBackground(),dimAlpha,frostKey);
         }
         if("app_glow".equals(style)) {
             ambientBackground=new View(this);
@@ -876,12 +973,12 @@ public final class MainActivity extends Activity {
             ambientTexture.setGravity(Gravity.FILL);ambientTexture.setFilterBitmap(true);
             ambientTexture.setTint(ambientColor);ambientBackground.setBackground(ambientTexture);
             ambientBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            root.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
+            homeStage.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
         }
 
         treatmentOverlayLayer=new View(this);
         treatmentOverlayLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        root.addView(treatmentOverlayLayer,new FrameLayout.LayoutParams(-1,-1));
+        homeStage.addView(treatmentOverlayLayer,new FrameLayout.LayoutParams(-1,-1));
 
         syncTreatmentLayers();
     }
@@ -5343,6 +5440,131 @@ public final class MainActivity extends Activity {
             advanceSlide.accept(1);
         }
     }
+    private Drawable floatingPanelDrawable(final View anchor,final float cornerDp) {
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+            private final android.graphics.Matrix mat=new android.graphics.Matrix();
+            private final int[] loc=new int[2];
+
+            @Override public void draw(android.graphics.Canvas c) {
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
+                float rad=px(cornerDp);
+                String style=uiSurfaceStyle();
+                boolean isGlass="glass".equals(style);
+                boolean isSolid="solid".equals(style);
+
+                if(!isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
+                        && anchor!=null && screenWidth>0 && screenHeight>0) {
+                    anchor.getLocationOnScreen(loc);
+                    mat.reset();
+                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
+                    mat.postTranslate(-loc[0],-loc[1]);
+                    frostedShader.setLocalMatrix(mat);
+                    p.setStyle(android.graphics.Paint.Style.FILL);
+                    p.setShader(frostedShader);
+                    c.drawRoundRect(r,rad,rad,p);
+                    p.setShader(null);
+                }
+
+                int baseRgb=themed(0xFF131A26,0xFF0A0F17)&0x00FFFFFF;
+                int topAlpha=isSolid?250:238;
+                int botAlpha=isSolid?254:246;
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                        (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));
+                c.drawRoundRect(r,rad,rad,p);
+                p.setShader(null);
+
+                float sh=sheenMultiplier();
+                if(isGlass) {
+                    float gleamH=Math.min(r.height()*0.38f,px(260));
+                    c.save();
+                    c.clipRect(r.left,r.top,r.right,r.top+gleamH);
+                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+gleamH,
+                            Color.argb(Math.min(80,Math.round(30*sh)),255,255,255),0x00FFFFFF,
+                            android.graphics.Shader.TileMode.CLAMP));
+                    c.drawRoundRect(r,rad,rad,p);
+                    c.restore();
+                    p.setShader(null);
+                }
+
+                float sw=Math.max(1f,px(store.flag("contrast")?2f:1.2f));
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(sw);
+                if(store.flag("contrast")) {
+                    p.setColor(accent());
+                } else if(isGlass) {
+                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                            new int[]{Color.argb(Math.min(180,Math.round(85*sh)),255,255,255),0x18FFFFFF,0x2AFFFFFF},
+                            new float[]{0f,0.5f,1f},android.graphics.Shader.TileMode.CLAMP));
+                } else {
+                    p.setColor(0x28FFFFFF);
+                }
+                float inset=sw/2f;
+                r.inset(inset,inset);
+                c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+                p.setShader(null);
+            }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
+    }
+
+    private Drawable menuRowDrawable(final View anchor,final boolean focused,final float cornerDp) {
+        if(!focused) return null;
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+
+            @Override public void draw(android.graphics.Canvas c) {
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
+                float rad=px(cornerDp);
+                float sh=sheenMultiplier();
+                int effTint=accent();
+
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                int fillTop=(effTint&0x00FFFFFF)|0x36000000;
+                int fillBot=(effTint&0x00FFFFFF)|0x18000000;
+                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,fillTop,fillBot,android.graphics.Shader.TileMode.CLAMP));
+                c.drawRoundRect(r,rad,rad,p);
+                p.setShader(null);
+
+                c.save();
+                c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.46f);
+                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.46f,
+                        Color.argb(Math.min(130,Math.round(55*sh)),255,255,255),0x00FFFFFF,
+                        android.graphics.Shader.TileMode.CLAMP));
+                c.drawRoundRect(r,rad,rad,p);
+                c.restore();
+                p.setShader(null);
+
+                float sw=Math.max(1.6f,px(store.flag("contrast")?2.8f:1.9f));
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(sw);
+                if(store.flag("contrast")) {
+                    p.setColor(0xFFFFFF00);
+                } else {
+                    int tc=effTint;
+                    int rr=(((tc>>16)&0xFF)+510)/3;
+                    int gg=(((tc>>8)&0xFF)+510)/3;
+                    int bb=((tc&0xFF)+510)/3;
+                    p.setColor(0xF0000000|(Math.min(255,rr)<<16)|(Math.min(255,gg)<<8)|Math.min(255,bb));
+                }
+                float inset=sw/2f;
+                r.inset(inset,inset);
+                c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+                p.setShader(null);
+            }
+            @Override public void setAlpha(int a) {}
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) {}
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
+    }
+
     private void closeBlade() {
         overrideFrostPct=-1;
         overrideTreatmentStyle=null;
@@ -5352,34 +5574,70 @@ public final class MainActivity extends Activity {
         stopPhoneDrop();
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
         if (activeBlade!=null) {
-            Dialog closing=activeBlade; activeBlade=null; bladeHost=null; bladeBack=null; lastBladeTitle="";
-            try { if (closing.isShowing()) closing.dismiss(); } catch (Exception ignored) {}
+            final Dialog closing=activeBlade;
+            final FrameLayout closingHost=bladeHost;
+            activeBlade=null; bladeHost=null; bladeBack=null; lastBladeTitle="";
+            isBladeActive=false;
+
+            if(closingHost!=null && closingHost.getChildCount()>0) {
+                View closingPanel=closingHost.getChildAt(0);
+                closingPanel.animate()
+                        .translationX(px(55))
+                        .alpha(0f)
+                        .setDuration(260)
+                        .setInterpolator(new DecelerateInterpolator(1.5f))
+                        .start();
+            }
+
+            if(homeStage!=null) {
+                resetHomeStage3D(homeStage,true);
+                homeStage.postDelayed(()->{
+                    try { if(closing.isShowing()) closing.dismiss(); } catch(Exception ignored) {}
+                    View restore=views.get(lastFocus);
+                    if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();
+                }, 280);
+            } else {
+                try { if(closing.isShowing()) closing.dismiss(); } catch(Exception ignored) {}
+                View restore=views.get(lastFocus);
+                if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();
+            }
+        } else {
+            isBladeActive=false;
+            if(homeStage!=null) resetHomeStage3D(homeStage,true);
         }
     }
     private LinearLayout createBladeContainer(String title,Runnable back) {
         LinearLayout box=new LinearLayout(this);
         activeBladeBox=box;
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(px(28),px(38),px(28),px(28));
-        box.setBackground(glassPanelDrawable(box,0f,true));
+        box.setPadding(px(24),px(28),px(24),px(22));
+        box.setBackground(floatingPanelDrawable(box,24f));
+        box.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0,0,v.getWidth(),v.getHeight(),px(24));
+            }
+        });
+        box.setClipToOutline(true);
+        box.setElevation(px(18));
+
         if (back!=null) {
-            TextView crumb=text("‹  Back",17,accent());
+            TextView crumb=text("‹  Back",16,accent());
             crumb.setTypeface(medium);
-            crumb.setPadding(px(6),0,px(6),px(4));
+            crumb.setPadding(px(8),0,px(8),px(4));
             box.addView(crumb,new LinearLayout.LayoutParams(-1,-2));
         }
-        TextView heading=text(title,28,foreground());
+        TextView heading=text(title,26,0xFFFFFFFF);
         heading.setTypeface(medium);
         heading.setMaxLines(1);
         heading.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        heading.setPadding(px(6),0,px(6),0);
+        heading.setPadding(px(8),0,px(8),0);
         LinearLayout.LayoutParams headParams=new LinearLayout.LayoutParams(-1,-2);
-        headParams.topMargin=px(12);headParams.bottomMargin=px(24);
+        headParams.topMargin=px(8);headParams.bottomMargin=px(18);
         box.addView(heading,headParams);
         View divider=new View(this);
         divider.setBackgroundColor(0x18FFFFFF);
         LinearLayout.LayoutParams divParams=new LinearLayout.LayoutParams(-1,Math.max(1,px(1)));
-        divParams.leftMargin=px(6); divParams.rightMargin=px(6); divParams.bottomMargin=px(20);
+        divParams.leftMargin=px(8); divParams.rightMargin=px(8); divParams.bottomMargin=px(14);
         box.addView(divider,divParams);
         return box;
     }
@@ -5387,8 +5645,18 @@ public final class MainActivity extends Activity {
         if(!"Phone Drop".equals(title)) stopPhoneDrop();
         bladeGeneration++;
         bladeBack=back;
+        int panelWidth=Math.min(screenWidth-px(96),px(440));
+        FrameLayout.LayoutParams floatingLp=new FrameLayout.LayoutParams(panelWidth,FrameLayout.LayoutParams.MATCH_PARENT);
+        floatingLp.gravity=Gravity.RIGHT|Gravity.CENTER_VERTICAL;
+        floatingLp.topMargin=px(28);
+        floatingLp.bottomMargin=px(28);
+        floatingLp.rightMargin=px(32);
+
         if (activeBlade==null || !activeBlade.isShowing() || bladeHost==null) {
             if(sfx!=null) sfx.playBladeOpen();
+            isBladeActive=true;
+            applyHomeStage3D(homeStage,true);
+
             Dialog dialog=new Dialog(this,android.R.style.Theme_Material_NoActionBar);
             FrameLayout host=new FrameLayout(this) {
                 @Override public void playSoundEffect(int soundConstant) {
@@ -5436,34 +5704,42 @@ public final class MainActivity extends Activity {
                 return false;
             });
             dialog.setOnDismissListener(d->{
-                if(activeBlade==dialog){activeBlade=null;bladeHost=null;bladeBack=null;lastBladeTitle="";}
+                if(activeBlade==dialog){
+                    activeBlade=null;bladeHost=null;bladeBack=null;lastBladeTitle="";isBladeActive=false;
+                    if(homeStage!=null) resetHomeStage3D(homeStage,true);
+                }
+                View restore=views.get(lastFocus);
+                if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();
             });
             Window window=dialog.getWindow();
             if(window!=null){
-                window.setBackgroundDrawableResource(android.R.color.transparent);
-                window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                window.setDimAmount("solid".equals(uiSurfaceStyle())?.40f:.24f);
+                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                window.setDimAmount(0f);
             }
             activeBlade=dialog;
             bladeHost=host;
-            bladeHost.addView(panel,new FrameLayout.LayoutParams(-1,-1));
+            bladeHost.addView(panel,floatingLp);
             dialog.show();
             if(window!=null){
-                window.setLayout(Math.min(screenWidth-px(96),px(460)),WindowManager.LayoutParams.MATCH_PARENT);
-                window.setGravity(Gravity.RIGHT|Gravity.TOP);
-                if(window.getDecorView()!=null) applyViewSoundPolicy(window.getDecorView());
+                window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.MATCH_PARENT);
+                window.setGravity(Gravity.FILL);
+                if(window.getDecorView()!=null) {
+                    window.getDecorView().setBackgroundColor(Color.TRANSPARENT);
+                    applyViewSoundPolicy(window.getDecorView());
+                }
             }
-            panel.setTranslationX(px(28)); panel.setAlpha(0f);
-            panel.animate().translationX(0).alpha(1f).setDuration(150).start();
+            panel.setTranslationX(px(55)); panel.setAlpha(0f);
+            panel.animate().translationX(0).alpha(1f).setDuration(300).setInterpolator(new DecelerateInterpolator(1.6f)).start();
         } else {
             bladeHost.removeAllViews();
-            bladeHost.addView(panel,new FrameLayout.LayoutParams(-1,-1));
+            bladeHost.addView(panel,floatingLp);
             if(activeBlade!=null && activeBlade.getWindow()!=null && activeBlade.getWindow().getDecorView()!=null) {
                 applyViewSoundPolicy(activeBlade.getWindow().getDecorView());
             }
             if(animate) {
-                panel.setTranslationX(px(14)); panel.setAlpha(0.55f);
-                panel.animate().translationX(0).alpha(1f).setDuration(110).start();
+                panel.setTranslationX(px(16)); panel.setAlpha(0.6f);
+                panel.animate().translationX(0).alpha(1f).setDuration(120).start();
             }
         }
         applyViewSoundPolicy(panel);
@@ -5476,10 +5752,10 @@ public final class MainActivity extends Activity {
     private View buildMenuRow(String raw,boolean selected,boolean actionable) {
         String text=raw==null?"":raw;
         if(text.startsWith("§")) {
-            TextView sec=text(text.substring(1),13,store.flag("contrast")?accent():muted());
+            TextView sec=text(text.substring(1),12,store.flag("contrast")?accent():0xB0A0B8);
             sec.setTypeface(medium);
-            sec.setLetterSpacing(0.08f);
-            sec.setPadding(px(12),px(28),px(12),px(12));
+            sec.setLetterSpacing(0.09f);
+            sec.setPadding(px(14),px(20),px(14),px(6));
             return sec;
         }
         int[] icon=null;
@@ -5516,13 +5792,13 @@ public final class MainActivity extends Activity {
         LinearLayout row=new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(px(14),px(18),px(14),px(18));
-        row.setMinimumHeight(px(72));
-        row.setBackground(glassControlDrawable(row,selected,13f,accent(),false,false));
+        row.setPadding(px(14),px(11),px(14),px(11));
+        row.setMinimumHeight(px(64));
+        row.setBackground(menuRowDrawable(row,selected,13f));
 
         if(icon!=null) {
             ImageView iv=new ImageView(this);
-            iv.setImageDrawable(new LineIcon(icon,selected?accent():0xD0FFFFFF));
+            iv.setImageDrawable(new LineIcon(icon,selected?accent():0xB8FFFFFF));
             LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(px(22),px(22));
             ip.rightMargin=px(14);
             row.addView(iv,ip);
@@ -5530,13 +5806,13 @@ public final class MainActivity extends Activity {
 
         LinearLayout leftCol=new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
-        TextView titleView=text(primary,24,selected?foreground():0xEAFFFFFF);
+        TextView titleView=text(primary,21,selected?0xFFFFFFFF:0xDEFFFFFF);
         if(selected) titleView.setTypeface(medium);
         titleView.setMaxLines(2);
         titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         leftCol.addView(titleView);
         if(!secondary.isEmpty()) {
-            TextView subView=text(secondary,16,muted());
+            TextView subView=text(secondary,14,selected?0xC0FFFFFF:0x90A0B8);
             subView.setMaxLines(1);
             subView.setEllipsize(android.text.TextUtils.TruncateAt.END);
             leftCol.addView(subView);
@@ -5547,9 +5823,9 @@ public final class MainActivity extends Activity {
         if(toggle>0) {
             boolean on=toggle==1;
             FrameLayout track=new FrameLayout(this);
-            track.setBackground(shapeRadius(on?accent():0x28FFFFFF,on?0:0x44FFFFFF,on?0:1,12));
+            track.setBackground(shapeRadius(on?accent():0x22FFFFFF,on?0:0x40FFFFFF,on?0:1,12));
             View thumb=new View(this);
-            thumb.setBackground(shapeRadius(on?0xFF10141A:0xE0FFFFFF,0,0,9));
+            thumb.setBackground(shapeRadius(on?0xFF0D121B:0xE0FFFFFF,0,0,9));
             FrameLayout.LayoutParams tp=new FrameLayout.LayoutParams(px(16),px(16),Gravity.CENTER_VERTICAL|(on?Gravity.RIGHT:Gravity.LEFT));
             tp.leftMargin=px(3); tp.rightMargin=px(3);
             track.addView(thumb,tp);
@@ -5559,17 +5835,17 @@ public final class MainActivity extends Activity {
         } else if(radio>0) {
             boolean checked=radio==1;
             FrameLayout ring=new FrameLayout(this);
-            ring.setBackground(shapeRadius(checked?accent():0x00000000,checked?accent():muted(),2,10));
+            ring.setBackground(shapeRadius(checked?accent():0x00000000,checked?accent():0x60FFFFFF,2,10));
             if(checked) {
                 View dot=new View(this);
-                dot.setBackground(shapeRadius(0xFF10141A,0,0,4));
+                dot.setBackground(shapeRadius(0xFF0D121B,0,0,4));
                 ring.addView(dot,new FrameLayout.LayoutParams(px(8),px(8),Gravity.CENTER));
             }
             LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(px(20),px(20));
             rp.leftMargin=px(10);
             row.addView(ring,rp);
         } else if(rightValue!=null) {
-            TextView val=text(rightValue+(actionable?"  ›":""),17,selected?accent():muted());
+            TextView val=text(rightValue+(actionable?"  ›":""),16,selected?accent():0x98AEC5);
             val.setSingleLine(true);
             val.setEllipsize(android.text.TextUtils.TruncateAt.END);
             val.setMaxWidth(px(165));
@@ -5577,7 +5853,7 @@ public final class MainActivity extends Activity {
             vp.leftMargin=px(8);
             row.addView(val,vp);
         } else if(actionable) {
-            TextView chev=text(external?"↗":"›",19,selected?accent():muted());
+            TextView chev=text(external?"↗":"›",18,selected?accent():0x70FFFFFF);
             LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);
             cp.leftMargin=px(8);
             row.addView(chev,cp);
