@@ -879,7 +879,7 @@ public final class MainActivity extends Activity {
         int panelRightMargin=px(28);
         int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
         int minGap=px(24);
-        int minLeftMargin=px(24);
+        final int fixedLeftMargin=px(24);
         int minVerticalMargin=px(18);
 
         double theta=Math.toRadians(rotY);
@@ -888,16 +888,13 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double workspaceLeft=minLeftMargin;
-        double workspaceRight=panelLeftEdge-minGap;
-        double maxAvailableWidth=workspaceRight-workspaceLeft;
-        double workspaceCenter=(workspaceLeft+workspaceRight)*0.5;
+        double maxAvailableWidth=(panelLeftEdge-minGap)-fixedLeftMargin;
 
         float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
         float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
         float absMaxScale=Math.min(maxScaleX,maxScaleY);
 
-        float baseScale=rotY<=0.1f?0.67f:rotY<=7.6f?0.71f:rotY<=10.1f?0.74f:0.77f;
+        float baseScale=rotY<=0.1f?0.58f:rotY<=7.6f?0.60f:rotY<=10.1f?0.62f:0.64f;
         baseScale=Math.min(baseScale,absMaxScale);
 
         int userPct=store.number("settings_3d_scale_pct",100);
@@ -908,9 +905,12 @@ public final class MainActivity extends Activity {
         if(targetScale<minScale) targetScale=minScale;
         if(targetScale>absMaxScale) targetScale=absMaxScale;
 
-        double projectedWidth=screenWidth*cosT*P*targetScale;
-        // Visual Anchor: lock horizontal center strictly to workspaceCenter to prevent drifting
-        float targetTx=(float)(workspaceCenter-(projectedWidth*0.5));
+        // Fixed Left-Edge Anchoring:
+        // The view's left edge is at x = 0 with pivotX = 0f. Under 3D Y-rotation and scaleX around pivotX = 0,
+        // points along the left edge remain strictly at 0 in projected coordinates.
+        // Setting translationX to fixedLeftMargin locks the visible left edge rigidly at 24dp from the TV's left edge,
+        // so preview resizing expands or contracts exclusively from/to the right.
+        float targetTx=fixedLeftMargin;
 
         if(animate) {
             stage.animate().cancel();
@@ -970,7 +970,7 @@ public final class MainActivity extends Activity {
         int panelRightMargin=px(28);
         int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
         int minGap=px(24);
-        int minLeftMargin=px(24);
+        final int fixedLeftMargin=px(24);
         int minVerticalMargin=px(18);
 
         double theta=Math.toRadians(rotY);
@@ -979,16 +979,13 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double workspaceLeft=minLeftMargin;
-        double workspaceRight=panelLeftEdge-minGap;
-        double maxAvailableWidth=workspaceRight-workspaceLeft;
-        double workspaceCenter=(workspaceLeft+workspaceRight)*0.5;
+        double maxAvailableWidth=(panelLeftEdge-minGap)-fixedLeftMargin;
 
         float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
         float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
         float absMaxScale=Math.min(maxScaleX,maxScaleY);
 
-        float baseScale=rotY<=0.1f?0.67f:rotY<=7.6f?0.71f:rotY<=10.1f?0.74f:0.77f;
+        float baseScale=rotY<=0.1f?0.58f:rotY<=7.6f?0.60f:rotY<=10.1f?0.62f:0.64f;
         baseScale=Math.min(baseScale,absMaxScale);
 
         final int minPct=60;
@@ -997,7 +994,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
         TextView value=text("",22,foreground());value.setTypeface(medium);box.addView(value);
-        TextView hint=text("Left / Right on D-pad adjusts the 3D home screen height live around a stable visual anchor.",18,muted());
+        TextView hint=text("Left / Right on D-pad adjusts the 3D home screen height live, anchored to the left guide at 24dp.",18,muted());
         LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.topMargin=px(4);box.addView(hint,hp);
 
         LinearLayout card=new LinearLayout(this);
@@ -1033,7 +1030,7 @@ public final class MainActivity extends Activity {
             int pctOfScreen=Math.round((renderedH/(float)screenHeight)*100f);
             String desc=pct==100?"Default":pct<100?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum safe size":"Expanded";
             value.setText("Preview size · "+pct+"% ("+desc+")");
-            cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Stable anchored workspace");
+            cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Fixed left-edge anchor (24dp)");
             store.setNumber("settings_3d_scale_pct",pct);
             if(homeStage!=null) applyHomeStage3D(homeStage,false);
         };
