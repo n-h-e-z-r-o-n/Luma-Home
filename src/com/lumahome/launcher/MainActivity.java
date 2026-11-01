@@ -86,7 +86,7 @@ public final class MainActivity extends Activity {
     private final List<List<View>> contentRows=new ArrayList<>();
     private final Map<String,Integer> appColorCache=new HashMap<>();
     private FrameLayout root, content, header, homeStage;
-    private View homeStageBorder;
+    private View homeStageBorder, homeStageShadow;
     private boolean isBladeActive = false;
     private LinearLayout contentRail, drawerPage, homePage, recentSection;
     private ScrollView drawerScroll, homeScroll;
@@ -788,6 +788,125 @@ public final class MainActivity extends Activity {
         return new android.graphics.drawable.LayerDrawable(new Drawable[]{base,glow,vignette});
     }
 
+    private Drawable buildStageShadowDrawable(final int spread, final int cornerRad) {
+        return new android.graphics.drawable.Drawable() {
+            private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r = new android.graphics.RectF();
+            private boolean initialized = false;
+
+            private android.graphics.Shader topShader, bottomShader, leftShader, rightShader;
+            private android.graphics.Shader tlShader, trShader, blShader, brShader;
+            private final int coreColor = 0xB0000000;
+
+            private void init(int w, int h) {
+                if(w <= 0 || h <= 0) return;
+                float S = spread;
+                float R = cornerRad;
+                float left = S;
+                float top = S;
+                float right = w - S;
+                float bottom = h - S;
+
+                int[] colors = new int[]{
+                    coreColor,
+                    0x80000000,
+                    0x4C000000,
+                    0x22000000,
+                    0x09000000,
+                    0x00000000
+                };
+                float[] stops = new float[]{0.0f, 0.18f, 0.40f, 0.65f, 0.85f, 1.0f};
+
+                topShader = new android.graphics.LinearGradient(0, top, 0, 0, colors, stops, android.graphics.Shader.TileMode.CLAMP);
+                bottomShader = new android.graphics.LinearGradient(0, bottom, 0, h, colors, stops, android.graphics.Shader.TileMode.CLAMP);
+                leftShader = new android.graphics.LinearGradient(left, 0, 0, 0, colors, stops, android.graphics.Shader.TileMode.CLAMP);
+                rightShader = new android.graphics.LinearGradient(right, 0, w, 0, colors, stops, android.graphics.Shader.TileMode.CLAMP);
+
+                float rTotal = R + S;
+                float stopR = R / rTotal;
+                int[] cornerColors = new int[]{
+                    coreColor,
+                    coreColor,
+                    0x80000000,
+                    0x4C000000,
+                    0x22000000,
+                    0x09000000,
+                    0x00000000
+                };
+                float[] cornerStops = new float[]{
+                    0.0f,
+                    stopR,
+                    stopR + 0.18f * (1f - stopR),
+                    stopR + 0.40f * (1f - stopR),
+                    stopR + 0.65f * (1f - stopR),
+                    stopR + 0.85f * (1f - stopR),
+                    1.0f
+                };
+
+                tlShader = new android.graphics.RadialGradient(left + R, top + R, rTotal, cornerColors, cornerStops, android.graphics.Shader.TileMode.CLAMP);
+                trShader = new android.graphics.RadialGradient(right - R, top + R, rTotal, cornerColors, cornerStops, android.graphics.Shader.TileMode.CLAMP);
+                blShader = new android.graphics.RadialGradient(left + R, bottom - R, rTotal, cornerColors, cornerStops, android.graphics.Shader.TileMode.CLAMP);
+                brShader = new android.graphics.RadialGradient(right - R, bottom - R, rTotal, cornerColors, cornerStops, android.graphics.Shader.TileMode.CLAMP);
+                initialized = true;
+            }
+
+            @Override public void draw(android.graphics.Canvas c) {
+                android.graphics.Rect b = getBounds();
+                int w = b.width();
+                int h = b.height();
+                if(w <= 0 || h <= 0) return;
+                if(!initialized) init(w, h);
+
+                float S = spread;
+                float R = cornerRad;
+                float left = S;
+                float top = S;
+                float right = w - S;
+                float bottom = h - S;
+
+                p.setStyle(android.graphics.Paint.Style.FILL);
+
+                // 1. Center core
+                p.setShader(null);
+                p.setColor(coreColor);
+                r.set(left, top, right, bottom);
+                c.drawRoundRect(r, R, R, p);
+
+                // 2. Straight edges
+                p.setShader(topShader);
+                c.drawRect(left + R, 0, right - R, top, p);
+
+                p.setShader(bottomShader);
+                c.drawRect(left + R, bottom, right - R, h, p);
+
+                p.setShader(leftShader);
+                c.drawRect(0, top + R, left, bottom - R, p);
+
+                p.setShader(rightShader);
+                c.drawRect(right, top + R, w, bottom - R, p);
+
+                // 3. Four corner quadrants
+                p.setShader(tlShader);
+                c.drawRect(0, 0, left + R, top + R, p);
+
+                p.setShader(trShader);
+                c.drawRect(right - R, 0, w, top + R, p);
+
+                p.setShader(blShader);
+                c.drawRect(0, bottom - R, left + R, h, p);
+
+                p.setShader(brShader);
+                c.drawRect(right - R, bottom - R, w, h, p);
+
+                p.setShader(null);
+            }
+
+            @Override public void setAlpha(int a) { p.setAlpha(a); }
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
+    }
+
     private Drawable buildStageBezelDrawable() {
         return new Drawable() {
             private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
@@ -868,7 +987,7 @@ public final class MainActivity extends Activity {
             }
         });
         stage.setClipToOutline(true);
-        stage.setElevation(px(22));
+        stage.setElevation(0f);
         stage.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         if(homeStageBorder!=null) {
             homeStageBorder.setVisibility(View.VISIBLE);
@@ -912,6 +1031,32 @@ public final class MainActivity extends Activity {
         // so preview resizing expands or contracts exclusively from/to the right.
         float targetTx=fixedLeftMargin;
 
+        final int shadowSpread = px(38);
+        if(homeStageShadow!=null) {
+            homeStageShadow.setVisibility(View.VISIBLE);
+            homeStageShadow.setCameraDistance(cameraDistance);
+            homeStageShadow.setPivotX(shadowSpread);
+            homeStageShadow.setPivotY(shadowSpread + screenHeight * 0.5f);
+            if(animate) {
+                homeStageShadow.animate().cancel();
+                homeStageShadow.animate()
+                        .scaleX(targetScale)
+                        .scaleY(targetScale)
+                        .translationX(targetTx)
+                        .rotationY(rotY)
+                        .alpha(1.0f)
+                        .setDuration(320)
+                        .setInterpolator(new DecelerateInterpolator(1.7f))
+                        .start();
+            } else {
+                homeStageShadow.animate().cancel();
+                homeStageShadow.setScaleX(targetScale);
+                homeStageShadow.setScaleY(targetScale);
+                homeStageShadow.setTranslationX(targetTx);
+                homeStageShadow.setRotationY(rotY);
+                homeStageShadow.setAlpha(1.0f);
+            }
+        }
         if(animate) {
             stage.animate().cancel();
             stage.animate()
@@ -1095,6 +1240,33 @@ public final class MainActivity extends Activity {
         if(homeStageBorder!=null) {
             homeStageBorder.setVisibility(View.GONE);
         }
+        if(homeStageShadow!=null) {
+            if(animate) {
+                homeStageShadow.animate().cancel();
+                homeStageShadow.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .translationX(0f)
+                        .rotationY(0f)
+                        .alpha(0f)
+                        .setDuration(280)
+                        .setInterpolator(new DecelerateInterpolator(1.5f))
+                        .withEndAction(()->{
+                            if(!isBladeActive && homeStageShadow!=null) {
+                                homeStageShadow.setVisibility(View.GONE);
+                            }
+                        })
+                        .start();
+            } else {
+                homeStageShadow.animate().cancel();
+                homeStageShadow.setScaleX(1.0f);
+                homeStageShadow.setScaleY(1.0f);
+                homeStageShadow.setTranslationX(0f);
+                homeStageShadow.setRotationY(0f);
+                homeStageShadow.setAlpha(0f);
+                homeStageShadow.setVisibility(View.GONE);
+            }
+        }
         if(animate) {
             stage.animate().cancel();
             stage.animate()
@@ -1155,6 +1327,15 @@ public final class MainActivity extends Activity {
             root.removeAllViews();
         }
         root.setBackground(buildWorkspaceBackground());
+
+        final int stageShadowSpread = px(38);
+        homeStageShadow = new View(this);
+        homeStageShadow.setFocusable(false);
+        homeStageShadow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        homeStageShadow.setBackground(buildStageShadowDrawable(stageShadowSpread, px(20)));
+        homeStageShadow.setVisibility(isBladeActive ? View.VISIBLE : View.GONE);
+        if(!isBladeActive) homeStageShadow.setAlpha(0f);
+        root.addView(homeStageShadow, at(-stageShadowSpread, -stageShadowSpread, screenWidth + 2 * stageShadowSpread, screenHeight + 2 * stageShadowSpread));
 
         homeStage=new FrameLayout(this);
         homeStage.setClipChildren(false);
