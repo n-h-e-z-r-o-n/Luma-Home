@@ -839,6 +839,20 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private String getSettingsPerspectiveSummary() {
+        int mode=store.number("settings_3d_angle",1);
+        String angleName=mode==0?"Subtle":mode==2?"Cinematic":mode==3?"Flat":"Balanced";
+        int pct=store.number("settings_3d_scale_pct",100);
+        if(pct==100) return angleName+" · Default";
+        return angleName+" · "+pct+"%";
+    }
+
+    private String getSettingsPreviewSizeSummary() {
+        int pct=store.number("settings_3d_scale_pct",100);
+        if(pct==100) return "100% · Default";
+        return pct+"% · "+(pct<100?"Compact":"Expanded");
+    }
+
     private void applyHomeStage3D(ViewGroup stage, boolean animate) {
         if(stage==null) return;
         float density=getResources().getDisplayMetrics().density;
@@ -861,12 +875,12 @@ public final class MainActivity extends Activity {
             homeStageBorder.setBackground(buildStageBezelDrawable());
         }
 
-        float baseScale=rotY<=0.1f?0.72f:rotY<=7.6f?0.80f:rotY<=10.1f?0.826f:0.85f;
         int panelWidth=Math.min(Math.round(screenWidth*0.27f),px(395));
         int panelRightMargin=px(28);
         int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
-        int targetGap=px(36);
-        float targetRightX=panelLeftEdge-targetGap;
+        int minGap=px(28);
+        int minLeftMargin=px(24);
+        int minVerticalMargin=px(20);
 
         double theta=Math.toRadians(rotY);
         double cosT=Math.cos(theta);
@@ -874,13 +888,27 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        float targetScale=baseScale;
+        double maxAvailableWidth=(panelLeftEdge-minGap)-minLeftMargin;
+        float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
+        float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
+        float absMaxScale=Math.min(maxScaleX,maxScaleY);
+
+        float baseScale=rotY<=0.1f?0.69f:rotY<=7.6f?0.745f:rotY<=10.1f?0.77f:0.795f;
+        baseScale=Math.min(baseScale,absMaxScale);
+
+        int userPct=store.number("settings_3d_scale_pct",100);
+        float userMultiplier=userPct/100.0f;
+        float targetScale=baseScale*userMultiplier;
+
+        float minScale=Math.max(0.50f,baseScale*0.70f);
+        if(targetScale<minScale) targetScale=minScale;
+        if(targetScale>absMaxScale) targetScale=absMaxScale;
+
         double projectedWidth=screenWidth*cosT*P*targetScale;
-        float targetTx=(float)(targetRightX-projectedWidth);
-        int minLeftMargin=px(32);
-        if(targetTx<minLeftMargin) {
-            targetScale=(float)((targetRightX-minLeftMargin)/(screenWidth*cosT*P));
-            targetTx=minLeftMargin;
+        float targetTx=minLeftMargin;
+        float slack=(float)(maxAvailableWidth-projectedWidth);
+        if(slack>0) {
+            targetTx=minLeftMargin+slack*0.45f;
         }
 
         if(animate) {
@@ -900,6 +928,125 @@ public final class MainActivity extends Activity {
             stage.setTranslationX(targetTx);
             stage.setRotationY(rotY);
         }
+    }
+
+    private void perspectiveMenu(Runnable back) {
+        int curAngle=store.number("settings_3d_angle",1);
+        String sizeSummary=getSettingsPreviewSizeSummary();
+        menu("3D door perspective",Arrays.asList(
+                "§PERSPECTIVE PRESET",
+                (curAngle==1?"✓ ":"○ ")+"Balanced · 10° (Default) · Natural door perspective & high readability",
+                (curAngle==0?"✓ ":"○ ")+"Subtle · 7.5° · Gentle slope & maximum legibility",
+                (curAngle==2?"✓ ":"○ ")+"Cinematic · 12.5° · Pronounced depth",
+                (curAngle==3?"✓ ":"○ ")+"Flat · 0° · Standard flat view",
+                "§PREVIEW SIZE",
+                "Home screen preview size: "+sizeSummary,
+                "§RESET",
+                "Restore perspective defaults"),
+                Arrays.asList(
+                        null,
+                        ()->{ store.setNumber("settings_3d_angle",1); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
+                        ()->{ store.setNumber("settings_3d_angle",0); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
+                        ()->{ store.setNumber("settings_3d_angle",2); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
+                        ()->{ store.setNumber("settings_3d_angle",3); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
+                        null,
+                        ()->homeScreenSizeSliderDialog(()->perspectiveMenu(back)),
+                        null,
+                        ()->{
+                            store.setNumber("settings_3d_angle",1);
+                            store.setNumber("settings_3d_scale_pct",100);
+                            if(homeStage!=null) applyHomeStage3D(homeStage,true);
+                            toast("3D perspective restored to defaults");
+                            perspectiveMenu(back);
+                        }),back);
+    }
+
+    private void homeScreenSizeSliderDialog(Runnable back) {
+        float density=getResources().getDisplayMetrics().density;
+        float rotY=getSettingsPerspectiveAngle();
+        float cameraDistance=density*1800f;
+        int panelWidth=Math.min(Math.round(screenWidth*0.27f),px(395));
+        int panelRightMargin=px(28);
+        int panelLeftEdge=screenWidth-panelRightMargin-panelWidth;
+        int minGap=px(28);
+        int minLeftMargin=px(24);
+        int minVerticalMargin=px(20);
+
+        double theta=Math.toRadians(rotY);
+        double cosT=Math.cos(theta);
+        double sinT=Math.sin(theta);
+        double z3=-screenWidth*sinT;
+        double P=cameraDistance/(cameraDistance-z3);
+
+        double maxAvailableWidth=(panelLeftEdge-minGap)-minLeftMargin;
+        float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
+        float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
+        float absMaxScale=Math.min(maxScaleX,maxScaleY);
+
+        float baseScale=rotY<=0.1f?0.69f:rotY<=7.6f?0.745f:rotY<=10.1f?0.77f:0.795f;
+        baseScale=Math.min(baseScale,absMaxScale);
+
+        final int minPct=70;
+        final int maxPct=Math.max(100,Math.round((absMaxScale/baseScale)*100f));
+        final int origPct=Math.max(minPct,Math.min(maxPct,store.number("settings_3d_scale_pct",100)));
+
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+        TextView value=text("",22,foreground());value.setTypeface(medium);box.addView(value);
+        TextView hint=text("Left / Right on D-pad adjusts the 3D home screen height live.",18,muted());
+        LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);hp.topMargin=px(4);box.addView(hint,hp);
+
+        LinearLayout card=new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(px(20),px(16),px(20),px(16));
+        card.setBackground(glassPanelDrawable(card,20f,false));
+        TextView cardTitle=text("Live 3D Workspace",20,foreground());
+        cardTitle.setTypeface(medium);
+        card.addView(cardTitle);
+        TextView cardMetrics=text("",16,muted());
+        LinearLayout.LayoutParams cmp=new LinearLayout.LayoutParams(-1,-2);cmp.topMargin=px(4);card.addView(cardMetrics,cmp);
+        LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.topMargin=px(16);cp.bottomMargin=px(16);
+        box.addView(card,cp);
+
+        SeekBar slider=new SeekBar(this);
+        slider.setFocusableInTouchMode(true);
+        slider.setMax(maxPct-minPct);
+        slider.setProgress(origPct-minPct);
+        slider.setKeyProgressIncrement(2);
+        slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
+        box.addView(slider,new LinearLayout.LayoutParams(-1,px(60)));
+
+        final float finalBaseScale=baseScale;
+        final float finalAbsMaxScale=absMaxScale;
+        Runnable update=()->{
+            int pct=slider.getProgress()+minPct;
+            float s=finalBaseScale*(pct/100.0f);
+            if(s<finalBaseScale*0.70f) s=finalBaseScale*0.70f;
+            if(s>finalAbsMaxScale) s=finalAbsMaxScale;
+            int renderedH=Math.round(screenHeight*s);
+            int pctOfScreen=Math.round((renderedH/(float)screenHeight)*100f);
+            String desc=pct==100?"Default":pct<100?"Compact":pct>=maxPct?"Maximum safe size":"Expanded";
+            value.setText("Preview size · "+pct+"% ("+desc+")");
+            cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Safe clearance guaranteed");
+            store.setNumber("settings_3d_scale_pct",pct);
+            if(homeStage!=null) applyHomeStage3D(homeStage,false);
+        };
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onProgressChanged(SeekBar bar,int progress,boolean user){update.run();}
+            public void onStartTrackingTouch(SeekBar bar){}
+            public void onStopTrackingTouch(SeekBar bar){}
+        });
+        update.run();
+        showBladePanel("Preview size",box,"Save",()->{
+            int finalPct=slider.getProgress()+minPct;
+            store.setNumber("settings_3d_scale_pct",finalPct);
+            if(homeStage!=null) applyHomeStage3D(homeStage,true);
+            back.run();
+        },()->{
+            store.setNumber("settings_3d_scale_pct",origPct);
+            if(homeStage!=null) applyHomeStage3D(homeStage,true);
+            back.run();
+        },slider);
     }
 
     private void rebuildContentInPlace() {
@@ -3359,7 +3506,6 @@ public final class MainActivity extends Activity {
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
-                "UI sounds: "+(sfx!=null?sfx.summary():"On"),
                 "§LAYOUT & BARS",
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
@@ -3372,10 +3518,7 @@ public final class MainActivity extends Activity {
                 "High contrast: "+onOff(store.flag("contrast")),
                 "Separate TV utilities: "+onOff(store.flag("group_utilities",true)),
                 "§3D WORKSPACE",
-                "@sparkles|3D door perspective: "+getSettingsPerspectiveName(),
-                "§IDLE SCREENSAVER",
-                "Idle screensaver: "+screensaverSummary(),
-                "Preview screensaver now"),
+                "@sparkles|3D door perspective: "+getSettingsPerspectiveSummary()),
                 Arrays.asList(
                         null,
                         this::backgroundMenu,
@@ -3390,7 +3533,6 @@ public final class MainActivity extends Activity {
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
-                        ()->soundMenu(this::appearanceMenu),
                         null,
                         ()->choice("Tile size",new String[]{"Compact · 8 columns in All Apps","Comfortable · 6 columns in All Apps","Large · 4 columns in All Apps"},
                                 columns()==8?0:columns()==6?1:2,
@@ -3401,7 +3543,6 @@ public final class MainActivity extends Activity {
                         ()->choice("Clock size",new String[]{"Small","Medium","Large"},clockSize==115?0:clockSize==138?1:2,
                                 index->{
                                     store.setNumber("clock_size",new int[]{115,138,176}[index]);
-                                    
                                     rebuildContentInPlace();
                                 },this::appearanceMenu),
                         ()->clockStyleChoice(this::appearanceMenu),
@@ -3419,20 +3560,7 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("contrast",!store.flag("contrast"));rebuildContentInPlace();updateWorkspaceAndMenuSurfaces();appearanceMenu();},
                         ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();rebuildContentInPlace();appearanceMenu();},
                         null,
-                        ()->choice("3D door perspective",new String[]{
-                                "Balanced · 10° (Default) · Natural door perspective & high readability",
-                                "Subtle · 7.5° · Gentle slope & maximum legibility",
-                                "Cinematic · 12.5° · Pronounced depth",
-                                "Flat · 0° · Standard flat view"},
-                                store.number("settings_3d_angle",1)==0?1:store.number("settings_3d_angle",1)==2?2:store.number("settings_3d_angle",1)==3?3:0,
-                                idx->{
-                                    int mode=idx==1?0:idx==2?2:idx==3?3:1;
-                                    store.setNumber("settings_3d_angle",mode);
-                                    if(homeStage!=null) applyHomeStage3D(homeStage,true);
-                                },this::appearanceMenu),
-                        null,
-                        ()->screensaverMenu(this::appearanceMenu),
-                        ()->{closeBlade();showIdleClock();}),this::settingsMenu);
+                        ()->perspectiveMenu(this::appearanceMenu)),this::settingsMenu);
     }
     private void glassSurfacesMenu(Runnable back) {
         String st=uiSurfaceStyle();
@@ -3610,20 +3738,17 @@ public final class MainActivity extends Activity {
                 "Tile zoom: "+focusZoomName(),
                 "Inner icon parallax: "+onOff(store.flag("focus_parallax",true)),
                 "Sliding app labels: "+onOff(store.flag("focus_slide_labels",true)),
-                "§3D WORKSPACE",
-                "@sparkles|3D door perspective: "+getSettingsPerspectiveName(),
-                "§RELATED",
-                "Focus glow: "+glowSummary(),
+                "§RESET",
                 "Restore motion defaults"),
                 Arrays.asList(
                         null,
                         ()->choice("Motion style",new String[]{
                                 "Liquid spring · CleanYourTV glide with subtle cushion",
                                 "Crisp glide · Travelling focus with zero bounce",
-                                "Classic \u00b7 Stationary per-tile fade",
-                                "Soft lift \u00b7 Gentle rise without bounce",
-                                "Magnetic \u00b7 Stretching highlight that catches up",
-                                "Instant \u00b7 Immediate focus without movement"},
+                                "Classic · Stationary per-tile fade",
+                                "Soft lift · Gentle rise without bounce",
+                                "Magnetic · Stretching highlight that catches up",
+                                "Instant · Immediate focus without movement"},
                                 motionStyleIndex(),
                                 idx->{
                                     store.set("focus_motion_style",new String[]{"liquid","crisp","classic","soft","magnetic","instant"}[idx]);
@@ -3649,19 +3774,6 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("focus_parallax",!store.flag("focus_parallax",true));focusMotionMenu(back);},
                         ()->{store.setFlag("focus_slide_labels",!store.flag("focus_slide_labels",true));focusMotionMenu(back);},
                         null,
-                        ()->choice("3D door perspective",new String[]{
-                                "Balanced · 10° (Default) · Natural door perspective & high readability",
-                                "Subtle · 7.5° · Gentle slope & maximum legibility",
-                                "Cinematic · 12.5° · Pronounced depth",
-                                "Flat · 0° · Standard flat view"},
-                                store.number("settings_3d_angle",1)==0?1:store.number("settings_3d_angle",1)==2?2:store.number("settings_3d_angle",1)==3?3:0,
-                                idx->{
-                                    int mode=idx==1?0:idx==2?2:idx==3?3:1;
-                                    store.setNumber("settings_3d_angle",mode);
-                                    if(homeStage!=null) applyHomeStage3D(homeStage,true);
-                                },()->focusMotionMenu(back)),
-                        null,
-                        ()->focusGlowMenu(()->focusMotionMenu(back)),
                         ()->{
                             store.set("focus_motion_style","liquid");
                             store.setNumber("focus_spring_speed",100);
@@ -3669,8 +3781,6 @@ public final class MainActivity extends Activity {
                             store.setNumber("focus_zoom_mode",1);
                             store.setFlag("focus_parallax",true);
                             store.setFlag("focus_slide_labels",true);
-                            store.setNumber("settings_3d_angle",1);
-                            if(homeStage!=null) applyHomeStage3D(homeStage,true);
                             toast("Focus motion restored to defaults");
                             focusMotionMenu(back);
                         }),back);
