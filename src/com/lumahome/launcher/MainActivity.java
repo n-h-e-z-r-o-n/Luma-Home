@@ -117,6 +117,12 @@ public final class MainActivity extends Activity {
     private final List<SpringStage> recommendationSpringStages=new ArrayList<>();
     private DockSpringLens dockSpringLens;
     private View dockBar, searchBar, activeBladeBox;
+    private ListView activeBladeList;
+    private ArrayAdapter<String> activeBladeAdapter;
+    private List<String> activeBladeLabels;
+    private List<Runnable> activeBladeActions;
+    private final Map<String, int[]> menuScrollHistory = new HashMap<>();
+    private FrameLayout backgroundStage;
     private TextView drawerFocusTitle;
     private android.animation.ValueAnimator drawerSearchAnimator;
     private int drawerScrollTarget = -1;
@@ -896,6 +902,44 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void rebuildContentInPlace() {
+        if(content==null || homeStage==null) {
+            render();
+            return;
+        }
+        stopSpringStages();
+        homeSpringStage=null; drawerSpringStage=null; recentSpringStage=null; dockSpringLens=null;
+        if(dockBar!=null && dockBar.getParent() instanceof ViewGroup) {
+            ((ViewGroup)dockBar.getParent()).removeView(dockBar);
+            dockBar=null;
+        }
+        content.removeAllViews();
+        views.clear(); appViews.clear(); appRows.clear(); dockViews.clear(); contentViews.clear(); contentRows.clear(); topPillViews.clear();
+        focusedFavorite=null;
+        if(drawerScrollAnimator!=null) { drawerScrollAnimator.cancel(); drawerScrollAnimator=null; }
+        drawerScrollTarget=-1; drawerScroll=null; homeScroll=null; homePage=null; drawerPage=null; recentSection=null;
+
+        if (drawer) renderDrawer(); else renderHome();
+        if (drawer||store.flag("show_dock",true)) buildDock();
+        wireNavigation();
+    }
+
+    private void updateBackgroundInPlace() {
+        if(homeStage==null) return;
+        applyBackground();
+        if(root!=null) root.setBackground(buildWorkspaceBackground());
+        if(homeStageBorder!=null) homeStageBorder.setBackground(buildStageBezelDrawable());
+        if(activeBladeBox!=null) activeBladeBox.setBackground(floatingPanelDrawable(activeBladeBox,24f));
+    }
+
+    private void updateWorkspaceAndMenuSurfaces() {
+        if(root!=null) root.setBackground(buildWorkspaceBackground());
+        if(homeStageBorder!=null) homeStageBorder.setBackground(buildStageBezelDrawable());
+        if(activeBladeBox!=null) activeBladeBox.setBackground(floatingPanelDrawable(activeBladeBox,24f));
+        if(dockBar!=null) dockBar.setBackground(glassPanelDrawable(dockBar,26f,false));
+        if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
+    }
+
     private void resetHomeStage3D(ViewGroup stage, boolean animate) {
         if(stage==null) return;
         if(homeStageBorder!=null) {
@@ -946,20 +990,29 @@ public final class MainActivity extends Activity {
         scale=Math.min(screenWidth/1920f,screenHeight/1080f);
         if(ambientAnimator!=null){ambientAnimator.cancel();ambientAnimator=null;}
         ambientBackground=null;ambientTexture=null;
-        root=new FrameLayout(this) {
-            @Override public void playSoundEffect(int soundConstant) {
-                if(muteSystem()) return;
-                super.playSoundEffect(soundConstant);
-            }
-        };
-        root.setSoundEffectsEnabled(!muteSystem());
+        boolean firstRoot=(root==null);
+        if(firstRoot) {
+            root=new FrameLayout(this) {
+                @Override public void playSoundEffect(int soundConstant) {
+                    if(muteSystem()) return;
+                    super.playSoundEffect(soundConstant);
+                }
+            };
+            root.setSoundEffectsEnabled(!muteSystem());
+            root.setClipChildren(false);
+            setContentView(root);
+        } else {
+            root.removeAllViews();
+        }
         root.setBackground(buildWorkspaceBackground());
-        root.setClipChildren(false);
 
         homeStage=new FrameLayout(this);
         homeStage.setClipChildren(false);
         homeStage.setClipToPadding(false);
         root.addView(homeStage,at(0,0,screenWidth,screenHeight));
+
+        backgroundStage=new FrameLayout(this);
+        homeStage.addView(backgroundStage,new FrameLayout.LayoutParams(-1,-1));
 
         applyBackground();
         contentHeight=screenHeight;
@@ -979,8 +1032,6 @@ public final class MainActivity extends Activity {
         } else {
             resetHomeStage3D(homeStage, false);
         }
-
-        setContentView(root);
         syncSystemSoundMuting();
         root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
             if(destroyed || sfx==null || oldFocus==null || newFocus==null || oldFocus==newFocus) return;
@@ -997,6 +1048,13 @@ public final class MainActivity extends Activity {
         }
     }
     private void applyBackground() {
+        if(backgroundStage==null && homeStage!=null) {
+            backgroundStage=new FrameLayout(this);
+            homeStage.addView(backgroundStage,0,new FrameLayout.LayoutParams(-1,-1));
+        }
+        if(backgroundStage==null) return;
+        backgroundStage.removeAllViews();
+
         String style=store.value("background","app_glow");
         int[] colors;
         switch (style) {
@@ -1008,14 +1066,14 @@ public final class MainActivity extends Activity {
             case "solid_slate": colors=new int[]{0xFF18202B,0xFF18202B}; break;
             default: colors=new int[]{0xFF33211D,0xFF140E16}; break;
         }
-        homeStage.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,colors));
+        backgroundStage.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,colors));
         if("sky".equals(style)) {
-            homeStage.setBackground(buildSkyBackground());
+            backgroundStage.setBackground(buildSkyBackground());
         } else if("ember".equals(style)) {
             GradientDrawable base=new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0xFF15100F,0xFF0A0809,0xFF050405});
             GradientDrawable warm=new GradientDrawable();warm.setGradientType(GradientDrawable.RADIAL_GRADIENT);warm.setGradientCenter(.08f,-.12f);warm.setGradientRadius(px(1250));warm.setColors(new int[]{0x36FF8048,0x00FF8048});
             GradientDrawable plum=new GradientDrawable();plum.setGradientType(GradientDrawable.RADIAL_GRADIENT);plum.setGradientCenter(1f,1.1f);plum.setGradientRadius(px(1000));plum.setColors(new int[]{0x2EAA3C8C,0x00AA3C8C});
-            homeStage.setBackground(new android.graphics.drawable.LayerDrawable(new Drawable[]{base,warm,plum}));
+            backgroundStage.setBackground(new android.graphics.drawable.LayerDrawable(new Drawable[]{base,warm,plum}));
         }
         int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
         final int dimAlpha=Math.round(dim*2.55f);
@@ -1028,7 +1086,7 @@ public final class MainActivity extends Activity {
         } else if(frostedBackdrop!=null) {
             treatmentBlurLayer.setImageBitmap(frostedBackdrop);
         }
-        homeStage.addView(treatmentBlurLayer,new FrameLayout.LayoutParams(-1,-1));
+        backgroundStage.addView(treatmentBlurLayer,new FrameLayout.LayoutParams(-1,-1));
 
         if ("photo".equals(style)) {
             String path=store.value("background_image","");
@@ -1045,15 +1103,15 @@ public final class MainActivity extends Activity {
                     }
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 wallpaperImageView=image;
-                homeStage.addView(image,new FrameLayout.LayoutParams(-1,-1));
+                backgroundStage.addView(image,new FrameLayout.LayoutParams(-1,-1));
                 images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
             } else {
                 wallpaperImageView=null;
-                updateFrostedFromDrawable(homeStage.getBackground(),dimAlpha,frostKey);
+                updateFrostedFromDrawable(backgroundStage.getBackground(),dimAlpha,frostKey);
             }
         } else {
             wallpaperImageView=null;
-            updateFrostedFromDrawable(homeStage.getBackground(),dimAlpha,frostKey);
+            updateFrostedFromDrawable(backgroundStage.getBackground(),dimAlpha,frostKey);
         }
         if("app_glow".equals(style)) {
             ambientBackground=new View(this);
@@ -1067,12 +1125,12 @@ public final class MainActivity extends Activity {
             ambientTexture.setGravity(Gravity.FILL);ambientTexture.setFilterBitmap(true);
             ambientTexture.setTint(ambientColor);ambientBackground.setBackground(ambientTexture);
             ambientBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            homeStage.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
+            backgroundStage.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
         }
 
         treatmentOverlayLayer=new View(this);
         treatmentOverlayLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        homeStage.addView(treatmentOverlayLayer,new FrameLayout.LayoutParams(-1,-1));
+        backgroundStage.addView(treatmentOverlayLayer,new FrameLayout.LayoutParams(-1,-1));
 
         syncTreatmentLayers();
     }
@@ -3323,7 +3381,11 @@ public final class MainActivity extends Activity {
                         this::backgroundMenu,
                         ()->choice("Menu theme",new String[]{"Warm glass · Translucent warm dark tint","Cool slate · Crisp deep blue-grey","From wallpaper · Sampled from your background"},
                                 "wallpaper".equals(store.value("theme","warm"))?2:"cool".equals(store.value("theme","warm"))?1:0,
-                                index->{store.set("theme",new String[]{"warm","cool","wallpaper"}[index]);render();appearanceMenu();},this::appearanceMenu),
+                                index->{
+                                    store.set("theme",new String[]{"warm","cool","wallpaper"}[index]);
+                                    refreshWallpaperPalette();
+                                    updateWorkspaceAndMenuSurfaces();
+                                },this::appearanceMenu),
                         ()->glassSurfacesMenu(this::appearanceMenu),
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
@@ -3331,22 +3393,31 @@ public final class MainActivity extends Activity {
                         ()->soundMenu(this::appearanceMenu),
                         null,
                         ()->choice("Tile size",new String[]{"Compact · 8 columns in All Apps","Comfortable · 6 columns in All Apps","Large · 4 columns in All Apps"},
-                                columns()==8?0:columns()==6?1:2,index->{store.setNumber("columns",new int[]{8,6,4}[index]);render();appearanceMenu();},this::appearanceMenu),
+                                columns()==8?0:columns()==6?1:2,
+                                index->{
+                                    store.setNumber("columns",new int[]{8,6,4}[index]);
+                                    rebuildContentInPlace();
+                                },this::appearanceMenu),
                         ()->choice("Clock size",new String[]{"Small","Medium","Large"},clockSize==115?0:clockSize==138?1:2,
-                                index->{store.setNumber("clock_size",new int[]{115,138,176}[index]);render();appearanceMenu();},this::appearanceMenu),
+                                index->{
+                                    store.setNumber("clock_size",new int[]{115,138,176}[index]);
+                                    
+                                    rebuildContentInPlace();
+                                },this::appearanceMenu),
                         ()->clockStyleChoice(this::appearanceMenu),
-                        ()->{store.setFlag("show_greeting",!store.flag("show_greeting",true));render();appearanceMenu();},
-                        ()->{store.setFlag("show_glance",!store.flag("show_glance",true));render();appearanceMenu();},
+                        ()->{store.setFlag("show_greeting",!store.flag("show_greeting",true));rebuildContentInPlace();appearanceMenu();},
+                        ()->{store.setFlag("show_glance",!store.flag("show_glance",true));rebuildContentInPlace();appearanceMenu();},
                         this::glanceDetailsBlade,
                         ()->{
                             boolean next=!store.flag("show_dock",true);
                             store.setFlag("show_dock",next);
                             if(!next)toast("Quick actions move to the top");
-                            render();appearanceMenu();
+                            if(dockBar!=null) dockBar.setVisibility(next?View.VISIBLE:View.GONE);
+                            appearanceMenu();
                         },
-                        ()->{store.setFlag("labels",!store.flag("labels",false));render();appearanceMenu();},
-                        ()->{store.setFlag("contrast",!store.flag("contrast"));render();appearanceMenu();},
-                        ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();render();appearanceMenu();},
+                        ()->{store.setFlag("labels",!store.flag("labels",false));rebuildContentInPlace();appearanceMenu();},
+                        ()->{store.setFlag("contrast",!store.flag("contrast"));rebuildContentInPlace();updateWorkspaceAndMenuSurfaces();appearanceMenu();},
+                        ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();rebuildContentInPlace();appearanceMenu();},
                         null,
                         ()->choice("3D door perspective",new String[]{
                                 "Balanced · 10° (Default) · Natural door perspective & high readability",
@@ -3357,7 +3428,7 @@ public final class MainActivity extends Activity {
                                 idx->{
                                     int mode=idx==1?0:idx==2?2:idx==3?3:1;
                                     store.setNumber("settings_3d_angle",mode);
-                                    render();appearanceMenu();
+                                    if(homeStage!=null) applyHomeStage3D(homeStage,true);
                                 },this::appearanceMenu),
                         null,
                         ()->screensaverMenu(this::appearanceMenu),
@@ -3386,11 +3457,12 @@ public final class MainActivity extends Activity {
                                 "matte".equals(st)?1:"solid".equals(st)?2:0,
                                 idx->{
                                     store.set("ui_surface_style",new String[]{"glass","matte","solid"}[idx]);
-                                    render();glassSurfacesMenu(back);
+                                    updateWorkspaceAndMenuSurfaces();
                                 },()->glassSurfacesMenu(back)),
                         ()->{
                             store.setFlag("glass_refraction",!glassRefractionEnabled());
-                            render();glassSurfacesMenu(back);
+                            updateWorkspaceAndMenuSurfaces();
+                            glassSurfacesMenu(back);
                         },
                         ()->glassFrostSliderDialog(back),
                         ()->choice("Specular sheen",new String[]{
@@ -3400,12 +3472,12 @@ public final class MainActivity extends Activity {
                                 sheenIdx,
                                 idx->{
                                     store.setNumber("glass_sheen",idx);
-                                    render();glassSurfacesMenu(back);
+                                    updateWorkspaceAndMenuSurfaces();
                                 },()->glassSurfacesMenu(back)),
                         null,
                         ()->{
                             store.setFlag("dock_spring_lens",!store.flag("dock_spring_lens",true));
-                            render();glassSurfacesMenu(back);
+                            glassSurfacesMenu(back);
                         },
                         null,
                         ()->{
@@ -3414,7 +3486,9 @@ public final class MainActivity extends Activity {
                             store.setNumber("glass_frost",25);
                             store.setNumber("glass_sheen",0);
                             store.setFlag("dock_spring_lens",true);
-                            render();toast("Glass surfaces restored to defaults");glassSurfacesMenu(back);
+                            updateWorkspaceAndMenuSurfaces();
+                            toast("Glass surfaces restored to defaults");
+                            glassSurfacesMenu(back);
                         }),back);
     }
     private void glassFrostSliderDialog(Runnable back) {
@@ -3468,7 +3542,7 @@ public final class MainActivity extends Activity {
             overrideFrostPct=-1;
             if("solid".equals(uiSurfaceStyle())) store.set("ui_surface_style","glass");
             store.setNumber("glass_frost",f);
-            render();glassSurfacesMenu(back);
+            refreshGlassSurfaces();updateWorkspaceAndMenuSurfaces();glassSurfacesMenu(back);
         },()->{ overrideFrostPct=-1; refreshGlassSurfaces(); glassSurfacesMenu(back); },slider);
     }
     private void appGlowMenu(String pkg) {
@@ -3497,7 +3571,7 @@ public final class MainActivity extends Activity {
                 "Restore glow defaults"),
                 Arrays.asList(
                         null,
-                        ()->{store.setFlag("ambient_glow",!store.flag("ambient_glow",false));render();focusGlowMenu(back);},
+                        ()->{store.setFlag("ambient_glow",!store.flag("ambient_glow",false));focusGlowMenu(back);},
                         ()->glowSliderDialog(true,back),
                         ()->glowSliderDialog(false,back),
                         null,
@@ -3509,8 +3583,8 @@ public final class MainActivity extends Activity {
                                 "accent".equals(mode)?1:"white".equals(mode)?2:"custom".equals(mode)?3:0,
                                 idx->{
                                     String picked=new String[]{"auto","accent","white","custom"}[idx];
-                                    store.set("glow_color_mode",picked);render();
-                                    if("custom".equals(picked))glowCustomColorMenu(back); else focusGlowMenu(back);
+                                    store.set("glow_color_mode",picked);
+                                    if("custom".equals(picked)) glowCustomColorMenu(back);
                                 },()->focusGlowMenu(back)),
                         ()->glowCustomColorMenu(back),
                         null,
@@ -3519,7 +3593,8 @@ public final class MainActivity extends Activity {
                             store.setNumber("glow_intensity",10);
                             store.setNumber("glow_radius",20);
                             store.set("glow_color_mode","auto");
-                            render();toast("Focus glow restored to defaults");focusGlowMenu(back);
+                            toast("Focus glow restored to defaults");
+                            focusGlowMenu(back);
                         }),back);
     }
     private void focusMotionMenu(Runnable back) {
@@ -3552,7 +3627,6 @@ public final class MainActivity extends Activity {
                                 motionStyleIndex(),
                                 idx->{
                                     store.set("focus_motion_style",new String[]{"liquid","crisp","classic","soft","magnetic","instant"}[idx]);
-                                    render();focusMotionMenu(back);
                                 },()->focusMotionMenu(back)),
                         ()->focusSpeedSliderDialog(back),
                         null,
@@ -3563,7 +3637,6 @@ public final class MainActivity extends Activity {
                                 "rim".equals(glass)?1:"none".equals(glass)?2:0,
                                 idx->{
                                     store.set("focus_glass_style",new String[]{"full","rim","none"}[idx]);
-                                    render();focusMotionMenu(back);
                                 },()->focusMotionMenu(back)),
                         ()->choice("Tile zoom",new String[]{
                                 "Subtle · 1.06x gentle lift",
@@ -3572,10 +3645,9 @@ public final class MainActivity extends Activity {
                                 zoomIdx,
                                 idx->{
                                     store.setNumber("focus_zoom_mode",idx);
-                                    render();focusMotionMenu(back);
                                 },()->focusMotionMenu(back)),
-                        ()->{store.setFlag("focus_parallax",!store.flag("focus_parallax",true));render();focusMotionMenu(back);},
-                        ()->{store.setFlag("focus_slide_labels",!store.flag("focus_slide_labels",true));render();focusMotionMenu(back);},
+                        ()->{store.setFlag("focus_parallax",!store.flag("focus_parallax",true));focusMotionMenu(back);},
+                        ()->{store.setFlag("focus_slide_labels",!store.flag("focus_slide_labels",true));focusMotionMenu(back);},
                         null,
                         ()->choice("3D door perspective",new String[]{
                                 "Balanced · 10° (Default) · Natural door perspective & high readability",
@@ -3586,7 +3658,7 @@ public final class MainActivity extends Activity {
                                 idx->{
                                     int mode=idx==1?0:idx==2?2:idx==3?3:1;
                                     store.setNumber("settings_3d_angle",mode);
-                                    render();focusMotionMenu(back);
+                                    if(homeStage!=null) applyHomeStage3D(homeStage,true);
                                 },()->focusMotionMenu(back)),
                         null,
                         ()->focusGlowMenu(()->focusMotionMenu(back)),
@@ -3598,7 +3670,9 @@ public final class MainActivity extends Activity {
                             store.setFlag("focus_parallax",true);
                             store.setFlag("focus_slide_labels",true);
                             store.setNumber("settings_3d_angle",1);
-                            render();toast("Focus motion restored to defaults");focusMotionMenu(back);
+                            if(homeStage!=null) applyHomeStage3D(homeStage,true);
+                            toast("Focus motion restored to defaults");
+                            focusMotionMenu(back);
                         }),back);
     }
     private void focusSpeedSliderDialog(Runnable back) {
@@ -3691,7 +3765,7 @@ public final class MainActivity extends Activity {
             int sp=slider.getProgress()+50;
             store.setNumber("focus_spring_speed",sp);
             stage.stop(); previewSpringStage=null;
-            render();focusMotionMenu(back);
+            focusMotionMenu(back);
         },()->{ stage.stop(); previewSpringStage=null; focusMotionMenu(back); },slider);
     }
     private void glowCustomColorMenu(Runnable back) {
@@ -3716,7 +3790,7 @@ public final class MainActivity extends Activity {
             add(labels,actions,(checked?"✓ ":"○ ")+presetNames[i],()->{
                 store.set("glow_color_mode","custom");
                 store.setNumber("glow_custom_hue",h);
-                render();focusGlowMenu(back);
+                focusGlowMenu(back);
             });
         }
         menu("Custom glow color",labels,actions,()->focusGlowMenu(back));
@@ -3791,7 +3865,7 @@ public final class MainActivity extends Activity {
             if(isIntensity) store.setNumber("glow_intensity",slider.getProgress()+10);
             else store.setNumber("glow_radius",slider.getProgress()+20);
             store.setFlag("ambient_glow",false);
-            render();focusGlowMenu(back);
+            focusGlowMenu(back);
         },()->focusGlowMenu(back),slider);
     }
     private void glowHueSliderDialog(Runnable back) {
@@ -3834,7 +3908,7 @@ public final class MainActivity extends Activity {
             store.set("glow_color_mode","custom");
             store.setNumber("glow_custom_hue",slider.getProgress());
             store.setFlag("ambient_glow",false);
-            render();focusGlowMenu(back);
+            focusGlowMenu(back);
         },()->glowCustomColorMenu(back),slider);
     }
     private void colorIntensityDialog(){
@@ -3868,7 +3942,7 @@ public final class MainActivity extends Activity {
         });
         update.run();
         showBladePanel("Wallpaper tint",box,"Save",()->{
-            store.setNumber("color_intensity",slider.getProgress());render();appearanceMenu();
+            store.setNumber("color_intensity",slider.getProgress());refreshWallpaperPalette();updateWorkspaceAndMenuSurfaces();appearanceMenu();
         },this::appearanceMenu,slider);
     }
     private void backgroundMenu() { backgroundMenu(this::appearanceMenu); }
@@ -3886,21 +3960,45 @@ public final class MainActivity extends Activity {
         });
         add(labels,actions,"Wallpaper slideshow: "+slideshowIntervalLabel(slideMin),()->wallpaperSlideshowMenu(()->backgroundMenu(back)));
         add(labels,actions,"§BUILT-IN STYLES",null);
-        add(labels,actions,"App-color glow: "+("app_glow".equals(bg)?"Active":"Follows the selected app"),()->{store.set("background","app_glow");resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
+        add(labels,actions,"App-color glow: "+("app_glow".equals(bg)?"Active":"Follows the selected app"),()->{
+            store.set("background","app_glow");
+            resetWallpaperSlideshowTimer();
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
+            backgroundMenu(back);
+        });
         add(labels,actions,"Dynamic sky: "+("sky".equals(bg)?"Active":"Time of day"),()->{
-            store.set("background","sky");resetWallpaperSlideshowTimer();render();backgroundMenu(back);
+            store.set("background","sky");
+            resetWallpaperSlideshowTimer();
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
+            backgroundMenu(back);
         });
         add(labels,actions,"Gradient: "+("ember".equals(bg)||"midnight".equals(bg)||"ocean".equals(bg)||"forest".equals(bg)?bg.substring(0,1).toUpperCase(Locale.ROOT)+bg.substring(1):"Select"),
                 ()->choice("Gradient",new String[]{"Ember · Warm ambient glow","Midnight · Deep indigo","Ocean · Coastal blue","Forest · Pine green"},
                         Arrays.asList("ember","midnight","ocean","forest").indexOf(store.value("background","app_glow")),
-                        index->{store.set("background",new String[]{"ember","midnight","ocean","forest"}[index]);resetWallpaperSlideshowTimer();render();backgroundMenu(back);},()->backgroundMenu(back)));
+                        index->{
+                            store.set("background",new String[]{"ember","midnight","ocean","forest"}[index]);
+                            resetWallpaperSlideshowTimer();
+                            refreshWallpaperPalette();
+                            updateBackgroundInPlace();
+                        },()->backgroundMenu(back)));
         add(labels,actions,"Solid color: "+("solid_black".equals(bg)?"Black":"solid_slate".equals(bg)?"Slate":"Select"),
                 ()->choice("Solid color",new String[]{"Pure black · OLED friendly","Deep slate"},
                         "solid_black".equals(store.value("background",""))?0:"solid_slate".equals(store.value("background",""))?1:-1,
-                        index->{store.set("background",index==0?"solid_black":"solid_slate");resetWallpaperSlideshowTimer();render();backgroundMenu(back);},()->backgroundMenu(back)));
+                        index->{
+                            store.set("background",index==0?"solid_black":"solid_slate");
+                            resetWallpaperSlideshowTimer();
+                            refreshWallpaperPalette();
+                            updateBackgroundInPlace();
+                        },()->backgroundMenu(back)));
         if(hasPhoto) {
             add(labels,actions,"Photo wallpaper: "+("photo".equals(bg)?"Active":"Use photo"),()->{
-                store.set("background","photo");resetWallpaperSlideshowTimer();render();backgroundMenu(back);
+                store.set("background","photo");
+                resetWallpaperSlideshowTimer();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
+                backgroundMenu(back);
             });
         }
         add(labels,actions,"Import from TV storage",()->pickImage("background_image"));
@@ -3908,7 +4006,15 @@ public final class MainActivity extends Activity {
         add(labels,actions,"Treatment style: "+treatmentStyleName(),()->treatmentStyleChoice(()->backgroundMenu(back)));
         add(labels,actions,"Treatment intensity: "+treatmentIntensity()+"%",()->treatmentIntensityDialog(()->backgroundMenu(back)));
         add(labels,actions,"Wallpaper tint: "+colorIntensity()+"%",this::colorIntensityDialog);
-        add(labels,actions,"Restore default background",()->{store.set("background","app_glow");store.set("background_treatment","dim");store.setNumber("dimming",0);resetWallpaperSlideshowTimer();render();backgroundMenu(back);});
+        add(labels,actions,"Restore default background",()->{
+            store.set("background","app_glow");
+            store.set("background_treatment","dim");
+            store.setNumber("dimming",0);
+            resetWallpaperSlideshowTimer();
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
+            backgroundMenu(back);
+        });
         menu("Background",labels,actions,back);
     }
     private void stopPhoneDrop() {
@@ -3962,9 +4068,9 @@ public final class MainActivity extends Activity {
                 }
             }
             resetWallpaperSlideshowTimer();
-            render();
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
             if(picked>0 && files.size()<2) toast("Send at least 2 phone wallpapers to start rotating");
-            back.run();
         },back);
     }
     private void wallpaperGalleryMenu(Runnable back) {
@@ -3984,7 +4090,8 @@ public final class MainActivity extends Activity {
                 store.set("background_image",uri);
                 store.set("background","photo");
                 resetWallpaperSlideshowTimer();
-                render();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
                 wallpaperGalleryMenu(back);
             });
         }
@@ -4005,7 +4112,8 @@ public final class MainActivity extends Activity {
             if("photo".equals(store.value("background","app_glow"))) store.set("background","app_glow");
             store.set("background_image","");
             resetWallpaperSlideshowTimer();
-            render();
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
             toast("Cleared saved phone wallpapers");
             back.run();
         });
@@ -4029,7 +4137,8 @@ public final class MainActivity extends Activity {
             }
         }
         resetWallpaperSlideshowTimer();
-        render();
+        refreshWallpaperPalette();
+        updateBackgroundInPlace();
     }
     private void phoneDropPanel(Runnable back) {
         stopPhoneDrop();
@@ -4069,7 +4178,8 @@ public final class MainActivity extends Activity {
                 store.set("background_image",fileUri);
                 store.set("background","photo");
                 resetWallpaperSlideshowTimer();
-                render();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
                 statusPill.setBackground(shapeRadius(0x2810B981,0x6634D399,1,14));
                 dot.setBackground(shapeRadius(0xFF34D399,0,0,5));
                 statusTxt.setTextColor(0xFFD1FAE5);
@@ -4085,7 +4195,8 @@ public final class MainActivity extends Activity {
                 store.set("background_image",fileUri);
                 store.set("background","photo");
                 resetWallpaperSlideshowTimer();
-                render();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
                 if(thumbRef[0]!=null) images.show(thumbRef[0],fileUri,px(220),px(124));
                 if(liveCaptionRef[0]!=null) liveCaptionRef[0].setText("Switched from phone!");
             }
@@ -4200,8 +4311,7 @@ public final class MainActivity extends Activity {
         choice("Treatment style",titles,current,idx->{
             store.set("background_treatment",keys[idx]);
             if(store.number("dimming",0)==0) store.setNumber("dimming",40);
-            render();
-            back.run();
+            updateBackgroundInPlace();
         },back);
     }
     private void treatmentIntensityDialog(Runnable back) {
@@ -4385,8 +4495,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<keys.length;i++) if(keys[i].equals(curKey)) { current=i; break; }
         choice("Clock style",titles,current,idx->{
             store.set("clock_style",keys[idx]);
-            render();
-            back.run();
+            rebuildContentInPlace();
         },back);
     }
     private void weatherLocationDialog(Runnable back) {
@@ -4785,9 +4894,24 @@ public final class MainActivity extends Activity {
     private interface AppChosen {void pick(String pkg);}
     private interface Choice {void pick(int index);}
     private void choice(String title,String[] labels,int selected,Choice action,Runnable back) {
-        List<String> names=new ArrayList<>();List<Runnable> actions=new ArrayList<>();
-        for(int i=0;i<labels.length;i++){final int index=i;add(names,actions,(i==selected?"✓ ":"○ ")+labels[i],()->action.pick(index));}
-        menu(title,names,actions,back);
+        final int[] currentSelected=new int[]{selected};
+        final Runnable[] self=new Runnable[1];
+        self[0]=()->{
+            List<String> names=new ArrayList<>();
+            List<Runnable> actions=new ArrayList<>();
+            for(int i=0;i<labels.length;i++){
+                final int index=i;
+                add(names,actions,(index==currentSelected[0]?"✓ ":"○ ")+labels[index],()->{
+                    if(currentSelected[0]!=index) {
+                        currentSelected[0]=index;
+                        action.pick(index);
+                        self[0].run();
+                    }
+                });
+            }
+            menu(title,names,actions,back);
+        };
+        self[0].run();
     }
     private static void add(List<String> labels,List<Runnable> actions,String label,Runnable action){labels.add(label);actions.add(action);}
     private int[] iconOps(String key) {
@@ -5701,6 +5825,7 @@ public final class MainActivity extends Activity {
             final FrameLayout closingHost=bladeHost;
             activeBlade=null; bladeHost=null; bladeBack=null; lastBladeTitle="";
             isBladeActive=false;
+            activeBladeList=null; activeBladeAdapter=null; activeBladeLabels=null; activeBladeActions=null; menuScrollHistory.clear();
 
             if(closingHost!=null && closingHost.getChildCount()>0) {
                 View closingPanel=closingHost.getChildAt(0);
@@ -5829,6 +5954,7 @@ public final class MainActivity extends Activity {
             dialog.setOnDismissListener(d->{
                 if(activeBlade==dialog){
                     activeBlade=null;bladeHost=null;bladeBack=null;lastBladeTitle="";isBladeActive=false;
+                    activeBladeList=null;activeBladeAdapter=null;activeBladeLabels=null;activeBladeActions=null;menuScrollHistory.clear();
                     if(homeStage!=null) resetHomeStage3D(homeStage,true);
                 }
                 View restore=views.get(lastFocus);
@@ -5985,6 +6111,36 @@ public final class MainActivity extends Activity {
     }
     private void menu(String title,List<String> labels,List<Runnable> actions,Runnable back) {
         boolean sameMenu=title.equals(lastBladeTitle) && activeBlade!=null && activeBlade.isShowing();
+        if(sameMenu && activeBladeList!=null && activeBladeAdapter!=null && activeBladeLabels!=null && activeBladeActions!=null) {
+            bladeGeneration++;
+            bladeBack=back;
+            activeBladeLabels.clear();
+            activeBladeLabels.addAll(labels);
+            activeBladeActions.clear();
+            activeBladeActions.addAll(actions);
+            activeBladeAdapter.notifyDataSetChanged();
+            return;
+        }
+
+        if(lastBladeTitle!=null && !lastBladeTitle.isEmpty() && activeBladeList!=null) {
+            int sel=activeBladeList.getSelectedItemPosition();
+            if(sel<0) sel=lastBladeSelection;
+            int firstVis=activeBladeList.getFirstVisiblePosition();
+            View selChild=(sel>=firstVis)?activeBladeList.getChildAt(sel-firstVis):null;
+            int top=selChild!=null?selChild.getTop():0;
+            menuScrollHistory.put(lastBladeTitle,new int[]{sel,top});
+        }
+
+        int targetIndex=-1;
+        int targetTop=0;
+        if(menuScrollHistory.containsKey(title)) {
+            int[] hist=menuScrollHistory.get(title);
+            if(hist!=null && hist.length>=2) {
+                targetIndex=hist[0];
+                targetTop=hist[1];
+            }
+        }
+
         LinearLayout box=createBladeContainer(title,back);
         ListView list=new ListView(this) {
             @Override public void playSoundEffect(int soundConstant) {
@@ -5998,18 +6154,27 @@ public final class MainActivity extends Activity {
         list.setVerticalScrollBarEnabled(false);
         list.setOverScrollMode(View.OVER_SCROLL_NEVER);
         list.setSelector(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
-        final ArrayAdapter<String> adapter=new ArrayAdapter<String>(this,0,labels) {
+
+        final List<String> currentLabels=new ArrayList<>(labels);
+        final List<Runnable> currentActions=new ArrayList<>(actions);
+        activeBladeLabels=currentLabels;
+        activeBladeActions=currentActions;
+
+        final ArrayAdapter<String> adapter=new ArrayAdapter<String>(this,0,currentLabels) {
             @Override public boolean areAllItemsEnabled() { return false; }
             @Override public boolean isEnabled(int position) {
-                return position>=0 && position<actions.size() && actions.get(position)!=null && !labels.get(position).startsWith("§");
+                return position>=0 && position<currentActions.size() && currentActions.get(position)!=null && !currentLabels.get(position).startsWith("§");
             }
             @Override public View getView(int position,View convert,ViewGroup parent) {
                 boolean selected=list.isFocused() && list.getSelectedItemPosition()==position;
                 boolean actionable=isEnabled(position);
-                return buildMenuRow(labels.get(position),selected,actionable);
+                return buildMenuRow(currentLabels.get(position),selected,actionable);
             }
         };
+        activeBladeAdapter=adapter;
+        activeBladeList=list;
         list.setAdapter(adapter);
+
         final int[] prevSoundSel={-1};
         list.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> p,View v,int pos,long id) {
@@ -6024,8 +6189,8 @@ public final class MainActivity extends Activity {
         });
         list.setOnFocusChangeListener((v,has)->adapter.notifyDataSetChanged());
         list.setOnItemClickListener((parent,view,position,id)->{
-            if(position<0||position>=actions.size()||actions.get(position)==null)return;
-            String rawLbl=labels.get(position);
+            if(position<0||position>=currentActions.size()||currentActions.get(position)==null)return;
+            String rawLbl=currentLabels.get(position);
             if(sfx!=null && rawLbl!=null && !rawLbl.startsWith("UI sounds: ") && !rawLbl.startsWith("✓ ") && !rawLbl.startsWith("○ ")) {
                 if(rawLbl.endsWith(": On") || rawLbl.endsWith(": Off") || rawLbl.endsWith(": On · paused")) {
                     sfx.playDetent(0.76f,rawLbl.endsWith(": Off")?85:25);
@@ -6037,18 +6202,27 @@ public final class MainActivity extends Activity {
             }
             lastBladeSelection=position;
             int before=bladeGeneration;
-            actions.get(position).run();
-            if(bladeGeneration==before) closeBlade();
+            currentActions.get(position).run();
+            if(bladeGeneration==before && (rawLbl==null || (!rawLbl.startsWith("✓ ") && !rawLbl.startsWith("○ ") && !rawLbl.contains(": On") && !rawLbl.contains(": Off")))) {
+                closeBlade();
+            }
         });
         box.addView(list,new LinearLayout.LayoutParams(-1,0,1));
 
         int firstEnabled=0;
         for(int i=0;i<labels.size();i++) if(adapter.isEnabled(i)) { firstEnabled=i; break; }
-        int targetIndex=(sameMenu && lastBladeSelection>=0 && lastBladeSelection<labels.size() && adapter.isEnabled(lastBladeSelection))
-                ?lastBladeSelection:firstEnabled;
+        if(targetIndex<0 || targetIndex>=labels.size() || !adapter.isEnabled(targetIndex)) {
+            targetIndex=(sameMenu && lastBladeSelection>=0 && lastBladeSelection<labels.size() && adapter.isEnabled(lastBladeSelection))
+                    ?lastBladeSelection:firstEnabled;
+        }
         lastBladeSelection=targetIndex;
         presentBladeView(title,box,back,list,!sameMenu);
         list.setSelection(targetIndex);
+        if(targetIndex>=0 && menuScrollHistory.containsKey(title)) {
+            final int ti=targetIndex;
+            final int tp=targetTop;
+            list.post(()->list.setSelectionFromTop(ti,tp));
+        }
     }
     private void showBladePanel(String title,View body,String positiveLabel,Runnable onPositive,Runnable back,View focusTarget) {
         LinearLayout box=createBladeContainer(title,back);
