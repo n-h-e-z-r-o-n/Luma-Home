@@ -2477,7 +2477,7 @@ public final class MainActivity extends Activity {
             private final android.graphics.RectF r=new android.graphics.RectF();
             @Override public void draw(android.graphics.Canvas c) {
                 r.set(getBounds());
-                float rad=oval?Math.min(r.width(),r.height())/2f:px(22);
+                float rad=oval?iconShapeRadius(r.width(),r.height()):px(22);
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 if(bannerStyle) {
                     p.setShader(null);
@@ -3071,7 +3071,7 @@ public final class MainActivity extends Activity {
             @Override protected void dispatchDraw(android.graphics.Canvas canvas) {
                 super.dispatchDraw(canvas);
                 if(tile.isFocused() && !springFocusActive()) {
-                    float rad=!allApps?Math.min(getWidth(),getHeight())/2f:px(22);
+                    float rad=!allApps?iconShapeRadius(getWidth(),getHeight()):px(22);
                     halo.setStyle(android.graphics.Paint.Style.STROKE);
                     halo.setStrokeWidth(Math.max(2f,px(2.4f)));
                     halo.setColor(store.flag("contrast")?accent():0xE8FFFFFF);
@@ -3084,8 +3084,11 @@ public final class MainActivity extends Activity {
         picture.setClipToOutline(true);
         picture.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View view,android.graphics.Outline outline) {
-                if(!allApps) outline.setOval(0,0,view.getWidth(),view.getHeight());
-                else outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),px(22));
+                if(!allApps) {
+                    float rad=iconShapeRadius(view.getWidth(),view.getHeight());
+                    if(rad>=Math.min(view.getWidth(),view.getHeight())/2f-1f) outline.setOval(0,0,view.getWidth(),view.getHeight());
+                    else outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),Math.round(rad));
+                } else outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),px(22));
             }
         });
         ImageView image=new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -3096,7 +3099,7 @@ public final class MainActivity extends Activity {
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if(artwork.isEmpty()) {
-                image.setImageDrawable(homeIconDrawable(appArt.drawable));
+                image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));
             } else images.show(image,artwork,width,height);
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(bannerStyle) {
@@ -3104,13 +3107,14 @@ public final class MainActivity extends Activity {
             else if(appArt.drawable!=null)image.setImageDrawable(fitDrawable(appArt.drawable,width,height));
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(recent) {
-            image.setImageDrawable(appArt.drawable);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             int iconSize=Math.min(px(80),Math.round(height*0.65f));
+            if(appArt.drawable!=null)image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
             int iconSize=allApps?px(102):px(64);
-            if(appArt.drawable!=null)image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
+            if(appArt.drawable!=null)image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(iconSize,iconSize));
             TextView inside=text(name(pkg),allApps?26:24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(16),0,px(16),0);
             LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(44));labelParams.topMargin=px(allApps?14:8);plain.addView(inside,labelParams);
@@ -3996,6 +4000,8 @@ public final class MainActivity extends Activity {
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
+                "§APP ICONS",
+                "@palette|App icons: "+getIconStyleSummary(),
                 "§LAYOUT & BARS",
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
@@ -4023,6 +4029,8 @@ public final class MainActivity extends Activity {
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
+                        null,
+                        ()->appIconsMenu(this::appearanceMenu),
                         null,
                         ()->choice("Tile size",new String[]{"Compact · 8 columns in All Apps","Comfortable · 6 columns in All Apps","Large · 4 columns in All Apps"},
                                 columns()==8?0:columns()==6?1:2,
@@ -4052,6 +4060,372 @@ public final class MainActivity extends Activity {
                         null,
                         ()->perspectiveMenu(this::appearanceMenu)),this::settingsMenu);
     }
+
+    private IconStylingEngine.Config iconConfig() {
+        return new IconStylingEngine.Config(
+                store.value("icon_style", "original"),
+                store.value("icon_color", "white"),
+                store.value("icon_shape", "circle"),
+                store.number("icon_size_pct", 100),
+                store.value("icon_background", "glass"),
+                store.value("icon_effects", "shadow"),
+                accent()
+        );
+    }
+
+    private String getIconStyleSummary() {
+        String st = store.value("icon_style", "original");
+        String cap = st.substring(0, 1).toUpperCase() + st.substring(1);
+        String sh = store.value("icon_shape", "circle");
+        String shCap = sh.substring(0, 1).toUpperCase() + sh.substring(1);
+        int sz = store.number("icon_size_pct", 100);
+        return cap + " · " + shCap + " · " + sz + "%";
+    }
+
+    private float iconShapeRadius(float w, float h) {
+        String sh = store.value("icon_shape", "circle");
+        return IconStylingEngine.getShapeCornerRadius(sh, Math.min(w, h));
+    }
+
+    private Drawable styledIconDrawable(String pkg, Drawable original, int w, int h) {
+        if (original == null) return null;
+        return IconStylingEngine.getStyledIcon(this, pkg, original, w, h, iconConfig());
+    }
+
+    private void appIconsMenu(Runnable back) {
+        String curStyle = store.value("icon_style", "original");
+        String curColor = store.value("icon_color", "white");
+        String curShape = store.value("icon_shape", "circle");
+        int curSize = store.number("icon_size_pct", 100);
+        String curBg = store.value("icon_background", "glass");
+        String curEffects = store.value("icon_effects", "shadow");
+
+        menu("App icons", Arrays.asList(
+                "§BUILT-IN ICON STYLES",
+                "Style: " + iconStyleDisplayName(curStyle),
+                "§COLOR & SHAPE",
+                "Color: " + iconColorDisplayName(curColor),
+                "Shape: " + iconShapeDisplayName(curShape),
+                "§SIZE & BACKGROUND",
+                "Size: " + curSize + "% · " + (curSize == 85 ? "Compact" : curSize == 115 ? "Large" : curSize == 130 ? "Extra Large" : "Standard"),
+                "Background: " + iconBackgroundDisplayName(curBg),
+                "Effects: " + iconEffectsDisplayName(curEffects),
+                "§LIVE PREVIEW",
+                "@sparkles|Interactive preview & fine-tune",
+                "§RESET",
+                "Restore original icons · Reset all"),
+                Arrays.asList(
+                        null,
+                        () -> iconStyleChoice(back),
+                        null,
+                        () -> iconColorChoice(back),
+                        () -> iconShapeChoice(back),
+                        null,
+                        () -> iconSizeChoice(back),
+                        () -> iconBackgroundChoice(back),
+                        () -> iconEffectsChoice(back),
+                        null,
+                        () -> appIconPreviewBlade(back),
+                        null,
+                        () -> {
+                            store.set("icon_style", "original");
+                            store.set("icon_color", "white");
+                            store.set("icon_shape", "circle");
+                            store.setNumber("icon_size_pct", 100);
+                            store.set("icon_background", "glass");
+                            store.set("icon_effects", "shadow");
+                            IconStylingEngine.clearCache();
+                            rebuildContentInPlace();
+                            toast("App icons restored to original style");
+                            appIconsMenu(back);
+                        }
+                ), back);
+    }
+
+    private void iconStyleChoice(Runnable back) {
+        String curStyle = store.value("icon_style", "original");
+        String[] options = {
+                "Minimalist · Clean monochrome silhouette with preserved contrast",
+                "Monochrome · Grayscale with enhanced photographic contrast",
+                "Paper-like · Tactile embossed matte papercraft",
+                "Glass · Frosted translucent glass lens",
+                "Dark · Stealth obsidian plate with luminous glyph",
+                "Flat · Bold minimalist flat vector",
+                "Outlined · Crisp wireframe contour",
+                "Original · Official authentic app artwork"
+        };
+        int selected = "minimalist".equals(curStyle) ? 0 :
+                "monochrome".equals(curStyle) ? 1 :
+                "paper".equals(curStyle) ? 2 :
+                "glass".equals(curStyle) ? 3 :
+                "dark".equals(curStyle) ? 4 :
+                "flat".equals(curStyle) ? 5 :
+                "outlined".equals(curStyle) ? 6 : 7;
+        String[] keys = {"minimalist", "monochrome", "paper", "glass", "dark", "flat", "outlined", "original"};
+        choice("Icon style", options, selected, idx -> {
+            store.set("icon_style", keys[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private void iconColorChoice(Runnable back) {
+        String curCol = store.value("icon_color", "white");
+        String[] options = {
+                "Pure White · Crisp icy white (Minimalist default)",
+                "Obsidian Black · Deep matte charcoal",
+                "Theme Accent · Matched to your dynamic wallpaper accent",
+                "Original / Auto · Natural brand colors"
+        };
+        int selected = "black".equals(curCol) ? 1 : "accent".equals(curCol) ? 2 : "original".equals(curCol) ? 3 : 0;
+        String[] keys = {"white", "black", "accent", "original"};
+        choice("Icon color", options, selected, idx -> {
+            store.set("icon_color", keys[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private void iconShapeChoice(Runnable back) {
+        String curSh = store.value("icon_shape", "circle");
+        String[] options = {
+                "Circular · Classic circular discs (Default)",
+                "Squircle · Smooth continuous curvature (38%)",
+                "Rounded · Soft rounded square (22%)",
+                "Square · Modern square with gentle bevel (8%)"
+        };
+        int selected = "squircle".equals(curSh) ? 1 : "rounded".equals(curSh) ? 2 : "square".equals(curSh) ? 3 : 0;
+        String[] keys = {"circle", "squircle", "rounded", "square"};
+        choice("Icon shape", options, selected, idx -> {
+            store.set("icon_shape", keys[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private void iconSizeChoice(Runnable back) {
+        int curSz = store.number("icon_size_pct", 100);
+        String[] options = {
+                "Compact · 85% scale with spacious margins",
+                "Standard · 100% scale (Default)",
+                "Large · 115% prominent size",
+                "Extra Large · 130% maximum presence"
+        };
+        int selected = curSz == 85 ? 0 : curSz == 115 ? 2 : curSz == 130 ? 3 : 1;
+        int[] values = {85, 100, 115, 130};
+        choice("Icon size", options, selected, idx -> {
+            store.setNumber("icon_size_pct", values[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private void iconBackgroundChoice(Runnable back) {
+        String curBg = store.value("icon_background", "glass");
+        String[] options = {
+                "Frosted Glass · Signature translucent glass with sheen (Default)",
+                "Solid Dark · Sleek deep charcoal plate",
+                "Transparent · Floating glyphs directly on wallpaper",
+                "Accent Gradient · Subtle ambient tint gradient"
+        };
+        int selected = "solid_dark".equals(curBg) ? 1 : "transparent".equals(curBg) ? 2 : "gradient".equals(curBg) ? 3 : 0;
+        String[] keys = {"glass", "solid_dark", "transparent", "gradient"};
+        choice("Icon background", options, selected, idx -> {
+            store.set("icon_background", keys[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private void iconEffectsChoice(Runnable back) {
+        String curEf = store.value("icon_effects", "shadow");
+        String[] options = {
+                "Soft Shadow · Subtle ambient drop shadow (Default)",
+                "Specular Rim · Delicate glass / metal border",
+                "Embossed Depth · Tactile raised bevel",
+                "None · Clean flat minimalist"
+        };
+        int selected = "border".equals(curEf) ? 1 : "depth".equals(curEf) ? 2 : "none".equals(curEf) ? 3 : 0;
+        String[] keys = {"shadow", "border", "depth", "none"};
+        choice("Icon effects", options, selected, idx -> {
+            store.set("icon_effects", keys[idx]);
+            IconStylingEngine.clearCache();
+            rebuildContentInPlace();
+        }, () -> appIconsMenu(back));
+    }
+
+    private String[] findSampleIconPackages() {
+        List<String> list = new ArrayList<>();
+        String[] preferred = {
+                "com.google.android.youtube.tv",
+                "com.android.vending",
+                "com.esaba.downloader",
+                "com.android.tv.settings",
+                "flix.com.vision",
+                "com.alphainventor.filemanager"
+        };
+        for (String p : preferred) {
+            if (byPackage.containsKey(p) && !list.contains(p)) {
+                list.add(p);
+                if (list.size() >= 4) break;
+            }
+        }
+        if (list.size() < 4) {
+            for (String f : favorites()) {
+                if (!list.contains(f)) {
+                    list.add(f);
+                    if (list.size() >= 4) break;
+                }
+            }
+        }
+        if (list.size() < 4) {
+            for (String p : byPackage.keySet()) {
+                if (!list.contains(p)) {
+                    list.add(p);
+                    if (list.size() >= 4) break;
+                }
+            }
+        }
+        return list.toArray(new String[0]);
+    }
+
+    private void appIconPreviewBlade(Runnable back) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        TextView title = text("Live App Icon Preview", 22, foreground());
+        title.setTypeface(medium);
+        box.addView(title);
+
+        TextView subtitle = text("Customize icon style, colors, and shapes with instant live preview.", 18, muted());
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2);
+        sp.topMargin = px(4);
+        box.addView(subtitle, sp);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(px(16), px(16), px(16), px(16));
+        card.setBackground(glassPanelDrawable(card, 20f, false));
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, -2);
+        cp.topMargin = px(16);
+        cp.bottomMargin = px(16);
+        box.addView(card, cp);
+
+        LinearLayout iconRow = new LinearLayout(this);
+        iconRow.setOrientation(LinearLayout.HORIZONTAL);
+        iconRow.setGravity(Gravity.CENTER);
+        card.addView(iconRow, new LinearLayout.LayoutParams(-1, -2));
+
+        String[] samplePkgs = findSampleIconPackages();
+        final ImageView[] sampleViews = new ImageView[samplePkgs.length];
+        int sampleIconSize = px(74);
+
+        for (int i = 0; i < samplePkgs.length; i++) {
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            col.setGravity(Gravity.CENTER);
+
+            ImageView iv = new ImageView(this);
+            sampleViews[i] = iv;
+            col.addView(iv, new LinearLayout.LayoutParams(sampleIconSize, sampleIconSize));
+
+            TextView lbl = text(name(samplePkgs[i]), 16, muted());
+            lbl.setSingleLine(true);
+            lbl.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            lbl.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(76), -2);
+            lp.topMargin = px(6);
+            col.addView(lbl, lp);
+
+            LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(-2, -2);
+            if (i > 0) colLp.leftMargin = px(10);
+            iconRow.addView(col, colLp);
+        }
+
+        Runnable refreshPreview = () -> {
+            IconStylingEngine.Config cfg = iconConfig();
+            for (int i = 0; i < samplePkgs.length; i++) {
+                Drawable raw = catalog.artwork(samplePkgs[i], true).drawable;
+                if (raw == null) raw = catalog.artwork(samplePkgs[i], false).drawable;
+                if (raw != null) {
+                    sampleViews[i].setImageDrawable(IconStylingEngine.getStyledIcon(this, samplePkgs[i], raw, sampleIconSize, sampleIconSize, cfg));
+                }
+            }
+        };
+        refreshPreview.run();
+
+        TextView pickStyleHeader = text("Quick style switch", 18, foreground());
+        pickStyleHeader.setTypeface(medium);
+        LinearLayout.LayoutParams pshp = new LinearLayout.LayoutParams(-1, -2);
+        pshp.topMargin = px(8);
+        box.addView(pickStyleHeader, pshp);
+
+        String[] styleKeys = {"minimalist", "monochrome", "paper", "glass", "dark", "original"};
+        String[] styleLabels = {"Minimalist", "Monochrome", "Paper-like", "Glass", "Dark", "Original"};
+
+        LinearLayout btnRow1 = new LinearLayout(this);
+        btnRow1.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout btnRow2 = new LinearLayout(this);
+        btnRow2.setOrientation(LinearLayout.HORIZONTAL);
+
+        for (int i = 0; i < styleKeys.length; i++) {
+            final String k = styleKeys[i];
+            Button btn = button(styleLabels[i], () -> {
+                store.set("icon_style", k);
+                IconStylingEngine.clearCache();
+                refreshPreview.run();
+                rebuildContentInPlace();
+            });
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, px(48), 1f);
+            bp.setMargins(px(4), px(4), px(4), px(4));
+            if (i < 3) btnRow1.addView(btn, bp);
+            else btnRow2.addView(btn, bp);
+        }
+        box.addView(btnRow1, new LinearLayout.LayoutParams(-1, -2));
+        box.addView(btnRow2, new LinearLayout.LayoutParams(-1, -2));
+
+        showBladePanel("App icons preview", box, "Done", () -> appIconsMenu(back), () -> appIconsMenu(back), null);
+    }
+
+    private String iconStyleDisplayName(String s) {
+        if ("minimalist".equals(s)) return "Minimalist · Unified monochrome silhouette";
+        if ("monochrome".equals(s)) return "Monochrome · Enhanced photographic contrast";
+        if ("paper".equals(s)) return "Paper-like · Tactile embossed matte paper";
+        if ("glass".equals(s)) return "Glass · Frosted translucent lens";
+        if ("dark".equals(s)) return "Dark · Stealth obsidian plate";
+        if ("flat".equals(s)) return "Flat · Bold minimalist flat vector";
+        if ("outlined".equals(s)) return "Outlined · Clean wireframe contour";
+        return "Original · Official authentic artwork";
+    }
+
+    private String iconColorDisplayName(String c) {
+        if ("black".equals(c)) return "Obsidian Black · Deep matte charcoal";
+        if ("accent".equals(c)) return "Theme Accent · Matched to wallpaper accent";
+        if ("original".equals(c)) return "Original / Auto · Natural brand colors";
+        return "Pure White · Crisp icy white (Default)";
+    }
+
+    private String iconShapeDisplayName(String sh) {
+        if ("squircle".equals(sh)) return "Squircle · Continuous curvature (38%)";
+        if ("rounded".equals(sh)) return "Rounded · Soft rounded square (22%)";
+        if ("square".equals(sh)) return "Square · Modern square (8%)";
+        return "Circular · Classic circular discs (Default)";
+    }
+
+    private String iconBackgroundDisplayName(String bg) {
+        if ("solid_dark".equals(bg)) return "Solid Dark · Deep charcoal slate plate";
+        if ("transparent".equals(bg)) return "Transparent · Floating glyphs directly on wallpaper";
+        if ("gradient".equals(bg)) return "Accent Gradient · Subtle ambient illumination";
+        return "Frosted Glass · Signature translucent glass (Default)";
+    }
+
+    private String iconEffectsDisplayName(String ef) {
+        if ("border".equals(ef)) return "Specular Rim · Delicate glass / metal border";
+        if ("depth".equals(ef)) return "Embossed Depth · Tactile raised bevel";
+        if ("none".equals(ef)) return "None · Clean flat minimalist";
+        return "Soft Shadow · Subtle ambient drop shadow (Default)";
+    }
+
     private void glassSurfacesMenu(Runnable back) {
         String st=uiSurfaceStyle();
         int frost=glassFrostDepth();
@@ -4309,7 +4683,7 @@ public final class MainActivity extends Activity {
             slot.setBackground(glassSurface(true,false,false,cols[i]));
             if(!pkgs[i].isEmpty()) {
                 ImageView iv=new ImageView(this);iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                iv.setImageDrawable(homeIconDrawable(catalog.artwork(pkgs[i],true).drawable));
+                iv.setImageDrawable(styledIconDrawable(pkgs[i],catalog.artwork(pkgs[i],true).drawable,iconSz,iconSz));
                 slot.addView(iv,new FrameLayout.LayoutParams(-1,-1));
             }
             LinearLayout.LayoutParams slp=new LinearLayout.LayoutParams(iconSz,iconSz);
@@ -4412,7 +4786,7 @@ public final class MainActivity extends Activity {
         pic.setBackground(glassSurface(true,false,true,sampleColor));
         if(!samplePkg.isEmpty()) {
             ImageView iv=new ImageView(this);iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            iv.setImageDrawable(homeIconDrawable(catalog.artwork(samplePkg,true).drawable));
+            iv.setImageDrawable(styledIconDrawable(samplePkg,catalog.artwork(samplePkg,true).drawable,iconSize,iconSize));
             pic.addView(iv,new FrameLayout.LayoutParams(-1,-1));
         }
         outIcon[0]=pic;
