@@ -341,11 +341,50 @@ public final class MainActivity extends Activity {
     private int themed(int warm,int cool) { return wallpaperTheme()?ThemePalette.tint(wallpaperSeed,warm,colorIntensity()):"cool".equals(store.value("theme","warm"))?cool:warm; }
     private String themeName(){String theme=store.value("theme","warm");return "wallpaper".equals(theme)?"From wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
     private String paletteKey(){return "v1:"+store.value("background","app_glow")+":"+store.value("background_image","");}
+    private int resolveAppGlowSeed() {
+        if(focusedFavorite!=null && focusedFavorite.getTag() instanceof String) {
+            String pkg=(String)focusedFavorite.getTag();
+            if(pkg!=null && !pkg.isEmpty() && byPackage.containsKey(pkg)) {
+                int col=resolveGlowColor(pkg);
+                if(col!=0) return col|0xFF000000;
+            }
+        }
+        if(lastFocus!=null && !lastFocus.isEmpty() && byPackage.containsKey(lastFocus)) {
+            int col=resolveGlowColor(lastFocus);
+            if(col!=0) return col|0xFF000000;
+        }
+        if(ambientColor!=0 && ambientColor!=0xFF604844 && (ambientColor&0x00FFFFFF)!=0) {
+            return ambientColor|0xFF000000;
+        }
+        List<String> favs=favorites();
+        if(favs!=null && !favs.isEmpty()) {
+            int col=resolveGlowColor(favs.get(0));
+            if(col!=0) return col|0xFF000000;
+        }
+        return 0xFF00E5FF;
+    }
     private void refreshWallpaperPalette(){
         String style=store.value("background","app_glow");
-        if("photo".equals(style))wallpaperSeed=paletteKey().equals(store.value("palette_source",""))?store.number("palette_seed",0):0;
-        else if("sky".equals(style))wallpaperSeed=skyPaletteSeed();
-        else wallpaperSeed="forest".equals(style)?0xFF276849:"ocean".equals(style)?0xFF286A91:"midnight".equals(style)?0xFF465B9A:"ember".equals(style)?0xFF9A6A52:0;
+        if("photo".equals(style)) {
+            int seed=paletteKey().equals(store.value("palette_source",""))?store.number("palette_seed",0):0;
+            wallpaperSeed = (seed!=0)?seed:resolveAppGlowSeed();
+        } else if("sky".equals(style)) {
+            wallpaperSeed=skyPaletteSeed();
+        } else if("forest".equals(style)) {
+            wallpaperSeed=0xFF10B981;
+        } else if("ocean".equals(style)) {
+            wallpaperSeed=0xFF0284C7;
+        } else if("midnight".equals(style)) {
+            wallpaperSeed=0xFF6366F1;
+        } else if("ember".equals(style)) {
+            wallpaperSeed=0xFFFF5722;
+        } else if("solid_slate".equals(style)) {
+            wallpaperSeed=0xFF38BDF8;
+        } else if("solid_black".equals(style)) {
+            wallpaperSeed=0xFF3B82F6;
+        } else {
+            wallpaperSeed=resolveAppGlowSeed();
+        }
     }
     private int skyPaletteSeed() {
         int hour=java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
@@ -1490,6 +1529,8 @@ public final class MainActivity extends Activity {
         if(root!=null) root.setBackground(buildWorkspaceBackground());
         if(homeStageBorder!=null) homeStageBorder.setBackground(buildStageBezelDrawable());
         if(activeBladeBox!=null) activeBladeBox.setBackground(floatingPanelDrawable(activeBladeBox,24f));
+        if(dockBar!=null) dockBar.setBackground(glassPanelDrawable(dockBar,26f,false));
+        if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
     }
 
     private void updateWorkspaceAndMenuSurfaces() {
@@ -1907,8 +1948,18 @@ public final class MainActivity extends Activity {
             if(isBladeActive) {
                 updateStageAmbientColors(false);
             }
+            if("wallpaper".equals(store.value("theme","warm"))) {
+                wallpaperSeed=ambientColor;
+                if(dockBar!=null) dockBar.invalidate();
+                if(activeBladeBox!=null) activeBladeBox.invalidate();
+            }
         });
         ambientAnimator.start();
+        if("wallpaper".equals(store.value("theme","warm"))) {
+            wallpaperSeed=color;
+            if(dockBar!=null) dockBar.invalidate();
+            if(activeBladeBox!=null) activeBladeBox.invalidate();
+        }
     }
     private boolean topControlsVisible(){return !store.flag("show_dock",true);}
     private void renderHome() {
