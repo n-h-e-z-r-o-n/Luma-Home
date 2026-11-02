@@ -3099,7 +3099,11 @@ public final class MainActivity extends Activity {
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if(artwork.isEmpty()) {
-                image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));
+                if("original".equals(store.value("icon_style","original")) && "circle".equals(store.value("icon_shape","circle")) && store.number("icon_size_pct",100)==100) {
+                    image.setImageDrawable(homeIconDrawable(appArt.drawable));
+                } else {
+                    image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));
+                }
             } else images.show(image,artwork,width,height);
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(bannerStyle) {
@@ -3109,12 +3113,24 @@ public final class MainActivity extends Activity {
         } else if(recent) {
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             int iconSize=Math.min(px(80),Math.round(height*0.65f));
-            if(appArt.drawable!=null)image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
+            if(appArt.drawable!=null) {
+                if("original".equals(store.value("icon_style","original"))) {
+                    image.setImageDrawable(appArt.drawable);
+                } else {
+                    image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
+                }
+            }
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
             int iconSize=allApps?px(102):px(64);
-            if(appArt.drawable!=null)image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
+            if(appArt.drawable!=null) {
+                if("original".equals(store.value("icon_style","original"))) {
+                    image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
+                } else {
+                    image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
+                }
+            }
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(iconSize,iconSize));
             TextView inside=text(name(pkg),allApps?26:24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(16),0,px(16),0);
             LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(44));labelParams.topMargin=px(allApps?14:8);plain.addView(inside,labelParams);

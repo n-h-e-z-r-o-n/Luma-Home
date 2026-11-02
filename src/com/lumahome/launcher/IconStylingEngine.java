@@ -59,6 +59,34 @@ public final class IconStylingEngine {
         if (cached != null) return cached;
 
         try {
+            // If Original style and default circle shape & 100% size:
+            // Return 100% unaltered, unsegmented authentic original icon (exact original launcher behavior)
+            if ("original".equals(config.style) && "circle".equals(config.shape) && config.sizePct == 100) {
+                Bitmap fullOriginal = renderFullOriginalBitmap(original);
+                if (fullOriginal != null) {
+                    Drawable result = new BitmapDrawable(context.getResources(), fullOriginal);
+                    sCache.put(key, result);
+                    return result;
+                }
+                return original;
+            }
+
+            // If Original style with custom shape (e.g. Squircle) or custom size:
+            // Preserve the complete authentic icon artwork intact without any glyph stripping or recoloring
+            if ("original".equals(config.style)) {
+                Bitmap fullOriginal = renderFullOriginalBitmap(original);
+                if (fullOriginal != null) {
+                    Bitmap shaped = renderOriginalWithCustomShape(fullOriginal, targetSize, config);
+                    if (shaped != null) {
+                        Drawable result = new BitmapDrawable(context.getResources(), shaped);
+                        sCache.put(key, result);
+                        return result;
+                    }
+                }
+                return original;
+            }
+
+            // Customized styles (Minimalist, Monochrome, Paper-like, Glass, Dark, Flat, Outlined):
             Bitmap rendered = renderStyledBitmap(original, targetSize, config);
             if (rendered != null) {
                 Drawable result = new BitmapDrawable(context.getResources(), rendered);
@@ -71,15 +99,65 @@ public final class IconStylingEngine {
         return original;
     }
 
+    public static Bitmap renderFullOriginalBitmap(Drawable original) {
+        if (original == null) return null;
+        try {
+            int w = Math.max(1, original.getIntrinsicWidth());
+            int h = Math.max(1, original.getIntrinsicHeight());
+            float scale = Math.min(1f, 512f / Math.max(w, h));
+            w = Math.max(1, Math.round(w * scale));
+            h = Math.max(1, Math.round(h * scale));
+            Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Rect bounds = new Rect(original.getBounds());
+            try {
+                original.setBounds(0, 0, w, h);
+                original.draw(new Canvas(bitmap));
+            } finally {
+                original.setBounds(bounds);
+            }
+            // Trim transparent borders only - NEVER strip backgrounds or segment glyphs
+            return trimTransparent(bitmap);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Bitmap renderOriginalWithCustomShape(Bitmap fullOriginal, int targetSize, Config config) {
+        Bitmap output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(output);
+
+        RectF bounds = new RectF(0, 0, targetSize, targetSize);
+        float radius = getShapeCornerRadius(config.shape, targetSize);
+
+        Path shapePath = new Path();
+        if (radius >= targetSize / 2f - 0.5f) {
+            shapePath.addOval(bounds, Path.Direction.CW);
+        } else {
+            shapePath.addRoundRect(bounds, radius, radius, Path.Direction.CW);
+        }
+
+        canvas.save();
+        canvas.clipPath(shapePath);
+
+        float scaleFactor = (config.sizePct / 100f);
+        int gw = Math.round(targetSize * scaleFactor);
+        int gh = Math.round(targetSize * scaleFactor);
+
+        int left = (targetSize - gw) / 2;
+        int top = (targetSize - gh) / 2;
+        Rect dst = new Rect(left, top, left + gw, top + gh);
+
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(fullOriginal, null, dst, paint);
+        canvas.restore();
+
+        return output;
+    }
+
     private static Bitmap renderStyledBitmap(Drawable original, int targetSize, Config config) {
         // Step 1: Extract base glyph / subject from original drawable
         Bitmap rawGlyph = extractGlyphBitmap(original, targetSize);
         if (rawGlyph == null) return null;
-
-        // If Original style and default circle/glass: center crop like standard Luma Home
-        if ("original".equals(config.style) && "circle".equals(config.shape) && "glass".equals(config.background) && config.sizePct == 100) {
-            return rawGlyph;
-        }
 
         Bitmap output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(output);
@@ -99,12 +177,7 @@ public final class IconStylingEngine {
         renderBackground(canvas, shapePath, bounds, radius, config);
 
         // Step 3: Transform glyph according to chosen style and color
-        Bitmap styledGlyph;
-        if ("original".equals(config.style)) {
-            styledGlyph = rawGlyph;
-        } else {
-            styledGlyph = transformGlyphArtwork(rawGlyph, config);
-        }
+        Bitmap styledGlyph = transformGlyphArtwork(rawGlyph, config);
 
         // Step 4: Position, scale, and render styled glyph
         if (styledGlyph != null) {
