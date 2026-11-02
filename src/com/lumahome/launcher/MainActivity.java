@@ -1007,22 +1007,16 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double maxAvailableWidth=(panelLeftEdge-minGap)-fixedLeftMargin;
-
-        float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
-        float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
-        float absMaxScale=Math.min(maxScaleX,maxScaleY);
-
         float baseScale=rotY<=0.1f?0.58f:rotY<=7.6f?0.60f:rotY<=10.1f?0.62f:0.64f;
-        baseScale=Math.min(baseScale,absMaxScale);
 
         int userPct=store.number("settings_3d_scale_pct",100);
         float userMultiplier=userPct/100.0f;
         float targetScale=baseScale*userMultiplier;
 
         float minScale=baseScale*0.60f;
+        float maxScale=baseScale*2.00f;
         if(targetScale<minScale) targetScale=minScale;
-        if(targetScale>absMaxScale) targetScale=absMaxScale;
+        if(targetScale>maxScale) targetScale=maxScale;
 
         // Fixed Left-Edge Anchoring:
         // The view's left edge is at x = 0 with pivotX = 0f. Under 3D Y-rotation and scaleX around pivotX = 0,
@@ -1124,17 +1118,10 @@ public final class MainActivity extends Activity {
         double z3=-screenWidth*sinT;
         double P=cameraDistance/(cameraDistance-z3);
 
-        double maxAvailableWidth=(panelLeftEdge-minGap)-fixedLeftMargin;
-
-        float maxScaleX=(float)(maxAvailableWidth/(screenWidth*cosT*P));
-        float maxScaleY=(float)((screenHeight-2*minVerticalMargin)/(float)screenHeight);
-        float absMaxScale=Math.min(maxScaleX,maxScaleY);
-
         float baseScale=rotY<=0.1f?0.58f:rotY<=7.6f?0.60f:rotY<=10.1f?0.62f:0.64f;
-        baseScale=Math.min(baseScale,absMaxScale);
 
         final int minPct=60;
-        final int maxPct=Math.max(100,Math.round((absMaxScale/baseScale)*100f));
+        final int maxPct=200;
         final int origPct=Math.max(minPct,Math.min(maxPct,store.number("settings_3d_scale_pct",100)));
 
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
@@ -1164,16 +1151,16 @@ public final class MainActivity extends Activity {
         box.addView(slider,new LinearLayout.LayoutParams(-1,px(60)));
 
         final float finalBaseScale=baseScale;
-        final float finalAbsMaxScale=absMaxScale;
         final float finalMinScale=baseScale*0.60f;
+        final float finalMaxScale=baseScale*2.00f;
         Runnable update=()->{
             int pct=slider.getProgress()+minPct;
             float s=finalBaseScale*(pct/100.0f);
             if(s<finalMinScale) s=finalMinScale;
-            if(s>finalAbsMaxScale) s=finalAbsMaxScale;
+            if(s>finalMaxScale) s=finalMaxScale;
             int renderedH=Math.round(screenHeight*s);
             int pctOfScreen=Math.round((renderedH/(float)screenHeight)*100f);
-            String desc=pct==100?"Default":pct<100?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum safe size":"Expanded";
+            String desc=pct==100?"Default":pct<100?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum size (200%)":"Expanded";
             value.setText("Preview size · "+pct+"% ("+desc+")");
             cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Fixed left-edge anchor (24dp)");
             store.setNumber("settings_3d_scale_pct",pct);
