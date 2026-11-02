@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -14,7 +15,7 @@ import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Reads only recommendations exposed to this ordinary launcher by the TV provider. */
+/** Reads only recommendations exposed to this launcher by the TV provider. */
 final class RecommendationRepository {
     static final class Item {
         final String source, title, description, artwork, action;
@@ -25,10 +26,17 @@ final class RecommendationRepository {
         Intent intent() {
             try {
                 Intent intent = Intent.parseUri(action, Intent.URI_INTENT_SCHEME);
-                if (intent.getComponent() != null && !source.equals(intent.getComponent().getPackageName())) return null;
+                if (intent.getComponent() != null) {
+                    String cmpPkg = intent.getComponent().getPackageName();
+                    if (!matchesPackage(source, cmpPkg)) return null;
+                    intent.setPackage(cmpPkg);
+                } else {
+                    intent.setPackage(source);
+                }
                 String actionName = intent.getAction();
                 if (actionName != null && !Intent.ACTION_VIEW.equals(actionName) && !Intent.ACTION_MAIN.equals(actionName)) return null;
-                intent.setSelector(null); intent.setPackage(source); intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                intent.setSelector(null);
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 if (intent.getAction() == null) intent.setAction(Intent.ACTION_VIEW);
                 return intent;
             } catch (Exception e) { return null; }
@@ -46,14 +54,25 @@ final class RecommendationRepository {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Map<String, Feed> cache = new HashMap<>();
     private volatile boolean closed;
+
     RecommendationRepository(Context context) { this.context=context.getApplicationContext(); }
     Feed cached(String pkg) { return cache.get(pkg); }
     void clear() { cache.clear(); }
+
+    static boolean matchesPackage(String targetPkg, String candidatePkg) {
+        if (targetPkg == null || candidatePkg == null) return false;
+        if (targetPkg.equals(candidatePkg)) return true;
+        String t = targetPkg.endsWith(".debug") ? targetPkg.substring(0, targetPkg.length() - 6) : targetPkg;
+        String c = candidatePkg.endsWith(".debug") ? candidatePkg.substring(0, candidatePkg.length() - 6) : candidatePkg;
+        return t.equals(c);
+    }
+
     void load(String pkg, Loaded callback) {
         Feed known = cache.get(pkg);
         if (known != null) { callback.ready(known); return; }
         worker.execute(() -> {
-            List<Item> items = new ArrayList<>(); HashSet<String> actions = new HashSet<>();
+            List<Item> items = new ArrayList<>();
+            HashSet<String> actions = new HashSet<>();
             boolean blocked = false;
             for (String table : new String[] {"preview_program", "watch_next_program"}) {
                 try (Cursor cursor = context.getContentResolver().query(Uri.parse("content://android.media.tv/"+table),
@@ -61,17 +80,22 @@ final class RecommendationRepository {
                     if (cursor == null) continue;
                     int checked=0;
                     while (cursor.moveToNext() && checked++ < 400 && items.size() < 8) {
-                        if (!pkg.equals(column(cursor,"package_name"))) continue;
+                        String rowPkg = column(cursor, "package_name");
+                        if (!matchesPackage(pkg, rowPkg)) continue;
                         String title = column(cursor,"title"), action=column(cursor,"intent_uri");
                         if (title.isEmpty() || action.isEmpty() || !actions.add(action)) continue;
                         String art=column(cursor,"poster_art_uri"); if (art.isEmpty()) art=column(cursor,"thumbnail_uri");
                         String description=column(cursor,"short_description");if(description.isEmpty())description=column(cursor,"long_description");
-                        Item item = new Item(pkg,title,description,art,action);
+                        Item item = new Item(rowPkg,title,description,art,action);
                         item.preview=column(cursor,"preview_video_uri");
                         if (item.intent()!=null) items.add(item);
                     }
-                } catch (SecurityException e) { blocked=true; }
-                catch (Exception ignored) { }
+                } catch (SecurityException e) {
+                    blocked = true;
+                    Log.w("LumaRec", "TV provider restricted reading table " + table + ": " + e.getMessage());
+                } catch (Exception e) {
+                    Log.w("LumaRec", "Error reading table " + table + ": " + e.getMessage());
+                }
             }
             Feed feed = new Feed(items, !items.isEmpty() ? "Ready · " + items.size() + " shared titles" : blocked
                     ? "This TV restricts recommendation access. The clock remains available."

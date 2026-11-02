@@ -3975,6 +3975,10 @@ public final class MainActivity extends Activity {
         if (store.recommendations(pkg)) {
             store.recommendations(pkg,false); render(); appMenu(pkg); return;
         }
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(TV_LISTINGS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{TV_LISTINGS_PERMISSION}, TV_LISTINGS);
+            return;
+        }
         toast("Checking shared recommendations…");
         recommendations.load(pkg,feed->{
             if (feed.items.isEmpty()) {
@@ -3982,8 +3986,9 @@ public final class MainActivity extends Activity {
                         Arrays.asList(()->info("About shared content","Apps must publish accessible recommendations. An account or subscription alone does not provide this launcher with a feed.",()->appMenu(pkg)),
                                 ()->{recommendations.clear();toggleAppRecommendations(pkg);},this::recommendationMenu),()->appMenu(pkg));
             } else {
-                store.recommendations(pkg,true); render(); appMenu(pkg);
-                if (!store.flag("recommendations_master")) toast("Preference saved. Recommendations are paused in Settings.");
+                store.recommendations(pkg,true);
+                if (!store.flag("recommendations_master")) store.setFlag("recommendations_master",true);
+                render(); appMenu(pkg);
             }
         });
     }
@@ -5578,7 +5583,13 @@ public final class MainActivity extends Activity {
                 "How recommendations work"),
                 Arrays.asList(
                         null,
-                        ()->{store.setFlag("recommendations_master",!store.flag("recommendations_master"));render();recommendationMenu();},
+                        ()->{
+                            boolean enable=!store.flag("recommendations_master");
+                            if (enable && Build.VERSION.SDK_INT >= 23 && checkSelfPermission(TV_LISTINGS_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+                                requestPermissions(new String[]{TV_LISTINGS_PERMISSION}, TV_LISTINGS);
+                            }
+                            store.setFlag("recommendations_master",enable);render();recommendationMenu();
+                        },
                         this::recommendationSizeDialog,
                         null,
                         ()->chooseApp("App recommendations",false,this::toggleAppRecommendations,this::recommendationMenu),
