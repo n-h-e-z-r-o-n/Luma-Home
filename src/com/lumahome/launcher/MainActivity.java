@@ -1943,11 +1943,14 @@ public final class MainActivity extends Activity {
         int rowBotPad=Math.max(px(44),px(glowRadiusSetting()-6));
         appsRow.setPadding(px(88),rowTopPad,px(88),rowBotPad);
         List<View> navigationRow=new ArrayList<>();appRows.add(navigationRow);
-        int iconSize=px(columns()==4?176:columns()==8?112:144);
+        int baseIconSize=px(columns()==4?176:columns()==8?112:144);
+        float sizeScale=store.number("icon_size_pct",100)/100f;
+        int iconSize=Math.max(px(64),Math.round(baseIconSize*sizeScale));
+        int iconSpacing=Math.max(px(16),Math.round(px(52)*sizeScale));
         for(int i=0;i<favorite.size();i++) {
             View tile=appTile(favorite.get(i),iconSize,iconSize,false);
             LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
-            if(i+1<favorite.size())tileParams.rightMargin=px(52);
+            if(i+1<favorite.size())tileParams.rightMargin=iconSpacing;
             appsRow.addView(tile,tileParams);appViews.add(tile);navigationRow.add(tile);
         }
         homeSpringStage=new SpringStage(appsRow,true);
@@ -3099,7 +3102,7 @@ public final class MainActivity extends Activity {
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if(artwork.isEmpty()) {
-                if("original".equals(store.value("icon_style","original")) && "circle".equals(store.value("icon_shape","circle")) && store.number("icon_size_pct",100)==100) {
+                if("original".equals(store.value("icon_style","original")) && "circle".equals(store.value("icon_shape","circle"))) {
                     image.setImageDrawable(homeIconDrawable(appArt.drawable));
                 } else {
                     image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));

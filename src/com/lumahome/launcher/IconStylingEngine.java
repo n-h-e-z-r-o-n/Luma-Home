@@ -61,7 +61,7 @@ public final class IconStylingEngine {
         try {
             // If Original style and default circle shape & 100% size:
             // Return 100% unaltered, unsegmented authentic original icon (exact original launcher behavior)
-            if ("original".equals(config.style) && "circle".equals(config.shape) && config.sizePct == 100) {
+            if ("original".equals(config.style) && "circle".equals(config.shape)) {
                 Bitmap fullOriginal = renderFullOriginalBitmap(original);
                 if (fullOriginal != null) {
                     Drawable result = new BitmapDrawable(context.getResources(), fullOriginal);
@@ -139,7 +139,7 @@ public final class IconStylingEngine {
         canvas.save();
         canvas.clipPath(shapePath);
 
-        float scaleFactor = (config.sizePct / 100f);
+        float scaleFactor = 1.0f;
         int gw = Math.round(targetSize * scaleFactor);
         int gh = Math.round(targetSize * scaleFactor);
 
@@ -184,8 +184,7 @@ public final class IconStylingEngine {
             canvas.save();
             canvas.clipPath(shapePath);
 
-            float baseScale = "original".equals(config.style) ? 1.0f : 0.60f;
-            float scaleFactor = baseScale * (config.sizePct / 100f);
+            float scaleFactor = "original".equals(config.style) ? 1.0f : 0.62f;
             int gw = Math.round(targetSize * scaleFactor);
             int gh = Math.round(targetSize * scaleFactor);
 
