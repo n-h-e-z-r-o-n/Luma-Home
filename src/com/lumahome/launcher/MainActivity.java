@@ -1190,39 +1190,39 @@ public final class MainActivity extends Activity {
     }
 
     private float getSettingsPerspectiveAngle() {
-        int mode=store.number("settings_3d_angle",1);
+        int mode=store.number("settings_3d_angle",0);
         switch(mode) {
-            case 0: return 7.5f;   // Subtle
+            case 1: return 10.0f;  // Balanced
             case 2: return 12.5f;  // Cinematic
             case 3: return 0.0f;   // Flat
-            case 1:
-            default: return 10.0f; // Balanced (Default)
+            case 0:
+            default: return 7.5f;  // Subtle (Default)
         }
     }
 
     private String getSettingsPerspectiveName() {
-        int mode=store.number("settings_3d_angle",1);
+        int mode=store.number("settings_3d_angle",0);
         switch(mode) {
-            case 0: return "Subtle · 7.5°";
+            case 1: return "Balanced · 10°";
             case 2: return "Cinematic · 12.5°";
             case 3: return "Flat · 0°";
-            case 1:
-            default: return "Balanced · 10° (Default)";
+            case 0:
+            default: return "Subtle · 7.5° (Default)";
         }
     }
 
     private String getSettingsPerspectiveSummary() {
-        int mode=store.number("settings_3d_angle",1);
-        String angleName=mode==0?"Subtle":mode==2?"Cinematic":mode==3?"Flat":"Balanced";
-        int pct=store.number("settings_3d_scale_pct",100);
-        if(pct==100) return angleName+" · Default";
+        int mode=store.number("settings_3d_angle",0);
+        String angleName=mode==1?"Balanced":mode==2?"Cinematic":mode==3?"Flat":"Subtle";
+        int pct=store.number("settings_3d_scale_pct",150);
+        if(pct==150 && mode==0) return angleName+" · Default";
         return angleName+" · "+pct+"%";
     }
 
     private String getSettingsPreviewSizeSummary() {
-        int pct=store.number("settings_3d_scale_pct",100);
-        if(pct==100) return "100% · Default";
-        return pct+"% · "+(pct<100?(pct<=70?"Compact":"Reduced"):"Expanded");
+        int pct=store.number("settings_3d_scale_pct",150);
+        if(pct==150) return "150% · Default";
+        return pct+"% · "+(pct<150?(pct<=70?"Compact":"Reduced"):"Expanded");
     }
 
     private void applyHomeStage3D(ViewGroup stage, boolean animate) {
@@ -1262,7 +1262,7 @@ public final class MainActivity extends Activity {
 
         float baseScale=rotY<=0.1f?0.58f:rotY<=7.6f?0.60f:rotY<=10.1f?0.62f:0.64f;
 
-        int userPct=store.number("settings_3d_scale_pct",100);
+        int userPct=store.number("settings_3d_scale_pct",150);
         float userMultiplier=userPct/100.0f;
         float targetScale=baseScale*userMultiplier;
 
@@ -1348,12 +1348,12 @@ public final class MainActivity extends Activity {
     }
 
     private void perspectiveMenu(Runnable back) {
-        int curAngle=store.number("settings_3d_angle",1);
+        int curAngle=store.number("settings_3d_angle",0);
         String sizeSummary=getSettingsPreviewSizeSummary();
         menu("3D door perspective",Arrays.asList(
                 "§PERSPECTIVE PRESET",
-                (curAngle==1?"✓ ":"○ ")+"Balanced · 10° (Default) · Natural door perspective & high readability",
-                (curAngle==0?"✓ ":"○ ")+"Subtle · 7.5° · Gentle slope & maximum legibility",
+                (curAngle==0?"✓ ":"○ ")+"Subtle · 7.5° (Default) · Gentle slope & maximum legibility",
+                (curAngle==1?"✓ ":"○ ")+"Balanced · 10° · Natural door perspective & high readability",
                 (curAngle==2?"✓ ":"○ ")+"Cinematic · 12.5° · Pronounced depth",
                 (curAngle==3?"✓ ":"○ ")+"Flat · 0° · Standard flat view",
                 "§PREVIEW SIZE",
@@ -1362,18 +1362,18 @@ public final class MainActivity extends Activity {
                 "Restore perspective defaults"),
                 Arrays.asList(
                         null,
-                        ()->{ store.setNumber("settings_3d_angle",1); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
                         ()->{ store.setNumber("settings_3d_angle",0); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
+                        ()->{ store.setNumber("settings_3d_angle",1); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
                         ()->{ store.setNumber("settings_3d_angle",2); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
                         ()->{ store.setNumber("settings_3d_angle",3); if(homeStage!=null) applyHomeStage3D(homeStage,true); perspectiveMenu(back); },
                         null,
                         ()->homeScreenSizeSliderDialog(()->perspectiveMenu(back)),
                         null,
                         ()->{
-                            store.setNumber("settings_3d_angle",1);
-                            store.setNumber("settings_3d_scale_pct",100);
+                            store.setNumber("settings_3d_angle",0);
+                            store.setNumber("settings_3d_scale_pct",150);
                             if(homeStage!=null) applyHomeStage3D(homeStage,true);
-                            toast("3D perspective restored to defaults");
+                            toast("3D perspective restored to defaults (Subtle · 150%)");
                             perspectiveMenu(back);
                         }),back);
     }
@@ -1399,7 +1399,7 @@ public final class MainActivity extends Activity {
 
         final int minPct=60;
         final int maxPct=200;
-        final int origPct=Math.max(minPct,Math.min(maxPct,store.number("settings_3d_scale_pct",100)));
+        final int origPct=Math.max(minPct,Math.min(maxPct,store.number("settings_3d_scale_pct",150)));
 
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
         TextView value=text("",22,foreground());value.setTypeface(medium);box.addView(value);
@@ -1437,7 +1437,7 @@ public final class MainActivity extends Activity {
             if(s>finalMaxScale) s=finalMaxScale;
             int renderedH=Math.round(screenHeight*s);
             int pctOfScreen=Math.round((renderedH/(float)screenHeight)*100f);
-            String desc=pct==100?"Default":pct<100?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum size (200%)":"Expanded";
+            String desc=pct==150?"Default":pct<150?(pct<=70?"Compact":"Reduced"):pct>=maxPct?"Maximum size (200%)":"Expanded";
             value.setText("Preview size · "+pct+"% ("+desc+")");
             cardMetrics.setText("Display height: "+renderedH+"px ("+pctOfScreen+"% of screen)\nAspect ratio: 16:9 preserved · Fixed left-edge anchor (24dp)");
             store.setNumber("settings_3d_scale_pct",pct);
