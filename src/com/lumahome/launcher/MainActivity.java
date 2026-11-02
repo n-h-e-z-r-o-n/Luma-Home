@@ -86,7 +86,11 @@ public final class MainActivity extends Activity {
     private final List<List<View>> contentRows=new ArrayList<>();
     private final Map<String,Integer> appColorCache=new HashMap<>();
     private FrameLayout root, content, header, homeStage;
-    private View homeStageBorder, homeStageShadow;
+    private View homeStageBorder, homeStageShadow, homeStageAmbientGlow;
+    private AmbientGlowDrawable ambientGlowDrawable;
+    private android.animation.ValueAnimator stageAmbientColorAnimator;
+    private int currentAmbientPrimary = 0, currentAmbientSecondary = 0;
+    private int photoAmbientPrimary = 0, photoAmbientSecondary = 0;
     private boolean isBladeActive = false;
     private LinearLayout contentRail, drawerPage, homePage, recentSection;
     private ScrollView drawerScroll, homeScroll;
@@ -377,18 +381,33 @@ public final class MainActivity extends Activity {
         palettePending=key;
         paletteWorker.execute(()->{
             int seed=0;
+            int botSeed=0;
             try{
                 float ratio=Math.min(1f,64f/Math.max(bitmap.getWidth(),bitmap.getHeight()));
                 android.graphics.Bitmap sample=android.graphics.Bitmap.createScaledBitmap(bitmap,Math.max(1,Math.round(bitmap.getWidth()*ratio)),Math.max(1,Math.round(bitmap.getHeight()*ratio)),true);
-                int[] pixels=new int[sample.getWidth()*sample.getHeight()];sample.getPixels(pixels,0,sample.getWidth(),0,0,sample.getWidth(),sample.getHeight());
-                seed=ThemePalette.seed(pixels);if(sample!=bitmap)sample.recycle();
+                int sw=sample.getWidth();
+                int sh=sample.getHeight();
+                int[] pixels=new int[sw*sh];sample.getPixels(pixels,0,sw,0,0,sw,sh);
+                seed=ThemePalette.seed(pixels);
+                int botStart=Math.min(sh-1,Math.round(sh*0.65f));
+                int botH=sh-botStart;
+                if(botH>0){
+                    int[] botPixels=new int[sw*botH];
+                    sample.getPixels(botPixels,0,sw,0,botStart,sw,botH);
+                    botSeed=ThemePalette.seed(botPixels);
+                }
+                if(sample!=bitmap)sample.recycle();
             }catch(Exception|OutOfMemoryError ignored){}
             final int extracted=seed;
+            final int extractedBot=botSeed;
             if(!destroyed)handler.post(()->{
                 if(destroyed)return;
                 if(key.equals(palettePending))palettePending="";
                 if(!key.equals(paletteKey()))return;
                 store.prefs.edit().putString("palette_source",key).putInt("palette_seed",extracted).apply();wallpaperSeed=extracted;
+                photoAmbientPrimary = (extracted!=0)?extracted:accent();
+                photoAmbientSecondary = (extractedBot!=0)?extractedBot:ThemePalette.accent(photoAmbientPrimary,80);
+                updateStageAmbientColors(true);
                 if("wallpaper".equals(store.value("theme","warm")))render();
             });
         });
@@ -765,19 +784,261 @@ public final class MainActivity extends Activity {
         };
     }
 
+    private static class AmbientGlowDrawable extends Drawable {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private int primaryColor;
+        private int secondaryColor;
+        private final int spread;
+        private boolean initialized = false;
+        private int lastW = 0, lastH = 0;
+
+        private android.graphics.Shader backGlowShader;
+        private android.graphics.Shader underGlowShader;
+
+        AmbientGlowDrawable(int spread, int primary, int secondary) {
+            this.spread = spread;
+            this.primaryColor = primary;
+            this.secondaryColor = secondary;
+        }
+
+        public void setColors(int primary, int secondary) {
+            if(this.primaryColor == primary && this.secondaryColor == secondary) return;
+            this.primaryColor = primary;
+            this.secondaryColor = secondary;
+            this.initialized = false;
+            invalidateSelf();
+        }
+
+        private void init(int w, int h) {
+            if(w <= 0 || h <= 0) return;
+            lastW = w;
+            lastH = h;
+            float S = spread;
+            float canvasW = w - 2 * S;
+            float canvasH = h - 2 * S;
+
+            int pRgb = primaryColor & 0x00FFFFFF;
+            int sRgb = secondaryColor & 0x00FFFFFF;
+
+            // 1. Atmospheric Back-Glow:
+            // Positioned behind the center-left of the stage canvas, radiating softly.
+            // Falls off smoothly to complete transparency well before the Settings panel.
+            float backCx = S + canvasW * 0.35f;
+            float backCy = S + canvasH * 0.48f;
+            float backRadius = Math.max(canvasW, canvasH) * 0.60f;
+
+            int[] backColors = new int[]{
+                0x4A000000 | pRgb,  // Core atmospheric bloom
+                0x32000000 | sRgb,  // Harmonic mid-tone
+                0x18000000 | pRgb,  // Soft falloff
+                0x06000000 | sRgb,  // Outer taper
+                0x00000000          // Pure transparent
+            };
+            float[] backStops = new float[]{0.0f, 0.28f, 0.58f, 0.82f, 1.0f};
+            backGlowShader = new android.graphics.RadialGradient(backCx, backCy, backRadius, backColors, backStops, android.graphics.Shader.TileMode.CLAMP);
+
+            // 2. Underglow Floor Bloom (the rich bounce reflection beneath the door):
+            // Positioned beneath the bottom edge of the stage canvas.
+            float underCx = S + canvasW * 0.38f;
+            float underCy = S + canvasH + S * 0.12f;
+            float underRadius = canvasH * 0.52f;
+
+            int[] underColors = new int[]{
+                0x94000000 | sRgb,  // Vivid floor reflection
+                0x6E000000 | pRgb,  // Harmonic bounce
+                0x3E000000 | sRgb,  // Diffused spread
+                0x16000000 | pRgb,  // Gentle fade
+                0x00000000          // Pure transparent
+            };
+            float[] underStops = new float[]{0.0f, 0.20f, 0.45f, 0.72f, 1.0f};
+            underGlowShader = new android.graphics.RadialGradient(underCx, underCy, underRadius, underColors, underStops, android.graphics.Shader.TileMode.CLAMP);
+
+            initialized = true;
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect b = getBounds();
+            int w = b.width();
+            int h = b.height();
+            if(w <= 0 || h <= 0) return;
+            if(!initialized || w != lastW || h != lastH) init(w, h);
+
+            float S = spread;
+            float canvasW = w - 2 * S;
+            float canvasH = h - 2 * S;
+
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+
+            // A. Draw atmospheric back-glow
+            if(backGlowShader != null) {
+                paint.setShader(backGlowShader);
+                c.drawRect(0, 0, w, h, paint);
+            }
+
+            // B. Draw underglow floor reflection horizontally elongated
+            if(underGlowShader != null) {
+                float underCx = S + canvasW * 0.38f;
+                float underCy = S + canvasH + S * 0.12f;
+                c.save();
+                c.scale(2.10f, 0.55f, underCx, underCy);
+                paint.setShader(underGlowShader);
+                c.drawCircle(underCx, underCy, canvasH * 0.52f, paint);
+                c.restore();
+            }
+
+            paint.setShader(null);
+        }
+
+        @Override public void setAlpha(int a) { paint.setAlpha(a); }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { paint.setColorFilter(cf); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    private int[] getTargetAmbientPalette() {
+        String style = store.value("background", "app_glow");
+        int primary, secondary;
+
+        switch (style) {
+            case "ocean":
+                primary = 0xFF0284C7;
+                secondary = 0xFF00B4D8;
+                break;
+            case "forest":
+                primary = 0xFF10B981;
+                secondary = 0xFF059669;
+                break;
+            case "midnight":
+                primary = 0xFF6366F1;
+                secondary = 0xFF7C3AED;
+                break;
+            case "ember":
+                primary = 0xFFFF5722;
+                secondary = 0xFFE11D48;
+                break;
+            case "sky": {
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                float h = cal.get(java.util.Calendar.HOUR_OF_DAY) + cal.get(java.util.Calendar.MINUTE) / 60f;
+                if (h >= 5.5f && h < 8.5f) {
+                    primary = 0xFFFF9E5E;
+                    secondary = 0xFFE05642;
+                } else if (h >= 8.5f && h < 16.5f) {
+                    primary = 0xFF38BDF8;
+                    secondary = 0xFF0284C7;
+                } else if (h >= 16.5f && h < 20.5f) {
+                    primary = 0xFFFF6E48;
+                    secondary = 0xFFC026D3;
+                } else {
+                    primary = 0xFF4F46E5;
+                    secondary = 0xFF1E3A8A;
+                }
+                break;
+            }
+            case "solid_slate":
+                primary = 0xFF38BDF8;
+                secondary = 0xFF1E293B;
+                break;
+            case "solid_black":
+                primary = 0xFF3B82F6;
+                secondary = 0xFF0F172A;
+                break;
+            case "photo": {
+                if (photoAmbientPrimary != 0 && photoAmbientSecondary != 0) {
+                    primary = photoAmbientPrimary;
+                    secondary = photoAmbientSecondary;
+                } else if (wallpaperSeed != 0) {
+                    primary = wallpaperSeed | 0xFF000000;
+                    secondary = ThemePalette.accent(wallpaperSeed, 85);
+                } else {
+                    primary = accent();
+                    secondary = 0xFF38BDF8;
+                }
+                break;
+            }
+            case "app_glow":
+            default: {
+                primary = ambientColor | 0xFF000000;
+                if((primary == 0xFF604844 || (primary & 0x00FFFFFF) == 0) && !favorites().isEmpty()) {
+                    primary = extractAppColor(favorites().get(0)) | 0xFF000000;
+                }
+                float[] hsv = new float[3];
+                android.graphics.Color.colorToHSV(primary, hsv);
+                float sat = Math.max(0.65f, hsv[1]);
+                float val = Math.max(0.70f, hsv[2]);
+                float h2 = (hsv[0] + 18f) % 360f;
+                float s2 = Math.min(1.0f, sat * 0.96f);
+                float v2 = Math.min(1.0f, val * 1.04f);
+                secondary = android.graphics.Color.HSVToColor(new float[]{h2, s2, v2});
+                primary = android.graphics.Color.HSVToColor(new float[]{hsv[0], sat, val});
+                break;
+            }
+        }
+        return new int[]{primary, secondary};
+    }
+
+    private void updateStageAmbientColors(boolean animate) {
+        int[] target = getTargetAmbientPalette();
+        final int targetP = target[0];
+        final int targetS = target[1];
+
+        if(stageAmbientColorAnimator != null) {
+            stageAmbientColorAnimator.cancel();
+            stageAmbientColorAnimator = null;
+        }
+
+        if(currentAmbientPrimary == 0 || currentAmbientSecondary == 0) {
+            currentAmbientPrimary = targetP;
+            currentAmbientSecondary = targetS;
+            if(ambientGlowDrawable != null) {
+                ambientGlowDrawable.setColors(targetP, targetS);
+            }
+            return;
+        }
+
+        if(currentAmbientPrimary == targetP && currentAmbientSecondary == targetS) {
+            return;
+        }
+
+        if(!animate) {
+            currentAmbientPrimary = targetP;
+            currentAmbientSecondary = targetS;
+            if(ambientGlowDrawable != null) {
+                ambientGlowDrawable.setColors(targetP, targetS);
+            }
+            return;
+        }
+
+        final int startP = currentAmbientPrimary;
+        final int startS = currentAmbientSecondary;
+        final android.animation.ArgbEvaluator evaluator = new android.animation.ArgbEvaluator();
+
+        stageAmbientColorAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        stageAmbientColorAnimator.setDuration(focusDuration(360));
+        stageAmbientColorAnimator.addUpdateListener(anim -> {
+            float f = anim.getAnimatedFraction();
+            currentAmbientPrimary = (Integer) evaluator.evaluate(f, startP, targetP);
+            currentAmbientSecondary = (Integer) evaluator.evaluate(f, startS, targetS);
+            if(ambientGlowDrawable != null) {
+                ambientGlowDrawable.setColors(currentAmbientPrimary, currentAmbientSecondary);
+            }
+        });
+        stageAmbientColorAnimator.start();
+    }
+
     private Drawable buildWorkspaceBackground() {
-        int tintRgb=accent()&0x00FFFFFF;
+        int[] palette = getTargetAmbientPalette();
+        int tintRgb = palette[0] & 0x00FFFFFF;
         GradientDrawable base=new GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 new int[]{0xFF0E131C,0xFF080B10,0xFF05070A}
         );
         GradientDrawable glow=new GradientDrawable();
         glow.setGradientType(GradientDrawable.RADIAL_GRADIENT);
-        glow.setGradientCenter(0.34f,0.50f);
+        glow.setGradientCenter(0.32f,0.50f);
         glow.setGradientRadius(Math.max(screenWidth,screenHeight)*0.75f);
         glow.setColors(new int[]{
-                (tintRgb|0x1C000000),
-                (tintRgb|0x08000000),
+                (tintRgb|0x22000000),
+                (tintRgb|0x0A000000),
                 0x00000000
         });
         GradientDrawable vignette=new GradientDrawable();
@@ -1025,6 +1286,34 @@ public final class MainActivity extends Activity {
         // so preview resizing expands or contracts exclusively from/to the right.
         float targetTx=fixedLeftMargin;
 
+        final int ambientSpread = px(120);
+        if(homeStageAmbientGlow!=null) {
+            updateStageAmbientColors(false);
+            homeStageAmbientGlow.setVisibility(View.VISIBLE);
+            homeStageAmbientGlow.setCameraDistance(cameraDistance);
+            homeStageAmbientGlow.setPivotX(ambientSpread);
+            homeStageAmbientGlow.setPivotY(ambientSpread + screenHeight * 0.5f);
+            if(animate) {
+                homeStageAmbientGlow.animate().cancel();
+                homeStageAmbientGlow.animate()
+                        .scaleX(targetScale)
+                        .scaleY(targetScale)
+                        .translationX(targetTx)
+                        .rotationY(rotY)
+                        .alpha(1.0f)
+                        .setDuration(320)
+                        .setInterpolator(new DecelerateInterpolator(1.7f))
+                        .start();
+            } else {
+                homeStageAmbientGlow.animate().cancel();
+                homeStageAmbientGlow.setScaleX(targetScale);
+                homeStageAmbientGlow.setScaleY(targetScale);
+                homeStageAmbientGlow.setTranslationX(targetTx);
+                homeStageAmbientGlow.setRotationY(rotY);
+                homeStageAmbientGlow.setAlpha(1.0f);
+            }
+        }
+
         final int shadowSpread = px(38);
         if(homeStageShadow!=null) {
             homeStageShadow.setVisibility(View.VISIBLE);
@@ -1209,6 +1498,7 @@ public final class MainActivity extends Activity {
     private void updateBackgroundInPlace() {
         if(homeStage==null) return;
         applyBackground();
+        updateStageAmbientColors(true);
         if(root!=null) root.setBackground(buildWorkspaceBackground());
         if(homeStageBorder!=null) homeStageBorder.setBackground(buildStageBezelDrawable());
         if(activeBladeBox!=null) activeBladeBox.setBackground(floatingPanelDrawable(activeBladeBox,24f));
@@ -1226,6 +1516,33 @@ public final class MainActivity extends Activity {
         if(stage==null) return;
         if(homeStageBorder!=null) {
             homeStageBorder.setVisibility(View.GONE);
+        }
+        if(homeStageAmbientGlow!=null) {
+            if(animate) {
+                homeStageAmbientGlow.animate().cancel();
+                homeStageAmbientGlow.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .translationX(0f)
+                        .rotationY(0f)
+                        .alpha(0f)
+                        .setDuration(280)
+                        .setInterpolator(new DecelerateInterpolator(1.5f))
+                        .withEndAction(()->{
+                            if(!isBladeActive && homeStageAmbientGlow!=null) {
+                                homeStageAmbientGlow.setVisibility(View.GONE);
+                            }
+                        })
+                        .start();
+            } else {
+                homeStageAmbientGlow.animate().cancel();
+                homeStageAmbientGlow.setScaleX(1.0f);
+                homeStageAmbientGlow.setScaleY(1.0f);
+                homeStageAmbientGlow.setTranslationX(0f);
+                homeStageAmbientGlow.setRotationY(0f);
+                homeStageAmbientGlow.setAlpha(0f);
+                homeStageAmbientGlow.setVisibility(View.GONE);
+            }
         }
         if(homeStageShadow!=null) {
             if(animate) {
@@ -1316,6 +1633,21 @@ public final class MainActivity extends Activity {
         root.setBackground(buildWorkspaceBackground());
 
         final int stageShadowSpread = px(38);
+        final int stageAmbientSpread = px(120);
+
+        int[] curPalette = getTargetAmbientPalette();
+        currentAmbientPrimary = curPalette[0];
+        currentAmbientSecondary = curPalette[1];
+        ambientGlowDrawable = new AmbientGlowDrawable(stageAmbientSpread, currentAmbientPrimary, currentAmbientSecondary);
+
+        homeStageAmbientGlow = new View(this);
+        homeStageAmbientGlow.setFocusable(false);
+        homeStageAmbientGlow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        homeStageAmbientGlow.setBackground(ambientGlowDrawable);
+        homeStageAmbientGlow.setVisibility(isBladeActive ? View.VISIBLE : View.GONE);
+        if(!isBladeActive) homeStageAmbientGlow.setAlpha(0f);
+        root.addView(homeStageAmbientGlow, at(-stageAmbientSpread, -stageAmbientSpread, screenWidth + 2 * stageAmbientSpread, screenHeight + 2 * stageAmbientSpread));
+
         homeStageShadow = new View(this);
         homeStageShadow.setFocusable(false);
         homeStageShadow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -1588,7 +1920,13 @@ public final class MainActivity extends Activity {
         final android.graphics.drawable.BitmapDrawable texture=ambientTexture;
         ambientAnimator=android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(),ambientColor,color);
         ambientAnimator.setDuration(focusDuration(360));
-        ambientAnimator.addUpdateListener(a->{ambientColor=(Integer)a.getAnimatedValue();texture.setTint(ambientColor);});
+        ambientAnimator.addUpdateListener(a->{
+            ambientColor=(Integer)a.getAnimatedValue();
+            texture.setTint(ambientColor);
+            if(isBladeActive) {
+                updateStageAmbientColors(false);
+            }
+        });
         ambientAnimator.start();
     }
     private boolean topControlsVisible(){return !store.flag("show_dock",true);}
