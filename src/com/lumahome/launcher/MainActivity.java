@@ -788,15 +788,13 @@ public final class MainActivity extends Activity {
         private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private int primaryColor;
         private int secondaryColor;
-        private final int spread;
         private boolean initialized = false;
         private int lastW = 0, lastH = 0;
 
         private android.graphics.Shader backGlowShader;
         private android.graphics.Shader underGlowShader;
 
-        AmbientGlowDrawable(int spread, int primary, int secondary) {
-            this.spread = spread;
+        AmbientGlowDrawable(int primary, int secondary) {
             this.primaryColor = primary;
             this.secondaryColor = secondary;
         }
@@ -813,44 +811,42 @@ public final class MainActivity extends Activity {
             if(w <= 0 || h <= 0) return;
             lastW = w;
             lastH = h;
-            float S = spread;
-            float canvasW = w - 2 * S;
-            float canvasH = h - 2 * S;
 
             int pRgb = primaryColor & 0x00FFFFFF;
             int sRgb = secondaryColor & 0x00FFFFFF;
 
-            // 1. Atmospheric Back-Glow:
-            // Positioned behind the center-left of the stage canvas, radiating softly.
-            // Falls off smoothly to complete transparency well before the Settings panel.
-            float backCx = S + canvasW * 0.35f;
-            float backCy = S + canvasH * 0.48f;
-            float backRadius = Math.max(canvasW, canvasH) * 0.60f;
+            // 1. Stationary Atmospheric Room Bloom:
+            // Sits stably in the room behind the left portion of the screen where the 3D home screen floats.
+            // Falls off smoothly toward the right edge so the Settings panel remains pristine and dark.
+            float backCx = w * 0.32f;
+            float backCy = h * 0.48f;
+            float backRadius = Math.max(w, h) * 0.58f;
 
             int[] backColors = new int[]{
-                0x4A000000 | pRgb,  // Core atmospheric bloom
-                0x32000000 | sRgb,  // Harmonic mid-tone
-                0x18000000 | pRgb,  // Soft falloff
+                0x50000000 | pRgb,  // Core room atmosphere
+                0x36000000 | sRgb,  // Harmonic mid-tone
+                0x1A000000 | pRgb,  // Soft falloff
                 0x06000000 | sRgb,  // Outer taper
                 0x00000000          // Pure transparent
             };
-            float[] backStops = new float[]{0.0f, 0.28f, 0.58f, 0.82f, 1.0f};
+            float[] backStops = new float[]{0.0f, 0.28f, 0.56f, 0.80f, 1.0f};
             backGlowShader = new android.graphics.RadialGradient(backCx, backCy, backRadius, backColors, backStops, android.graphics.Shader.TileMode.CLAMP);
 
-            // 2. Underglow Floor Bloom (the rich bounce reflection beneath the door):
-            // Positioned beneath the bottom edge of the stage canvas.
-            float underCx = S + canvasW * 0.38f;
-            float underCy = S + canvasH + S * 0.12f;
-            float underRadius = canvasH * 0.52f;
+            // 2. Stationary Floor Underglow Bloom:
+            // Positioned in the lower region of the room space beneath the floating 3D screen.
+            // Produces a rich, horizontal illuminated floor reflection across the room base.
+            float underCx = w * 0.35f;
+            float underCy = h * 0.94f;
+            float underRadius = h * 0.48f;
 
             int[] underColors = new int[]{
-                0x94000000 | sRgb,  // Vivid floor reflection
-                0x6E000000 | pRgb,  // Harmonic bounce
-                0x3E000000 | sRgb,  // Diffused spread
-                0x16000000 | pRgb,  // Gentle fade
+                0x96000000 | sRgb,  // Vivid floor reflection
+                0x70000000 | pRgb,  // Harmonic bounce
+                0x40000000 | sRgb,  // Diffused spread
+                0x18000000 | pRgb,  // Gentle fade
                 0x00000000          // Pure transparent
             };
-            float[] underStops = new float[]{0.0f, 0.20f, 0.45f, 0.72f, 1.0f};
+            float[] underStops = new float[]{0.0f, 0.22f, 0.48f, 0.74f, 1.0f};
             underGlowShader = new android.graphics.RadialGradient(underCx, underCy, underRadius, underColors, underStops, android.graphics.Shader.TileMode.CLAMP);
 
             initialized = true;
@@ -864,26 +860,22 @@ public final class MainActivity extends Activity {
             if(w <= 0 || h <= 0) return;
             if(!initialized || w != lastW || h != lastH) init(w, h);
 
-            float S = spread;
-            float canvasW = w - 2 * S;
-            float canvasH = h - 2 * S;
-
             paint.setStyle(android.graphics.Paint.Style.FILL);
 
-            // A. Draw atmospheric back-glow
+            // A. Draw stationary atmospheric room bloom
             if(backGlowShader != null) {
                 paint.setShader(backGlowShader);
                 c.drawRect(0, 0, w, h, paint);
             }
 
-            // B. Draw underglow floor reflection horizontally elongated
+            // B. Draw stationary floor underglow reflection horizontally elongated
             if(underGlowShader != null) {
-                float underCx = S + canvasW * 0.38f;
-                float underCy = S + canvasH + S * 0.12f;
+                float underCx = w * 0.35f;
+                float underCy = h * 0.94f;
                 c.save();
-                c.scale(2.10f, 0.55f, underCx, underCy);
+                c.scale(2.20f, 0.52f, underCx, underCy);
                 paint.setShader(underGlowShader);
-                c.drawCircle(underCx, underCy, canvasH * 0.52f, paint);
+                c.drawCircle(underCx, underCy, h * 0.48f, paint);
                 c.restore();
             }
 
@@ -1286,30 +1278,26 @@ public final class MainActivity extends Activity {
         // so preview resizing expands or contracts exclusively from/to the right.
         float targetTx=fixedLeftMargin;
 
-        final int ambientSpread = px(120);
+        // Stationary Ambient Environment:
+        // Full-frame, stationary layer behind the 3D home screen.
+        // It does NOT rotate, scale, or shift when the 3D preview transforms or resizes.
         if(homeStageAmbientGlow!=null) {
             updateStageAmbientColors(false);
             homeStageAmbientGlow.setVisibility(View.VISIBLE);
-            homeStageAmbientGlow.setCameraDistance(cameraDistance);
-            homeStageAmbientGlow.setPivotX(ambientSpread);
-            homeStageAmbientGlow.setPivotY(ambientSpread + screenHeight * 0.5f);
+            homeStageAmbientGlow.setScaleX(1.0f);
+            homeStageAmbientGlow.setScaleY(1.0f);
+            homeStageAmbientGlow.setTranslationX(0f);
+            homeStageAmbientGlow.setTranslationY(0f);
+            homeStageAmbientGlow.setRotationY(0f);
             if(animate) {
                 homeStageAmbientGlow.animate().cancel();
                 homeStageAmbientGlow.animate()
-                        .scaleX(targetScale)
-                        .scaleY(targetScale)
-                        .translationX(targetTx)
-                        .rotationY(rotY)
                         .alpha(1.0f)
                         .setDuration(320)
                         .setInterpolator(new DecelerateInterpolator(1.7f))
                         .start();
             } else {
                 homeStageAmbientGlow.animate().cancel();
-                homeStageAmbientGlow.setScaleX(targetScale);
-                homeStageAmbientGlow.setScaleY(targetScale);
-                homeStageAmbientGlow.setTranslationX(targetTx);
-                homeStageAmbientGlow.setRotationY(rotY);
                 homeStageAmbientGlow.setAlpha(1.0f);
             }
         }
@@ -1521,10 +1509,6 @@ public final class MainActivity extends Activity {
             if(animate) {
                 homeStageAmbientGlow.animate().cancel();
                 homeStageAmbientGlow.animate()
-                        .scaleX(1.0f)
-                        .scaleY(1.0f)
-                        .translationX(0f)
-                        .rotationY(0f)
                         .alpha(0f)
                         .setDuration(280)
                         .setInterpolator(new DecelerateInterpolator(1.5f))
@@ -1536,10 +1520,6 @@ public final class MainActivity extends Activity {
                         .start();
             } else {
                 homeStageAmbientGlow.animate().cancel();
-                homeStageAmbientGlow.setScaleX(1.0f);
-                homeStageAmbientGlow.setScaleY(1.0f);
-                homeStageAmbientGlow.setTranslationX(0f);
-                homeStageAmbientGlow.setRotationY(0f);
                 homeStageAmbientGlow.setAlpha(0f);
                 homeStageAmbientGlow.setVisibility(View.GONE);
             }
@@ -1633,20 +1613,21 @@ public final class MainActivity extends Activity {
         root.setBackground(buildWorkspaceBackground());
 
         final int stageShadowSpread = px(38);
-        final int stageAmbientSpread = px(120);
 
         int[] curPalette = getTargetAmbientPalette();
         currentAmbientPrimary = curPalette[0];
         currentAmbientSecondary = curPalette[1];
-        ambientGlowDrawable = new AmbientGlowDrawable(stageAmbientSpread, currentAmbientPrimary, currentAmbientSecondary);
+        ambientGlowDrawable = new AmbientGlowDrawable(currentAmbientPrimary, currentAmbientSecondary);
 
+        // Stationary Ambient Environment:
+        // Full-frame layer added directly behind the 3D home screen and contact shadow.
         homeStageAmbientGlow = new View(this);
         homeStageAmbientGlow.setFocusable(false);
         homeStageAmbientGlow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         homeStageAmbientGlow.setBackground(ambientGlowDrawable);
         homeStageAmbientGlow.setVisibility(isBladeActive ? View.VISIBLE : View.GONE);
         if(!isBladeActive) homeStageAmbientGlow.setAlpha(0f);
-        root.addView(homeStageAmbientGlow, at(-stageAmbientSpread, -stageAmbientSpread, screenWidth + 2 * stageAmbientSpread, screenHeight + 2 * stageAmbientSpread));
+        root.addView(homeStageAmbientGlow, at(0, 0, screenWidth, screenHeight));
 
         homeStageShadow = new View(this);
         homeStageShadow.setFocusable(false);
