@@ -41,8 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Ephemeral LAN-only HTTP server for Zero-Login QR Phone Wallpaper Drop.
- * Runs strictly while the TV QR blade is open and shuts down immediately on close/pause.
+ * Launcher-scoped LAN-only HTTP server for Zero-Login QR Phone Wallpaper Drop.
+ * Runs while the launcher is active, independently of the QR panel.
  */
 final class PhoneDropServer {
     static final int MAX_GALLERY_ITEMS = 30;
@@ -75,7 +75,9 @@ final class PhoneDropServer {
         this.context = context.getApplicationContext();
         this.store = store;
         this.listener = listener;
-        this.token = randomToken(6);
+        String saved=store.value("phone_drop_token", "");
+        if(saved.length()<24){saved=randomToken(32);store.set("phone_drop_token",saved);}
+        this.token = saved;
     }
 
     boolean start() {
@@ -111,7 +113,15 @@ final class PhoneDropServer {
         return running.get() && serverSocket != null && !serverSocket.isClosed();
     }
 
+    boolean refreshAddress() {
+        String current=findLanIpv4();
+        boolean changed=!java.util.Objects.equals(current,lanIp);
+        lanIp=current;
+        return changed;
+    }
+
     String getUrl() {
+        if(lanIp==null) return "";
         return "http://" + lanIp + ":" + boundPort + "/?t=" + token;
     }
 

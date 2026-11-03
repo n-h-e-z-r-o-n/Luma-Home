@@ -135,6 +135,17 @@ public final class MainActivity extends Activity {
     private long lastUserNavMs;
     private int lastUserNavDir=1;
     private PhoneDropServer phoneDrop;
+    private PhoneDropServer.Listener phoneDropPanelListener;
+    private Runnable phoneDropAddressUi;
+    private boolean phoneDropActive;
+    private final Runnable phoneDropNetworkTick=new Runnable(){
+        @Override public void run(){
+            if(!phoneDropActive || destroyed)return;
+            ensurePhoneDrop();
+            if(phoneDrop!=null && phoneDrop.refreshAddress() && phoneDropAddressUi!=null)phoneDropAddressUi.run();
+            handler.postDelayed(this,5000);
+        }
+    };
     private final Runnable wallpaperSlideshowTick=this::advanceWallpaperSlideshow;
     private android.graphics.Bitmap frostedBackdrop;
     private android.graphics.BitmapShader frostedShader;
@@ -142,6 +153,9 @@ public final class MainActivity extends Activity {
     private String overrideTreatmentStyle;
     private int overrideTreatmentIntensity=-1;
     private ImageView treatmentBlurLayer, wallpaperImageView;
+    private ImageView pendingWallpaperImage, outgoingWallpaperImage;
+    private String displayedWallpaperPath="";
+    private long wallpaperLoadGeneration;
     private View treatmentOverlayLayer;
     private android.graphics.Bitmap blurredWallpaperBackdrop;
     private String blurredWallpaperKey="";
@@ -185,6 +199,9 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onResume() {
         super.onResume();
+        phoneDropActive=true;
+        handler.removeCallbacks(phoneDropNetworkTick);
+        handler.post(phoneDropNetworkTick);
         if (dirty || root==null) { refreshApps(); dirty=false; recommendations.clear(); render(); }
         else { recommendations.clear(); updateHeader(); updateRecommendationRows(); }
         resetIdleTimer();
@@ -207,6 +224,8 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onPause() {
         if(ambientAnimator!=null)ambientAnimator.cancel();
+        phoneDropActive=false;
+        handler.removeCallbacks(phoneDropNetworkTick);
         stopPhoneDrop();
         stopSpringStages();stopHeroVideo();handler.removeCallbacks(heroRotation);handler.removeCallbacks(idleClockTrigger);handler.removeCallbacks(wallpaperSlideshowTick);super.onPause();
     }
@@ -214,7 +233,7 @@ public final class MainActivity extends Activity {
         if(ambientAnimator!=null)ambientAnimator.cancel();
         if(blurredWallpaperBackdrop!=null) { blurredWallpaperBackdrop.recycle(); blurredWallpaperBackdrop=null; }
         wallpaperImageView=null; if(weatherService!=null){weatherService.close();weatherService=null;}
-        destroyed=true; stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
+        destroyed=true; stopPhoneDrop(); stopSpringStages(); dismissIdleClock(); closeBlade(); paletteWorker.shutdownNow(); handler.removeCallbacksAndMessages(null);
         unregisterReceiver(packageChanges); if(sfx!=null)sfx.close(); images.close(); recommendations.close(); super.onDestroy();
     }
     private void noteNavKey(int key,KeyEvent event) {
@@ -339,9 +358,12 @@ public final class MainActivity extends Activity {
     private boolean wallpaperTheme(){return "wallpaper".equals(store.value("theme","warm"))&&wallpaperSeed!=0;}
     private int colorIntensity(){return Math.max(0,Math.min(100,store.number("color_intensity",45)));}
     private int themed(int warm,int cool) { return wallpaperTheme()?ThemePalette.tint(wallpaperSeed,warm,colorIntensity()):"cool".equals(store.value("theme","warm"))?cool:warm; }
-    private String themeName(){String theme=store.value("theme","warm");return "wallpaper".equals(theme)?"From wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
+    private String themeName(){String theme=store.value("theme","warm");return "wallpaper".equals(theme)?"Extract from wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
     private String paletteKey(){return "v1:"+store.value("background","app_glow")+":"+store.value("background_image","");}
     private int resolveAppGlowSeed() {
+        if(ambientColor!=0 && ambientColor!=0xFF604844 && (ambientColor&0x00FFFFFF)!=0) {
+            return ambientColor|0xFF000000;
+        }
         if(focusedFavorite!=null && focusedFavorite.getTag() instanceof String) {
             String pkg=(String)focusedFavorite.getTag();
             if(pkg!=null && !pkg.isEmpty() && byPackage.containsKey(pkg)) {
@@ -352,9 +374,6 @@ public final class MainActivity extends Activity {
         if(lastFocus!=null && !lastFocus.isEmpty() && byPackage.containsKey(lastFocus)) {
             int col=resolveGlowColor(lastFocus);
             if(col!=0) return col|0xFF000000;
-        }
-        if(ambientColor!=0 && ambientColor!=0xFF604844 && (ambientColor&0x00FFFFFF)!=0) {
-            return ambientColor|0xFF000000;
         }
         List<String> favs=favorites();
         if(favs!=null && !favs.isEmpty()) {
@@ -416,7 +435,8 @@ public final class MainActivity extends Activity {
     }
     private void extractWallpaperColors(android.graphics.Bitmap bitmap,final String key){
         if(!key.equals(paletteKey())||!"photo".equals(store.value("background","app_glow")))return;
-        if(key.equals(store.value("palette_source",""))||key.equals(palettePending))return;
+        if(key.equals(store.value("palette_source","")) && store.number("palette_seed",0)!=0) return;
+        if(key.equals(palettePending))return;
         palettePending=key;
         paletteWorker.execute(()->{
             int seed=0;
@@ -437,17 +457,23 @@ public final class MainActivity extends Activity {
                 }
                 if(sample!=bitmap)sample.recycle();
             }catch(Exception|OutOfMemoryError ignored){}
+            if(seed==0) seed=resolveAppGlowSeed();
+            if(botSeed==0) botSeed=seed;
             final int extracted=seed;
             final int extractedBot=botSeed;
             if(!destroyed)handler.post(()->{
                 if(destroyed)return;
                 if(key.equals(palettePending))palettePending="";
                 if(!key.equals(paletteKey()))return;
-                store.prefs.edit().putString("palette_source",key).putInt("palette_seed",extracted).apply();wallpaperSeed=extracted;
-                photoAmbientPrimary = (extracted!=0)?extracted:accent();
-                photoAmbientSecondary = (extractedBot!=0)?extractedBot:ThemePalette.accent(photoAmbientPrimary,80);
+                store.prefs.edit().putString("palette_source",key).putInt("palette_seed",extracted).apply();
+                wallpaperSeed=extracted;
+                photoAmbientPrimary = extracted;
+                photoAmbientSecondary = extractedBot;
                 updateStageAmbientColors(true);
-                if("wallpaper".equals(store.value("theme","warm")))render();
+                if("wallpaper".equals(store.value("theme","warm"))) {
+                    updateWorkspaceAndMenuSurfaces();
+                    refreshGlassSurfaces();
+                }
             });
         });
     }
@@ -1534,11 +1560,13 @@ public final class MainActivity extends Activity {
     }
 
     private void updateWorkspaceAndMenuSurfaces() {
+        refreshWallpaperPalette();
         if(root!=null) root.setBackground(buildWorkspaceBackground());
         if(homeStageBorder!=null) homeStageBorder.setBackground(buildStageBezelDrawable());
         if(activeBladeBox!=null) activeBladeBox.setBackground(floatingPanelDrawable(activeBladeBox,24f));
         if(dockBar!=null) dockBar.setBackground(glassPanelDrawable(dockBar,26f,false));
         if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
+        if(activeBladeList!=null) activeBladeList.invalidateViews();
     }
 
     private void resetHomeStage3D(ViewGroup stage, boolean animate) {
@@ -1725,6 +1753,16 @@ public final class MainActivity extends Activity {
             homeStage.addView(backgroundStage,0,new FrameLayout.LayoutParams(-1,-1));
         }
         if(backgroundStage==null) return;
+        String nextPhoto=store.value("background_image", "");
+        if("photo".equals(store.value("background","app_glow")) && !nextPhoto.isEmpty()
+                && wallpaperImageView!=null && wallpaperImageView.getDrawable()!=null
+                && wallpaperImageView.getParent()==backgroundStage) {
+            transitionWallpaperPhoto(nextPhoto);
+            return;
+        }
+        wallpaperLoadGeneration++;
+        if(pendingWallpaperImage!=null)pendingWallpaperImage.animate().cancel();
+        pendingWallpaperImage=null;outgoingWallpaperImage=null;
         backgroundStage.removeAllViews();
 
         String style=store.value("background","app_glow");
@@ -1767,7 +1805,8 @@ public final class MainActivity extends Activity {
                 ImageView image=new ImageView(this){
                     @Override public void setImageBitmap(android.graphics.Bitmap bitmap){
                         super.setImageBitmap(bitmap);
-                        if(bitmap!=null&&!destroyed){
+                        if(bitmap!=null&&!destroyed && wallpaperImageView==this && getParent()==backgroundStage){
+                            displayedWallpaperPath=path;
                             extractWallpaperColors(bitmap,backgroundPaletteKey);
                             updateFrostedFromPhoto(bitmap,dimAlpha,frostKey);
                             updateBlurredWallpaper(bitmap,path);
@@ -1806,20 +1845,63 @@ public final class MainActivity extends Activity {
 
         syncTreatmentLayers();
     }
-    private String backgroundTreatment() { return store.value("background_treatment","dim"); }
+    private void transitionWallpaperPhoto(final String path) {
+        if(pendingWallpaperImage!=null) {
+            if(path.equals(pendingWallpaperImage.getContentDescription()))return;
+            pendingWallpaperImage.animate().cancel();
+            if(pendingWallpaperImage==wallpaperImageView) {
+                pendingWallpaperImage.setAlpha(1f);syncTreatmentLayers();
+                if(outgoingWallpaperImage!=null)backgroundStage.removeView(outgoingWallpaperImage);
+            } else backgroundStage.removeView(pendingWallpaperImage);
+            pendingWallpaperImage=null;outgoingWallpaperImage=null;
+        }
+        if(path.equals(displayedWallpaperPath)){syncTreatmentLayers();return;}
+        final long generation=++wallpaperLoadGeneration;
+        final FrameLayout stage=backgroundStage;
+        final ImageView previous=wallpaperImageView;
+        final String colorKey=paletteKey();
+        ImageView incoming=new ImageView(this){
+            @Override public void setImageBitmap(android.graphics.Bitmap bitmap){
+                if(bitmap==null || destroyed || generation!=wallpaperLoadGeneration || stage!=backgroundStage)return;
+                super.setImageBitmap(bitmap);
+                wallpaperImageView=this;displayedWallpaperPath=path;
+                outgoingWallpaperImage=previous;
+                syncTreatmentLayers();
+                float targetAlpha=getAlpha();setAlpha(0f);
+                animate().alpha(targetAlpha).setDuration(650).setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                        .withEndAction(()->{
+                            if(generation!=wallpaperLoadGeneration || stage!=backgroundStage)return;
+                            stage.removeView(previous);pendingWallpaperImage=null;outgoingWallpaperImage=null;
+                            int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
+                            extractWallpaperColors(bitmap,colorKey);
+                            updateFrostedFromPhoto(bitmap,Math.round(dim*2.55f),colorKey+":dim="+dim);
+                            updateBlurredWallpaper(bitmap,path);
+                            syncTreatmentLayers();
+                        }).start();
+            }
+        };
+        incoming.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        incoming.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        incoming.setContentDescription(path);
+        incoming.setAlpha(0f);pendingWallpaperImage=incoming;
+        stage.addView(incoming,stage.indexOfChild(previous)+1,new FrameLayout.LayoutParams(-1,-1));
+        images.show(incoming,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+    }
+    private String backgroundTreatment() { return store.value("background_treatment","none"); }
     private String treatmentStyleName() {
         String t=backgroundTreatment();
         switch(t) {
+            case "none": return "None";
             case "blur": return "Frosted Silk";
             case "vignette": return "Cinema Vignette";
             case "scrim": return "Horizon Scrim";
             case "studio": return "Studio Glass";
-            default: return "Classic Dim";
+            default: return "none".equals(t) ? "None" : "Classic Dim";
         }
     }
     private int treatmentIntensity() { return store.number("dimming",0); }
     private Drawable buildTreatmentDrawable(String style,int intensity,int width,int height) {
-        if(intensity<=0) return new ColorDrawable(Color.TRANSPARENT);
+        if("none".equals(style) || intensity<=0) return new ColorDrawable(Color.TRANSPARENT);
         final int alpha=Math.round(intensity*2.55f);
         if("dim".equals(style)) {
             return new ColorDrawable(Color.argb(alpha,0,0,0));
@@ -1905,6 +1987,13 @@ public final class MainActivity extends Activity {
         int intensity=overrideTreatmentIntensity>=0?overrideTreatmentIntensity:treatmentIntensity();
         if(store.flag("contrast")) intensity=Math.max(55,intensity);
 
+        if("none".equals(style)) {
+            if(treatmentBlurLayer!=null) treatmentBlurLayer.setVisibility(View.GONE);
+            if(wallpaperImageView!=null) wallpaperImageView.setAlpha(1f);
+            treatmentOverlayLayer.setVisibility(View.GONE);
+            return;
+        }
+
         boolean needsBlur="blur".equals(style)||"studio".equals(style);
         if(treatmentBlurLayer!=null) {
             android.graphics.Bitmap blurBmp="photo".equals(store.value("background","app_glow"))?blurredWallpaperBackdrop:frostedBackdrop;
@@ -1952,6 +2041,8 @@ public final class MainActivity extends Activity {
                 wallpaperSeed=ambientColor;
                 if(dockBar!=null) dockBar.invalidate();
                 if(activeBladeBox!=null) activeBladeBox.invalidate();
+                if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
+                if(activeBladeList!=null) activeBladeList.invalidateViews();
             }
         });
         ambientAnimator.start();
@@ -1996,8 +2087,8 @@ public final class MainActivity extends Activity {
         List<View> navigationRow=new ArrayList<>();appRows.add(navigationRow);
         int baseIconSize=px(columns()==4?176:columns()==8?112:144);
         float sizeScale=store.number("icon_size_pct",100)/100f;
-        int iconSize=Math.max(px(64),Math.round(baseIconSize*sizeScale));
-        int iconSpacing=Math.max(px(16),Math.round(px(52)*sizeScale));
+        int iconSize=baseIconSize;
+        int iconSpacing=px(52);
         for(int i=0;i<favorite.size();i++) {
             View tile=appTile(favorite.get(i),iconSize,iconSize,false);
             LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
@@ -3149,15 +3240,11 @@ public final class MainActivity extends Activity {
         String artwork=store.value("art."+pkg,"");
         AppCatalog.Artwork appArt=catalog.artwork(pkg,recent?false:allApps?store.flag("icon."+pkg):!store.flag("home_banner."+pkg));
         final boolean bannerStyle=!artwork.isEmpty()||appArt.banner;
-        picture.setBackground(glassSurface(!allApps,bannerStyle,false,surfaceTint));
+        picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(!allApps,bannerStyle,false,surfaceTint));
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if(artwork.isEmpty()) {
-                if("original".equals(store.value("icon_style","original")) && "circle".equals(store.value("icon_shape","circle"))) {
-                    image.setImageDrawable(homeIconDrawable(appArt.drawable));
-                } else {
-                    image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));
-                }
+                image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,width,height));
             } else images.show(image,artwork,width,height);
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(bannerStyle) {
@@ -3168,7 +3255,7 @@ public final class MainActivity extends Activity {
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             int iconSize=Math.min(px(80),Math.round(height*0.65f));
             if(appArt.drawable!=null) {
-                if("original".equals(store.value("icon_style","original"))) {
+                if("original".equals(store.value("icon_style","brand"))) {
                     image.setImageDrawable(appArt.drawable);
                 } else {
                     image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
@@ -3179,7 +3266,7 @@ public final class MainActivity extends Activity {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
             int iconSize=allApps?px(102):px(64);
             if(appArt.drawable!=null) {
-                if("original".equals(store.value("icon_style","original"))) {
+                if("original".equals(store.value("icon_style","brand"))) {
                     image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
                 } else {
                     image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
@@ -3220,7 +3307,7 @@ public final class MainActivity extends Activity {
             int dur=has?(useSpring?220:140):(useSpring?170:140);
 
             tile.animate().translationZ(has?px(16):0).setDuration(focusDuration(dur)).start();
-            picture.setBackground(glassSurface(!allApps,bannerStyle,has&&!useSpring,surfaceTint));
+            picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(!allApps,bannerStyle,has&&!useSpring,surfaceTint));
             picture.invalidate();
             picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
                     .translationY(has?focusLift():0f)
@@ -3885,6 +3972,9 @@ public final class MainActivity extends Activity {
     private void appMenu(String pkg) {
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         List<String> favorite=favorites(); boolean pinned=favorite.contains(pkg);
+        add(labels,actions,"Use original artwork: "+onOff(store.flag("icon_original."+pkg)),()->{
+            store.setFlag("icon_original."+pkg,!store.flag("icon_original."+pkg));IconStylingEngine.clearCache();rebuildContentInPlace();appMenu(pkg);
+        });
         add(labels,actions,"§HOME ROW",null);
         add(labels,actions,pinned?"Move on Home":"Add to Home",()->{
             if (pinned) { drawer=false; moving=pkg; lastFocus=pkg; render(); }
@@ -4027,6 +4117,7 @@ public final class MainActivity extends Activity {
         }
         add(labels,actions,"§TV & LAUNCHER",null);
         add(labels,actions,"@hdmi|HDMI inputs: "+hdmiInputs().size()+" shown",this::inputMenu);
+        add(labels,actions,"@display|Screen mirroring",this::screenMirroringMenu);
         add(labels,actions,"@home|Default launcher: "+(isDefaultHome()?"Active":"Preview"),this::defaultLauncherMenu);
         add(labels,actions,"§SYSTEM",null);
         add(labels,actions,"@display|Picture & display ↗",()->openSystemIntent(Settings.ACTION_DISPLAY_SETTINGS,"android.settings.PICTURE_SETTINGS"));
@@ -4037,6 +4128,33 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@heart|Support the developer: M-Pesa & tips",this::supportDeveloperMenu);
         add(labels,actions,"@info|About Luma Home: v"+versionName(),this::aboutMenu);
         menu("Luma Settings",labels,actions,null);
+    }
+    private Intent mirroringConnectionSettings() {
+        Intent intent=new Intent("com.tcl.miracast.app.DeviceList").setPackage("com.tcl.miracast");
+        android.content.pm.ResolveInfo info=getPackageManager().resolveActivity(intent,0);
+        if(info==null || info.activityInfo==null || !info.activityInfo.exported || !info.activityInfo.enabled)return null;
+        return intent;
+    }
+    private void screenMirroringMenu() {
+        Intent receiverSettings=mirroringConnectionSettings();
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+        String tvName=Settings.Global.getString(getContentResolver(),"device_name");
+        if(tvName==null || tvName.trim().isEmpty())tvName=Build.MODEL;
+        TextView device=text("TV name: "+tvName,26,0xFFFFFFFF);device.setTypeface(medium);
+        box.addView(device,new LinearLayout.LayoutParams(-1,-2));
+        TextView instructions=text(receiverSettings!=null
+                ? "On Windows, press Win + K and select your TV.\nOn a compatible Android phone, open Screen Mirroring or Smart View."
+                : "Open your TV's receiver to connect a compatible phone or computer.",19,muted());
+        instructions.setLineSpacing(px(7),1f);
+        LinearLayout.LayoutParams spacing=new LinearLayout.LayoutParams(-1,-2);spacing.topMargin=px(24);spacing.bottomMargin=px(24);
+        box.addView(instructions,spacing);
+        TextView status=text(receiverSettings!=null?"Uses your TV's built-in Miracast receiver":"A compatible receiver is required on this TV",16,muted());
+        box.addView(status,new LinearLayout.LayoutParams(-1,-2));
+        showBladePanel("Screen mirroring",box,receiverSettings!=null?"Connection settings":"TV settings",()->{
+            closeBlade();
+            if(receiverSettings!=null)startSafely(receiverSettings);
+            else openSystemIntent(Settings.ACTION_SETTINGS);
+        },this::closeBlade,null);
     }
     private void openSystemIntent(String... actions) {
         for(String action:actions) {
@@ -4093,7 +4211,7 @@ public final class MainActivity extends Activity {
                 Arrays.asList(
                         null,
                         this::backgroundMenu,
-                        ()->choice("Menu theme",new String[]{"Warm glass · Translucent warm dark tint","Cool slate · Crisp deep blue-grey","From wallpaper · Sampled from your background"},
+                        ()->choice("Menu theme",new String[]{"Warm glass · Translucent warm dark tint","Cool slate · Crisp deep blue-grey","Extract from wallpaper · Dynamically adapts to your background or photo"},
                                 "wallpaper".equals(store.value("theme","warm"))?2:"cool".equals(store.value("theme","warm"))?1:0,
                                 index->{
                                     store.set("theme",new String[]{"warm","cool","wallpaper"}[index]);
@@ -4138,18 +4256,23 @@ public final class MainActivity extends Activity {
 
     private IconStylingEngine.Config iconConfig() {
         return new IconStylingEngine.Config(
-                store.value("icon_style", "original"),
-                store.value("icon_color", "white"),
+                store.value("icon_style", "brand"),
+                store.value("icon_color", "original"),
                 store.value("icon_shape", "circle"),
                 store.number("icon_size_pct", 100),
-                store.value("icon_background", "glass"),
+                store.value("icon_background", "auto"),
                 store.value("icon_effects", "shadow"),
                 accent()
         );
     }
 
+    private IconStylingEngine.Config iconConfig(String pkg){
+        IconStylingEngine.Config cfg=iconConfig();
+        if(store.flag("icon_original."+pkg))return new IconStylingEngine.Config("original","original",cfg.shape,cfg.sizePct,"auto","none",cfg.accentColor);
+        return cfg;
+    }
     private String getIconStyleSummary() {
-        String st = store.value("icon_style", "original");
+        String st = store.value("icon_style", "brand");
         String cap = st.substring(0, 1).toUpperCase() + st.substring(1);
         String sh = store.value("icon_shape", "circle");
         String shCap = sh.substring(0, 1).toUpperCase() + sh.substring(1);
@@ -4164,22 +4287,22 @@ public final class MainActivity extends Activity {
 
     private Drawable styledIconDrawable(String pkg, Drawable original, int w, int h) {
         if (original == null) return null;
-        return IconStylingEngine.getStyledIcon(this, pkg, original, w, h, iconConfig());
+        return IconStylingEngine.getStyledIcon(this, pkg, original, w, h, iconConfig(pkg));
     }
 
     private void appIconsMenu(Runnable back) {
-        String curStyle = store.value("icon_style", "original");
-        String curColor = store.value("icon_color", "white");
+        String curStyle = store.value("icon_style", "brand");
+        String curColor = store.value("icon_color", "original");
         String curShape = store.value("icon_shape", "circle");
         int curSize = store.number("icon_size_pct", 100);
-        String curBg = store.value("icon_background", "glass");
+        String curBg = store.value("icon_background", "auto");
         String curEffects = store.value("icon_effects", "shadow");
 
         menu("App icons", Arrays.asList(
                 "§BUILT-IN ICON STYLES",
                 "Style: " + iconStyleDisplayName(curStyle),
                 "§COLOR & SHAPE",
-                "Color: " + iconColorDisplayName(curColor),
+                "Layered logo color: " + iconColorDisplayName(curColor),
                 "Shape: " + iconShapeDisplayName(curShape),
                 "§SIZE & BACKGROUND",
                 "Size: " + curSize + "% · " + (curSize == 85 ? "Compact" : curSize == 115 ? "Large" : curSize == 130 ? "Extra Large" : "Standard"),
@@ -4188,7 +4311,7 @@ public final class MainActivity extends Activity {
                 "§LIVE PREVIEW",
                 "@sparkles|Interactive preview & fine-tune",
                 "§RESET",
-                "Restore original icons · Reset all"),
+                "Restore Brand defaults"),
                 Arrays.asList(
                         null,
                         () -> iconStyleChoice(back),
@@ -4203,54 +4326,34 @@ public final class MainActivity extends Activity {
                         () -> appIconPreviewBlade(back),
                         null,
                         () -> {
-                            store.set("icon_style", "original");
-                            store.set("icon_color", "white");
+                            store.set("icon_style", "brand");
+                            store.set("icon_color", "original");
                             store.set("icon_shape", "circle");
                             store.setNumber("icon_size_pct", 100);
-                            store.set("icon_background", "glass");
+                            store.set("icon_background", "auto");
                             store.set("icon_effects", "shadow");
                             IconStylingEngine.clearCache();
                             rebuildContentInPlace();
-                            toast("App icons restored to original style");
+                            toast("Brand defaults restored");
                             appIconsMenu(back);
                         }
                 ), back);
     }
 
-    private void iconStyleChoice(Runnable back) {
-        String curStyle = store.value("icon_style", "original");
-        String[] options = {
-                "Minimalist · Clean monochrome silhouette with preserved contrast",
-                "Monochrome · Grayscale with enhanced photographic contrast",
-                "Paper-like · Tactile embossed matte papercraft",
-                "Glass · Frosted translucent glass lens",
-                "Dark · Stealth obsidian plate with luminous glyph",
-                "Flat · Bold minimalist flat vector",
-                "Outlined · Crisp wireframe contour",
-                "Original · Official authentic app artwork"
-        };
-        int selected = "minimalist".equals(curStyle) ? 0 :
-                "monochrome".equals(curStyle) ? 1 :
-                "paper".equals(curStyle) ? 2 :
-                "glass".equals(curStyle) ? 3 :
-                "dark".equals(curStyle) ? 4 :
-                "flat".equals(curStyle) ? 5 :
-                "outlined".equals(curStyle) ? 6 : 7;
-        String[] keys = {"minimalist", "monochrome", "paper", "glass", "dark", "flat", "outlined", "original"};
-        choice("Icon style", options, selected, idx -> {
-            store.set("icon_style", keys[idx]);
-            IconStylingEngine.clearCache();
-            rebuildContentInPlace();
-        }, () -> appIconsMenu(back));
+    private void iconStyleChoice(Runnable back){
+        String[] keys={"brand","minimalist","monochrome","paper","glass","dark","flat","outlined","original"};
+        String[] labels={"Brand - Balanced original logos","Minimalist - Quiet matte surface","Monochrome - Detailed grayscale","Paper-like - Warm matte texture","Glass - Translucent light and rim","Dark - Deep obsidian surface","Flat - Solid accent without depth","Outlined - Fine contour framing","Original - Complete untouched artwork"};
+        int selected=java.util.Arrays.asList(keys).indexOf(store.value("icon_style","brand"));
+        choice("Icon style",labels,Math.max(0,selected),idx->{store.set("icon_style",keys[idx]);IconStylingEngine.clearCache();rebuildContentInPlace();},()->appIconsMenu(back));
     }
 
     private void iconColorChoice(Runnable back) {
-        String curCol = store.value("icon_color", "white");
+        String curCol = store.value("icon_color", "original");
         String[] options = {
-                "Pure White · Crisp icy white (Minimalist default)",
+                "Pure White - White layered logos",
                 "Obsidian Black · Deep matte charcoal",
                 "Theme Accent · Matched to your dynamic wallpaper accent",
-                "Original / Auto · Natural brand colors"
+                "Original / Auto - Natural brand colors (Default)"
         };
         int selected = "black".equals(curCol) ? 1 : "accent".equals(curCol) ? 2 : "original".equals(curCol) ? 3 : 0;
         String[] keys = {"white", "black", "accent", "original"};
@@ -4295,21 +4398,11 @@ public final class MainActivity extends Activity {
         }, () -> appIconsMenu(back));
     }
 
-    private void iconBackgroundChoice(Runnable back) {
-        String curBg = store.value("icon_background", "glass");
-        String[] options = {
-                "Frosted Glass · Signature translucent glass with sheen (Default)",
-                "Solid Dark · Sleek deep charcoal plate",
-                "Transparent · Floating glyphs directly on wallpaper",
-                "Accent Gradient · Subtle ambient tint gradient"
-        };
-        int selected = "solid_dark".equals(curBg) ? 1 : "transparent".equals(curBg) ? 2 : "gradient".equals(curBg) ? 3 : 0;
-        String[] keys = {"glass", "solid_dark", "transparent", "gradient"};
-        choice("Icon background", options, selected, idx -> {
-            store.set("icon_background", keys[idx]);
-            IconStylingEngine.clearCache();
-            rebuildContentInPlace();
-        }, () -> appIconsMenu(back));
+    private void iconBackgroundChoice(Runnable back){
+        String[] keys={"auto","glass","solid_dark","transparent","gradient"};
+        String[] labels={"Style default - Material follows the style","Frosted Glass - Translucent override","Solid Dark - Charcoal override","Transparent - No surrounding plate","Accent Gradient - Wallpaper color"};
+        int selected=java.util.Arrays.asList(keys).indexOf(store.value("icon_background","auto"));
+        choice("Icon background",labels,Math.max(0,selected),idx->{store.set("icon_background",keys[idx]);IconStylingEngine.clearCache();rebuildContentInPlace();},()->appIconsMenu(back));
     }
 
     private void iconEffectsChoice(Runnable back) {
@@ -4370,9 +4463,8 @@ public final class MainActivity extends Activity {
 
         TextView title = text("Live App Icon Preview", 22, foreground());
         title.setTypeface(medium);
-        box.addView(title);
 
-        TextView subtitle = text("Customize icon style, colors, and shapes with instant live preview.", 18, muted());
+        TextView subtitle = text("Layered logos can be recolored. Complete artwork keeps its proportions and brand colors.", 18, muted());
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2);
         sp.topMargin = px(4);
         box.addView(subtitle, sp);
@@ -4387,15 +4479,17 @@ public final class MainActivity extends Activity {
         box.addView(card, cp);
 
         LinearLayout iconRow = new LinearLayout(this);
-        iconRow.setOrientation(LinearLayout.HORIZONTAL);
+        iconRow.setOrientation(LinearLayout.VERTICAL);
         iconRow.setGravity(Gravity.CENTER);
         card.addView(iconRow, new LinearLayout.LayoutParams(-1, -2));
 
         String[] samplePkgs = findSampleIconPackages();
         final ImageView[] sampleViews = new ImageView[samplePkgs.length];
-        int sampleIconSize = px(74);
+        int sampleIconSize = px(128);
 
+        LinearLayout sampleLine=null;
         for (int i = 0; i < samplePkgs.length; i++) {
+            if(i%2==0){sampleLine=new LinearLayout(this);sampleLine.setGravity(Gravity.CENTER);iconRow.addView(sampleLine,new LinearLayout.LayoutParams(-1,-2));}
             LinearLayout col = new LinearLayout(this);
             col.setOrientation(LinearLayout.VERTICAL);
             col.setGravity(Gravity.CENTER);
@@ -4404,17 +4498,17 @@ public final class MainActivity extends Activity {
             sampleViews[i] = iv;
             col.addView(iv, new LinearLayout.LayoutParams(sampleIconSize, sampleIconSize));
 
-            TextView lbl = text(name(samplePkgs[i]), 16, muted());
+            TextView lbl = text(name(samplePkgs[i]), 18, muted());
             lbl.setSingleLine(true);
             lbl.setEllipsize(android.text.TextUtils.TruncateAt.END);
             lbl.setGravity(Gravity.CENTER);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(76), -2);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
             lp.topMargin = px(6);
             col.addView(lbl, lp);
 
             LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(-2, -2);
-            if (i > 0) colLp.leftMargin = px(10);
-            iconRow.addView(col, colLp);
+            if (i > 0) colLp.leftMargin = px(8);
+            colLp.width=0;colLp.weight=1f;colLp.bottomMargin=px(16);sampleLine.addView(col,colLp);
         }
 
         Runnable refreshPreview = () -> {
@@ -4423,7 +4517,7 @@ public final class MainActivity extends Activity {
                 Drawable raw = catalog.artwork(samplePkgs[i], true).drawable;
                 if (raw == null) raw = catalog.artwork(samplePkgs[i], false).drawable;
                 if (raw != null) {
-                    sampleViews[i].setImageDrawable(IconStylingEngine.getStyledIcon(this, samplePkgs[i], raw, sampleIconSize, sampleIconSize, cfg));
+                    sampleViews[i].setImageDrawable(IconStylingEngine.getStyledIcon(this, samplePkgs[i], raw, sampleIconSize, sampleIconSize, iconConfig(samplePkgs[i])));
                 }
             }
         };
@@ -4435,14 +4529,15 @@ public final class MainActivity extends Activity {
         pshp.topMargin = px(8);
         box.addView(pickStyleHeader, pshp);
 
-        String[] styleKeys = {"minimalist", "monochrome", "paper", "glass", "dark", "original"};
-        String[] styleLabels = {"Minimalist", "Monochrome", "Paper-like", "Glass", "Dark", "Original"};
+        String[] styleKeys = {"brand","minimalist","monochrome","paper","glass","dark","flat","outlined","original"};
+        String[] styleLabels = {"Brand","Minimal","Mono","Paper","Glass","Dark","Flat","Outline","Original"};
 
         LinearLayout btnRow1 = new LinearLayout(this);
         btnRow1.setOrientation(LinearLayout.HORIZONTAL);
         LinearLayout btnRow2 = new LinearLayout(this);
         btnRow2.setOrientation(LinearLayout.HORIZONTAL);
 
+        LinearLayout btnRow3=new LinearLayout(this);btnRow3.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < styleKeys.length; i++) {
             final String k = styleKeys[i];
             Button btn = button(styleLabels[i], () -> {
@@ -4451,33 +4546,36 @@ public final class MainActivity extends Activity {
                 refreshPreview.run();
                 rebuildContentInPlace();
             });
+            btn.setSingleLine(true);btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(18));
             LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, px(48), 1f);
             bp.setMargins(px(4), px(4), px(4), px(4));
             if (i < 3) btnRow1.addView(btn, bp);
-            else btnRow2.addView(btn, bp);
+            else if(i<6)btnRow2.addView(btn,bp);else btnRow3.addView(btn,bp);
         }
         box.addView(btnRow1, new LinearLayout.LayoutParams(-1, -2));
         box.addView(btnRow2, new LinearLayout.LayoutParams(-1, -2));
+        box.addView(btnRow3,new LinearLayout.LayoutParams(-1,-2));
 
         showBladePanel("App icons preview", box, "Done", () -> appIconsMenu(back), () -> appIconsMenu(back), null);
     }
 
     private String iconStyleDisplayName(String s) {
-        if ("minimalist".equals(s)) return "Minimalist · Unified monochrome silhouette";
+        if ("brand".equals(s)) return "Brand - Balanced original logos";
+        if ("minimalist".equals(s)) return "Minimalist - Quiet matte surface";
         if ("monochrome".equals(s)) return "Monochrome · Enhanced photographic contrast";
         if ("paper".equals(s)) return "Paper-like · Tactile embossed matte paper";
-        if ("glass".equals(s)) return "Glass · Frosted translucent lens";
+        if ("glass".equals(s)) return "Glass - Translucent light and rim";
         if ("dark".equals(s)) return "Dark · Stealth obsidian plate";
-        if ("flat".equals(s)) return "Flat · Bold minimalist flat vector";
-        if ("outlined".equals(s)) return "Outlined · Clean wireframe contour";
+        if ("flat".equals(s)) return "Flat - Solid accent without depth";
+        if ("outlined".equals(s)) return "Outlined - Glyph outline or artwork frame";
         return "Original · Official authentic artwork";
     }
 
     private String iconColorDisplayName(String c) {
         if ("black".equals(c)) return "Obsidian Black · Deep matte charcoal";
         if ("accent".equals(c)) return "Theme Accent · Matched to wallpaper accent";
-        if ("original".equals(c)) return "Original / Auto · Natural brand colors";
-        return "Pure White · Crisp icy white (Default)";
+        if ("original".equals(c)) return "Original / Auto - Natural brand colors (Default)";
+        return "Pure White - White layered logos";
     }
 
     private String iconShapeDisplayName(String sh) {
@@ -4488,10 +4586,11 @@ public final class MainActivity extends Activity {
     }
 
     private String iconBackgroundDisplayName(String bg) {
+        if ("auto".equals(bg)) return "Style default - Material follows the style";
         if ("solid_dark".equals(bg)) return "Solid Dark · Deep charcoal slate plate";
         if ("transparent".equals(bg)) return "Transparent · Floating glyphs directly on wallpaper";
         if ("gradient".equals(bg)) return "Accent Gradient · Subtle ambient illumination";
-        return "Frosted Glass · Signature translucent glass (Default)";
+        return "Frosted Glass - Translucent surface";
     }
 
     private String iconEffectsDisplayName(String ef) {
@@ -5057,7 +5156,7 @@ public final class MainActivity extends Activity {
         add(labels,actions,"Wallpaper tint: "+colorIntensity()+"%",this::colorIntensityDialog);
         add(labels,actions,"Restore default background",()->{
             store.set("background","app_glow");
-            store.set("background_treatment","dim");
+            store.set("background_treatment","none");
             store.setNumber("dimming",0);
             resetWallpaperSlideshowTimer();
             refreshWallpaperPalette();
@@ -5065,6 +5164,35 @@ public final class MainActivity extends Activity {
             backgroundMenu(back);
         });
         menu("Background",labels,actions,back);
+    }
+    private void ensurePhoneDrop() {
+        if(phoneDrop!=null && phoneDrop.isRunning())return;
+        PhoneDropServer server=new PhoneDropServer(this,store,new PhoneDropServer.Listener(){
+            public void onPhoneConnected(){if(phoneDropPanelListener!=null)phoneDropPanelListener.onPhoneConnected();}
+            public void onWallpaperReceived(String uri,int count){
+                applyPhoneWallpaper(uri);
+                if(phoneDropPanelListener!=null)phoneDropPanelListener.onWallpaperReceived(uri,count);
+            }
+            public void onWallpaperSelected(String uri){
+                applyPhoneWallpaper(uri);
+                if(phoneDropPanelListener!=null)phoneDropPanelListener.onWallpaperSelected(uri);
+            }
+            public void onWallpaperDeleted(String uri){
+                deleteWallpaperUri(uri);
+                if(phoneDropPanelListener!=null)phoneDropPanelListener.onWallpaperDeleted(uri);
+            }
+            public void onSlideshowChanged(int minutes){
+                store.setNumber("wallpaper_interval_min",minutes);resetWallpaperSlideshowTimer();
+                if(phoneDropPanelListener!=null)phoneDropPanelListener.onSlideshowChanged(minutes);
+            }
+        });
+        if(server.start())phoneDrop=server;else server.stop();
+        if(phoneDropAddressUi!=null)phoneDropAddressUi.run();
+    }
+    private void applyPhoneWallpaper(String uri){
+        if(destroyed)return;
+        store.set("background_image",uri);store.set("background","photo");
+        resetWallpaperSlideshowTimer();refreshWallpaperPalette();updateBackgroundInPlace();
     }
     private void stopPhoneDrop() {
         if(phoneDrop!=null) {
@@ -5091,7 +5219,8 @@ public final class MainActivity extends Activity {
             if(files.get(i).toURI().toString().equals(cur)) { idx=(i+1)%files.size(); break; }
         }
         store.set("background_image",files.get(idx).toURI().toString());
-        render();
+        refreshWallpaperPalette();
+        updateBackgroundInPlace();
         resetWallpaperSlideshowTimer();
     }
     private void wallpaperSlideshowMenu(Runnable back) {
@@ -5190,7 +5319,7 @@ public final class MainActivity extends Activity {
         updateBackgroundInPlace();
     }
     private void phoneDropPanel(Runnable back) {
-        stopPhoneDrop();
+        ensurePhoneDrop();
         LinearLayout box=new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
 
@@ -5214,7 +5343,7 @@ public final class MainActivity extends Activity {
         final ImageView[] thumbRef={null};
         final TextView[] liveCaptionRef={null};
 
-        PhoneDropServer server=new PhoneDropServer(this,store,new PhoneDropServer.Listener() {
+        PhoneDropServer.Listener panelListener=new PhoneDropServer.Listener() {
             @Override public void onPhoneConnected() {
                 if(destroyed || phoneDrop==null) return;
                 statusPill.setBackground(shapeRadius(0x2410B981,0x5534D399,1,14));
@@ -5224,11 +5353,6 @@ public final class MainActivity extends Activity {
             }
             @Override public void onWallpaperReceived(String fileUri,int sessionCount) {
                 if(destroyed) return;
-                store.set("background_image",fileUri);
-                store.set("background","photo");
-                resetWallpaperSlideshowTimer();
-                refreshWallpaperPalette();
-                updateBackgroundInPlace();
                 statusPill.setBackground(shapeRadius(0x2810B981,0x6634D399,1,14));
                 dot.setBackground(shapeRadius(0xFF34D399,0,0,5));
                 statusTxt.setTextColor(0xFFD1FAE5);
@@ -5241,43 +5365,21 @@ public final class MainActivity extends Activity {
             }
             @Override public void onWallpaperSelected(String fileUri) {
                 if(destroyed) return;
-                store.set("background_image",fileUri);
-                store.set("background","photo");
-                resetWallpaperSlideshowTimer();
-                refreshWallpaperPalette();
-                updateBackgroundInPlace();
                 if(thumbRef[0]!=null) images.show(thumbRef[0],fileUri,px(220),px(124));
                 if(liveCaptionRef[0]!=null) liveCaptionRef[0].setText("Switched from phone!");
             }
             @Override public void onWallpaperDeleted(String fileUri) {
                 if(destroyed) return;
-                deleteWallpaperUri(fileUri);
                 int total=PhoneDropServer.listSavedFiles(MainActivity.this,store).size();
                 if(liveCaptionRef[0]!=null) liveCaptionRef[0].setText(total+" saved in TV gallery");
             }
             @Override public void onSlideshowChanged(int minutes) {
                 if(destroyed) return;
-                store.setNumber("wallpaper_interval_min",minutes);
-                resetWallpaperSlideshowTimer();
                 if(liveCaptionRef[0]!=null) {
                     liveCaptionRef[0].setText(minutes<=0?"Slideshow: Off":"Slideshow: Every "+slideshowIntervalLabel(minutes));
                 }
             }
-        });
-
-        if(!server.start()) {
-            TextView err=text("Could not find an active Wi-Fi or Ethernet connection on this TV.\n\nConnect your TV to the same home network as your phone, then open Send from phone again.",19,0xEAFFFFFF);
-            err.setLineSpacing(px(4),1f);
-            LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);
-            ep.topMargin=px(16);
-            box.addView(err,ep);
-            showBladePanel("Phone Drop",box,"Wi-Fi settings",()->{
-                closeBlade();
-                openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS);
-            },back,null);
-            return;
-        }
-        phoneDrop=server;
+        };
 
         // Crisp high-contrast QR stage
         FrameLayout qrStage=new FrameLayout(this);
@@ -5288,7 +5390,7 @@ public final class MainActivity extends Activity {
         whiteCard.setPadding(px(10),px(10),px(10),px(10));
         ImageView qrImg=new ImageView(this);
         qrImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        qrImg.setImageBitmap(QrCode.encodeBitmap(server.getUrl(),px(236),3,0xFF0B101A,0xFFFFFFFF));
+        if(phoneDrop!=null && !phoneDrop.getUrl().isEmpty()) qrImg.setImageBitmap(QrCode.encodeBitmap(phoneDrop.getUrl(),px(236),3,0xFF0B101A,0xFFFFFFFF));
         whiteCard.addView(qrImg,new FrameLayout.LayoutParams(px(236),px(236),Gravity.CENTER));
         qrStage.addView(whiteCard,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
         LinearLayout.LayoutParams qp=new LinearLayout.LayoutParams(-1,-2);
@@ -5300,7 +5402,7 @@ public final class MainActivity extends Activity {
         steps.setLineSpacing(px(3),1f);
         box.addView(steps,new LinearLayout.LayoutParams(-1,-2));
 
-        TextView urlPill=text(server.getUrl(),14,accent());
+        TextView urlPill=text(phoneDrop==null?"Waiting for network connection":phoneDrop.getUrl(),14,accent());
         urlPill.setTypeface(medium);
         urlPill.setPadding(px(12),px(8),px(12),px(8));
         urlPill.setBackground(shapeRadius(0x16FFFFFF,0x24FFFFFF,1,10));
@@ -5331,7 +5433,7 @@ public final class MainActivity extends Activity {
         int existingCount=PhoneDropServer.listSavedFiles(this,store).size();
         TextView liveCap=text(existingCount>0
                 ?"Watch behind this blade as photos apply live ("+existingCount+" saved)"
-                :"Private local Wi-Fi link closes as soon as you leave this screen",15,muted());
+                :"Uploads stay available while Luma Home is active",15,muted());
         liveCap.setLineSpacing(px(2),1f);
         liveCaptionRef[0]=liveCap;
         liveRow.addView(liveCap,new LinearLayout.LayoutParams(0,-2,1f));
@@ -5341,13 +5443,25 @@ public final class MainActivity extends Activity {
         box.addView(liveRow,lp);
 
         showBladePanel("Phone Drop",box,"Done",this::closeBlade,()->{
-            stopPhoneDrop();
             if(back!=null) back.run();
         },null);
+        phoneDropPanelListener=panelListener;
+        phoneDropAddressUi=()->{
+            String url=phoneDrop==null?"":phoneDrop.getUrl();
+            if(url.isEmpty()){
+                qrImg.setImageDrawable(null);urlPill.setText("Waiting for network connection");
+                statusTxt.setText("Connect the TV to your home network");
+            }else{
+                qrImg.setImageBitmap(QrCode.encodeBitmap(url,px(236),3,0xFF0B101A,0xFFFFFFFF));
+                urlPill.setText(url);statusTxt.setText("Ready for phone uploads on your home network");
+            }
+        };
+        phoneDropAddressUi.run();
     }
     private void treatmentStyleChoice(Runnable back) {
-        String[] keys={"dim","blur","vignette","scrim","studio"};
+        String[] keys={"none","dim","blur","vignette","scrim","studio"};
         String[] titles={
+                "None · Pure wallpaper without treatment (Default)",
                 "Classic Dim · Uniform dark veil",
                 "Frosted Silk · Optical blur, keeps wallpaper color",
                 "Cinema Vignette · Clear center, edge & dock shadow",
@@ -5359,7 +5473,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<keys.length;i++) if(keys[i].equals(curKey)) { current=i; break; }
         choice("Treatment style",titles,current,idx->{
             store.set("background_treatment",keys[idx]);
-            if(store.number("dimming",0)==0) store.setNumber("dimming",40);
+            if(!"none".equals(keys[idx]) && store.number("dimming",0)==0) store.setNumber("dimming",40);
             updateBackgroundInPlace();
         },back);
     }
@@ -5368,7 +5482,8 @@ public final class MainActivity extends Activity {
         final int initial=treatmentIntensity();
         TextView value=text("Intensity · "+initial+"%",22,foreground()); value.setTypeface(medium);
         box.addView(value);
-        String subDesc="dim".equals(backgroundTreatment())?"Uniform darkness behind text and tiles":
+        String subDesc="none".equals(backgroundTreatment())?"No treatment applied to background":
+                "dim".equals(backgroundTreatment())?"Uniform darkness behind text and tiles":
                 "blur".equals(backgroundTreatment())?"Optical diffusion softness":
                 "vignette".equals(backgroundTreatment())?"Perimeter and dock shadow depth":
                 "scrim".equals(backgroundTreatment())?"Content stage gradient depth":"Hybrid diffusion and vignette depth";
@@ -6873,7 +6988,7 @@ public final class MainActivity extends Activity {
         overrideTreatmentIntensity=-1;
         syncTreatmentLayers();
         activeBladeBox=null;
-        stopPhoneDrop();
+        phoneDropPanelListener=null;phoneDropAddressUi=null;
         if(previewSpringStage!=null) { previewSpringStage.stop(); previewSpringStage=null; }
         if (activeBlade!=null) {
             final Dialog closing=activeBlade;
@@ -6945,7 +7060,8 @@ public final class MainActivity extends Activity {
         return box;
     }
     private void presentBladeView(String title,View panel,Runnable back,View initialFocus,boolean animate) {
-        if(!"Phone Drop".equals(title)) stopPhoneDrop();
+        refreshWallpaperPalette();
+        phoneDropPanelListener=null;phoneDropAddressUi=null;
         bladeGeneration++;
         bladeBack=back;
         int panelWidth=Math.min(Math.round(screenWidth*0.27f),px(395));

@@ -3,6 +3,7 @@ package com.lumahome.launcher;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.ColorFilter;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
@@ -28,20 +29,9 @@ import java.util.Arrays;
 import java.util.Locale;
 
 /**
- * Built-in icon styling engine.
- *
- * Pipeline for customised styles:
- *   1. Glyph extraction (cached per app, independent of style):
- *      adaptive foreground layer -> container/plate separation (gradient-aware, ring-sampled) ->
- *      one optional inner peel for "plate inside a plate" icons -> speck / ring / shadow cleanup.
- *   2. Validation: the extracted shape must still be a recognisable glyph. Illustrations, photos,
- *      fragmented artwork and featureless blobs are rejected.
- *   3. Fallback when validation fails: a curated vector glyph for well-known apps, otherwise the
- *      untouched original artwork clipped to the chosen shape (never a damaged silhouette).
- *   4. Styling: tone-relative recolouring (dominant tone = full weight, secondary tones = detail),
- *      colour-boundary seams so multi-colour logos keep their internal shapes, then the existing
- *      style effects (paper emboss, outline, glass, etc.).
- *   5. Layout: glyphs are sized by ink area, not bounding box, so visual weight stays consistent.
+ * Cached material rendering for app icons. Flattened tile artwork fills the chosen mask without stretching;
+ * only explicit Android foreground layers are eligible for glyph recoloring.
+ * Material backgrounds, optional effects and optical sizing share one output shape.
  */
 public final class IconStylingEngine {
 
@@ -58,11 +48,11 @@ public final class IconStylingEngine {
         public final int accentColor;
 
         public Config(String style, String color, String shape, int sizePct, String background, String effects, int accentColor) {
-            this.style = style != null ? style : "original";
-            this.color = color != null ? color : "white";
+            this.style = style != null ? style : "brand";
+            this.color = color != null ? color : "original";
             this.shape = shape != null ? shape : "circle";
             this.sizePct = sizePct > 0 ? sizePct : 100;
-            this.background = background != null ? background : "glass";
+            this.background = background != null ? background : "auto";
             this.effects = effects != null ? effects : "shadow";
             this.accentColor = accentColor;
         }
@@ -98,7 +88,11 @@ public final class IconStylingEngine {
         }
     }
 
-    private static final LruCache<String, Drawable> sCache = new LruCache<>(150);
+    private static final LruCache<String, Drawable> sCache = new LruCache<String, Drawable>(8 * 1024) {
+        @Override protected int sizeOf(String key, Drawable value) {
+            return value instanceof BitmapDrawable ? Math.max(1, ((BitmapDrawable)value).getBitmap().getByteCount()/1024) : 1;
+        }
+    };
 
     // Extracted glyphs are style-independent: switching styles re-uses them instead of re-analysing icons.
     private static final LruCache<String, Glyph> sGlyphCache = new LruCache<String, Glyph>(6 * 1024) {
@@ -110,49 +104,23 @@ public final class IconStylingEngine {
 
     public static void clearCache() {
         sCache.evictAll();
+        sGlyphCache.evictAll();
     }
 
     public static Drawable getStyledIcon(Context context, String pkg, Drawable original, int width, int height, Config config) {
         if (original == null) return null;
         int targetSize = Math.max(16, Math.min(width > 0 ? width : 160, height > 0 ? height : 160));
-        String key = config.cacheKey(pkg != null ? pkg : "sample", targetSize);
+        long revision=0;
+        if(pkg!=null)try { revision=context.getPackageManager().getPackageInfo(pkg,0).lastUpdateTime; }catch(Exception ignored){}
+        String key = config.cacheKey(pkg != null ? pkg : "sample", targetSize)+":"+revision;
+        if(original instanceof BitmapDrawable)key+=":"+((BitmapDrawable)original).getBitmap().getGenerationId();
         Drawable cached = sCache.get(key);
-        if (cached != null) return cached;
+        if (cached != null) return cached.getConstantState().newDrawable(context.getResources()).mutate();
 
         try {
-            // If Original style and default circle shape:
-            // Return 100% unaltered, unsegmented authentic original icon (exact original launcher behavior)
-            if ("original".equals(config.style) && "circle".equals(config.shape)) {
-                Bitmap fullOriginal = renderFullOriginalBitmap(original);
-                if (fullOriginal != null) {
-                    Drawable result = new BitmapDrawable(context.getResources(), fullOriginal);
-                    sCache.put(key, result);
-                    return result;
-                }
-                return original;
-            }
-
-            // If Original style with custom shape (e.g. Squircle) or custom size:
-            // Preserve the complete authentic icon artwork intact without any glyph stripping or recoloring
-            if ("original".equals(config.style)) {
-                Bitmap fullOriginal = renderFullOriginalBitmap(original);
-                if (fullOriginal != null) {
-                    Bitmap shaped = renderShapedArtwork(fullOriginal, targetSize, config, null);
-                    if (shaped != null) {
-                        Drawable result = new BitmapDrawable(context.getResources(), shaped);
-                        sCache.put(key, result);
-                        return result;
-                    }
-                }
-                return original;
-            }
-
-            // Customized styles (Minimalist, Monochrome, Paper-like, Glass, Dark, Flat, Outlined):
-            // use a validated glyph; if extraction is unreliable, fall back instead of damaging the logo.
-            Glyph glyph = obtainGlyph(pkg, original, targetSize);
-            Bitmap rendered = (glyph != null && glyph.ok)
-                    ? renderStyledBitmap(glyph, targetSize, config)
-                    : renderOriginalFallback(original, targetSize, config);
+            // Brand and Original never infer or redraw a flattened app logo.
+            Glyph glyph=("brand".equals(config.style)||"original".equals(config.style))?null:obtainGlyph((pkg==null?"sample":pkg)+":"+revision,original,targetSize);
+            Bitmap rendered=(glyph!=null&&glyph.ok)?renderStyledBitmap(glyph,targetSize,config):renderOriginalFallback(original,targetSize,config);
             if (rendered != null) {
                 Drawable result = new BitmapDrawable(context.getResources(), rendered);
                 sCache.put(key, result);
@@ -202,7 +170,7 @@ public final class IconStylingEngine {
         return path;
     }
 
-    /** Full, unmodified artwork clipped to the selected shape (optionally colour-filtered). */
+    /** Aspect-preserving artwork clipped to the selected shape (optionally colour-filtered). */
     private static Bitmap renderShapedArtwork(Bitmap fullOriginal, int targetSize, Config config, ColorFilter filter) {
         Bitmap output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(output);
@@ -211,13 +179,42 @@ public final class IconStylingEngine {
         float radius = getShapeCornerRadius(config.shape, targetSize);
         Path path = shapePath(bounds, radius, targetSize);
 
-        canvas.save();
-        canvas.clipPath(path);
-        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        if (filter != null) paint.setColorFilter(filter);
-        canvas.drawBitmap(fullOriginal, null, new Rect(0, 0, targetSize, targetSize), paint);
-        canvas.restore();
+        renderBackground(canvas,path,bounds,radius,config);
+        canvas.save();canvas.clipPath(path);
+        Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.FILTER_BITMAP_FLAG);paint.setColorFilter(filter);
+        float scale=Math.max(.65f,Math.min(1.35f,config.sizePct/100f));
+        // Full tile artwork fills the mask for every package, regardless of its colors.
+        // Transparent standalone symbols retain optical sizing instead of being cropped.
+        boolean tileArtwork = hasArtworkBacking(fullOriginal);
+        float available=targetSize*Math.min(.94f,.76f*scale);
+        float factor=tileArtwork
+                ? Math.max(targetSize/(float)fullOriginal.getWidth(),targetSize/(float)fullOriginal.getHeight())*Math.max(1f,scale)
+                : Math.min(available/fullOriginal.getWidth(),available/fullOriginal.getHeight());
+        float w=fullOriginal.getWidth()*factor,h=fullOriginal.getHeight()*factor;
+        if(!tileArtwork && "circle".equals(config.shape)){
+            float diagonal=(float)Math.hypot(w,h),limit=targetSize*.93f;
+            if(diagonal>limit){w*=limit/diagonal;h*=limit/diagonal;}
+        }
+        RectF destination=new RectF((targetSize-w)/2f,(targetSize-h)/2f,(targetSize+w)/2f,(targetSize+h)/2f);
+        if("shadow".equals(config.effects)||"depth".equals(config.effects)){
+            Paint shadow=new Paint(paint);shadow.setColorFilter(new PorterDuffColorFilter(0x55000000,PorterDuff.Mode.SRC_IN));
+            RectF offset=new RectF(destination);offset.offset(0,targetSize*.018f);canvas.drawBitmap(fullOriginal,null,offset,shadow);
+        }
+        canvas.drawBitmap(fullOriginal,null,destination,paint);canvas.restore();
+        if("paper".equals(config.style)||"depth".equals(config.effects))renderMaterialEdge(canvas,bounds,radius,targetSize);
         return output;
+    }
+
+    /** Detect a complete artwork tile by alpha coverage, never by package or backing color. */
+    private static boolean hasArtworkBacking(Bitmap artwork) {
+        int opaque=0,total=0;
+        for(int y=0;y<32;y++) for(int x=0;x<32;x++) {
+            int c=artwork.getPixel(Math.min(artwork.getWidth()-1,(int)((x+.5f)*artwork.getWidth()/32)),
+                    Math.min(artwork.getHeight()-1,(int)((y+.5f)*artwork.getHeight()/32)));
+            if(Color.alpha(c)>=240)opaque++;
+            total++;
+        }
+        return opaque >= total*.85f;
     }
 
     /**
@@ -234,7 +231,7 @@ public final class IconStylingEngine {
             filter = new ColorMatrixColorFilter(cm);
         }
         Bitmap out = renderShapedArtwork(full, targetSize, config, filter);
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "depth".equals(config.effects)) {
+        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects)) {
             RectF bounds = new RectF(0, 0, targetSize, targetSize);
             float radius = getShapeCornerRadius(config.shape, targetSize);
             renderBorderRim(new Canvas(out), shapePath(bounds, radius, targetSize), bounds, radius, config);
@@ -263,11 +260,11 @@ public final class IconStylingEngine {
             canvas.save();
             canvas.clipPath(shapePath);
 
-            RectF box = glyphBox(glyph, styledGlyph.getWidth(), styledGlyph.getHeight(), targetSize, config.shape);
+            RectF box = glyphBox(glyph, styledGlyph.getWidth(), styledGlyph.getHeight(), targetSize, config.shape, config.sizePct);
             Rect dst = new Rect(Math.round(box.left), Math.round(box.top), Math.round(box.right), Math.round(box.bottom));
 
             // Optional drop shadow effect under the glyph
-            if (!"none".equals(config.effects) && !"flat".equals(config.style)) {
+            if (("shadow".equals(config.effects)||"depth".equals(config.effects)) && !"flat".equals(config.style)) {
                 Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
                 shadowPaint.setColorFilter(new PorterDuffColorFilter(0x40000000, PorterDuff.Mode.SRC_IN));
                 int off = Math.max(1, targetSize / 50);
@@ -280,8 +277,9 @@ public final class IconStylingEngine {
             canvas.restore();
         }
 
+        if("depth".equals(config.effects))renderMaterialEdge(canvas,bounds,radius,targetSize);
         // Step 4: Render subtle specular rim / border if requested or for glass style
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "depth".equals(config.effects)) {
+        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects)) {
             renderBorderRim(canvas, shapePath, bounds, radius, config);
         }
 
@@ -292,8 +290,9 @@ public final class IconStylingEngine {
      * Sizes a glyph so that every icon carries similar visual weight: dense/solid glyphs are drawn a
      * little smaller, thin/airy glyphs a little larger, and nothing touches the curved edge of the shape.
      */
-    private static RectF glyphBox(Glyph glyph, int gw, int gh, int size, String shape) {
+    private static RectF glyphBox(Glyph glyph, int gw, int gh, int size, String shape, int sizePct) {
         float aspect = gw / (float) Math.max(1, gh);
+        float zoom=Math.max(.65f,Math.min(1.35f,sizePct/100f));
         float base = size * 0.62f;
         float w, h;
         if (aspect >= 1f) { w = base; h = base / aspect; } else { h = base; w = base * aspect; }
@@ -301,10 +300,10 @@ public final class IconStylingEngine {
         float area = Math.max(0.02f, glyph.fill) * w * h / (size * (float) size);
         float k = (float) Math.sqrt(0.20f / Math.max(0.01f, area));
         k = Math.max(0.86f, Math.min(1.14f, k));
-        w *= k;
-        h *= k;
+        w *= k*zoom;
+        h *= k*zoom;
 
-        float maxDim = size * 0.72f;
+        float maxDim = size * 0.90f;
         float m = Math.max(w, h);
         if (m > maxDim) { w *= maxDim / m; h *= maxDim / m; }
 
@@ -316,39 +315,36 @@ public final class IconStylingEngine {
         return new RectF(left, top, left + w, top + h);
     }
 
-    private static void renderBackground(Canvas canvas, Path shapePath, RectF bounds, float radius, Config config) {
-        if ("transparent".equals(config.background)) {
-            return;
+    private static void renderBackground(Canvas canvas,Path shapePath,RectF bounds,float radius,Config config){
+        if("transparent".equals(config.background)||("original".equals(config.style)&&"auto".equals(config.background)))return;
+        Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);canvas.save();canvas.clipPath(shapePath);
+        String style=config.style;int top=0xFF202A32,bottom=0xFF131B22;
+        if("paper".equals(style)){top=0xFF514A41;bottom=0xFF39342F;}
+        else if("dark".equals(style)){top=0xFF14181F;bottom=0xFF06090E;}
+        else if("flat".equals(style)){top=bottom=0xFF000000|(config.accentColor&0xFFFFFF);}
+        else if("outlined".equals(style)){top=bottom=0x12000000;}
+        else if("minimalist".equals(style)){top=bottom=0xFF202428;}
+        else if("monochrome".equals(style)){top=0xFF363636;bottom=0xFF181818;}
+        else if("glass".equals(style)){top=0x65FFFFFF;bottom=0x35000000|(config.accentColor&0xFFFFFF);}
+        if("black".equals(config.color)&&"auto".equals(config.background)){top=0xFFE4E7EB;bottom=0xFFC9CFD6;}
+        if("solid_dark".equals(config.background)){top=bottom=0xFF141920;}
+        else if("gradient".equals(config.background)){top=0xFF202A38;bottom=0xB0000000|(config.accentColor&0xFFFFFF);}
+        else if("glass".equals(config.background)){top=0x44FFFFFF;bottom=0x26000000|(config.accentColor&0xFFFFFF);}
+        p.setShader(new LinearGradient(0,bounds.top,0,bounds.bottom,top,bottom,Shader.TileMode.CLAMP));canvas.drawRect(bounds,p);p.setShader(null);
+        if("paper".equals(style)){
+            p.setColor(0x0CFFFFFF);p.setStrokeWidth(Math.max(1,bounds.width()/220f));
+            for(float y=3;y<bounds.height();y+=Math.max(3,bounds.height()/72f))canvas.drawLine(0,y,bounds.width(),y,p);
         }
-
-        Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        canvas.save();
-        canvas.clipPath(shapePath);
-
-        if ("solid_dark".equals(config.background)) {
-            bgPaint.setStyle(Paint.Style.FILL);
-            bgPaint.setColor(0xFF151922);
-            canvas.drawRect(bounds, bgPaint);
-        } else if ("gradient".equals(config.background)) {
-            int topCol = 0xFF1C2230;
-            int botCol = (config.accentColor & 0x00FFFFFF) | 0x4D000000;
-            bgPaint.setStyle(Paint.Style.FILL);
-            bgPaint.setShader(new LinearGradient(0, bounds.top, 0, bounds.bottom, topCol, botCol, Shader.TileMode.CLAMP));
-            canvas.drawRect(bounds, bgPaint);
-        } else {
-            // Frosted glass (default)
-            bgPaint.setStyle(Paint.Style.FILL);
-            int baseTint = (config.accentColor & 0x00FFFFFF) | 0x1E000000;
-            bgPaint.setShader(new LinearGradient(0, bounds.top, 0, bounds.bottom, 0x24FFFFFF, baseTint, Shader.TileMode.CLAMP));
-            canvas.drawRect(bounds, bgPaint);
-
-            // Specular upper sheen (top 45%)
-            RectF sheen = new RectF(bounds.left, bounds.top, bounds.right, bounds.top + bounds.height() * 0.45f);
-            bgPaint.setShader(new LinearGradient(0, sheen.top, 0, sheen.bottom, 0x22FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
-            canvas.drawRect(sheen, bgPaint);
+        if("glass".equals(style)){
+            p.setShader(new LinearGradient(0,0,bounds.width(),bounds.height(),new int[]{0x55FFFFFF,0x08FFFFFF,0x00FFFFFF},new float[]{0,.45f,1},Shader.TileMode.CLAMP));canvas.drawRect(bounds,p);
         }
-
         canvas.restore();
+    }
+    private static void renderMaterialEdge(Canvas canvas,RectF bounds,float radius,int size){
+        Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(Math.max(1,size*.012f));
+        p.setShader(new LinearGradient(0,0,0,size,0x60FFFFFF,0x70000000,Shader.TileMode.CLAMP));
+        RectF inner=new RectF(bounds);inner.inset(p.getStrokeWidth(),p.getStrokeWidth());
+        canvas.drawRoundRect(inner,Math.max(0,radius-p.getStrokeWidth()),Math.max(0,radius-p.getStrokeWidth()),p);
     }
 
     private static void renderBorderRim(Canvas canvas, Path shapePath, RectF bounds, float radius, Config config) {
@@ -358,7 +354,7 @@ public final class IconStylingEngine {
         float inset = rimPaint.getStrokeWidth() / 2f;
         RectF strokeBounds = new RectF(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset);
 
-        int topRim = "glass".equals(config.style) ? 0x55FFFFFF : 0x3AFFFFFF;
+        int topRim = "outlined".equals(config.style)?0xDDFFFFFF:"glass".equals(config.style) ? 0x88FFFFFF : 0x3AFFFFFF;
         int botRim = 0x12FFFFFF;
         rimPaint.setShader(new LinearGradient(0, strokeBounds.top, 0, strokeBounds.bottom, topRim, botRim, Shader.TileMode.CLAMP));
 
@@ -388,17 +384,27 @@ public final class IconStylingEngine {
         Glyph cached = sGlyphCache.get(key);
         if (cached != null) return cached;
 
-        Glyph glyph;
-        try {
-            glyph = extractGlyph(original, analysis);
-        } catch (Throwable t) {
-            glyph = new Glyph("extract").fail("error " + t.getClass().getSimpleName());
-        }
-        if (!glyph.ok) {
-            Bitmap curated = renderCurated(pkg, analysis);
-            if (curated != null) {
-                Glyph c = curatedGlyph(curated, glyph.reason);
-                if (c != null) glyph = c;
+        Glyph glyph=new Glyph("complete-artwork").fail("flattened artwork preserved");
+        if(Build.VERSION.SDK_INT>=26&&original instanceof AdaptiveIconDrawable){
+            Drawable foreground=((AdaptiveIconDrawable)original).getForeground();
+            Bitmap raw=foreground==null?null:rasterize(foreground,analysis);
+            if(raw!=null){
+                Bitmap trimmed=trimTransparent(raw);
+                if(trimmed!=null){
+                    Glyph separated=curatedGlyph(trimmed,"android foreground");
+                    if(separated!=null){
+                        long weight=0,luminance=0;
+                        java.util.HashSet<Integer> tones=new java.util.HashSet<>();
+                        for(int y=0;y<trimmed.getHeight();y++)for(int x=0;x<trimmed.getWidth();x++){
+                            int pixel=trimmed.getPixel(x,y),alpha=pixel>>>24;
+                            weight+=alpha;luminance+=(long)alpha*lum((pixel>>16)&255,(pixel>>8)&255,pixel&255);
+                            if(alpha>160)tones.add(((pixel>>20)&15)<<8|((pixel>>12)&15)<<4|((pixel>>4)&15));
+                        }
+                        separated.domLum=weight==0?128:(int)(luminance/weight);separated.lumSpread=64;
+                        separated.method="android-foreground";
+                        if(tones.size()<=24)glyph=separated;else glyph.fail("illustrated foreground preserved");
+                    }
+                }
             }
         }
         if (!glyph.ok) glyph.bitmap = null; // failed glyphs are never drawn; don't keep their pixels
@@ -1132,7 +1138,9 @@ public final class IconStylingEngine {
             float detail = Math.min(1f, Math.abs(lum - dom) / spread);
             boolean seam = seams != null && seams[i];
 
-            if ("monochrome".equals(style)) {
+            if ("original".equals(config.color)&&!"monochrome".equals(style)) {
+                result[i]=c;
+            } else if ("monochrome".equals(style)) {
                 // High-contrast perceptual monochrome
                 int base = invertMono ? 255 - lum : lum;
                 int boosted = clamp255((base - 128f) * 1.35f + 128f);
@@ -1148,7 +1156,7 @@ public final class IconStylingEngine {
                 // Tactile papercraft: chalky matte paper; secondary tones read as folds
                 float tone = 250f - 30f * detail;
                 int outA = Math.round(a * (1f - 0.40f * detail) * (seam ? 0.2f : 1f));
-                result[i] = (outA << 24) | (clamp255(tone) << 16) | (clamp255(tone - 2f) << 8) | clamp255(tone - 7f);
+                result[i] = (outA << 24) | (clamp255(tr*tone/255f) << 16) | (clamp255(tg*(tone-2f)/255f) << 8) | clamp255(tb*(tone-7f)/255f);
             } else if ("glass".equals(style)) {
                 // Frosted glass glyph
                 int outA = Math.round(a * (0.92f - 0.50f * detail) * (seam ? 0.2f : 1f));
@@ -1157,7 +1165,7 @@ public final class IconStylingEngine {
                 // Stealth dark: luminous silver glyph; detail slightly dimmer
                 float k = 1f - 0.32f * detail;
                 int outA = Math.round(a * (seam ? 0.2f : 1f));
-                result[i] = (outA << 24) | (clamp255(238f * k) << 16) | (clamp255(242f * k) << 8) | clamp255(250f * k);
+                result[i] = (outA << 24) | (clamp255(tr * k) << 16) | (clamp255(tg * k) << 8) | clamp255(tb * k);
             } else if ("flat".equals(style)) {
                 // Bold solid flat vector; strongly different tones become cut-outs
                 int outA = Math.round((detail > 0.5f ? a * 0.25f : a) * (seam ? 0.15f : 1f));
@@ -1177,7 +1185,7 @@ public final class IconStylingEngine {
 
         // For outlined style, apply outline edge filter
         if ("outlined".equals(style)) {
-            return applyOutlineFilter(transformed, targetColor);
+            return applyOutlineFilter(transformed, targetColor,"original".equals(config.color));
         }
         // For paper style, apply directional embossing
         if ("paper".equals(style)) {
@@ -1187,7 +1195,7 @@ public final class IconStylingEngine {
         return transformed;
     }
 
-    private static Bitmap applyOutlineFilter(Bitmap src, int strokeColor) {
+    private static Bitmap applyOutlineFilter(Bitmap src, int strokeColor,boolean preserveColor) {
         int w = src.getWidth(), h = src.getHeight();
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(out);
@@ -1218,7 +1226,7 @@ public final class IconStylingEngine {
                         if (isEdge) break;
                     }
                     if (isEdge) {
-                        edgePixels[y * w + x] = strokeColor;
+                        edgePixels[y * w + x] = preserveColor?(0xFF000000|(pixels[y*w+x]&0xFFFFFF)):strokeColor;
                     }
                 }
             }
