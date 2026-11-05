@@ -67,6 +67,34 @@ final class PhoneDropServer {
     private final AtomicInteger sessionUploads = new AtomicInteger(0);
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
+    private int[] wallpaperSize() {
+        int targetW = 1920, targetH = 1080;
+        try {
+            android.view.WindowManager wm = (android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            if (wm != null) {
+                android.view.Display display = wm.getDefaultDisplay();
+                if (display != null) {
+                    android.util.DisplayMetrics realMetrics = new android.util.DisplayMetrics();
+                    display.getRealMetrics(realMetrics);
+                    targetW = Math.max(targetW, realMetrics.widthPixels);
+                    targetH = Math.max(targetH, realMetrics.heightPixels);
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        android.view.Display.Mode mode = display.getMode();
+                        if (mode != null) {
+                            targetW = Math.max(targetW, mode.getPhysicalWidth());
+                            targetH = Math.max(targetH, mode.getPhysicalHeight());
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        android.app.ActivityManager am = (android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        boolean isLowRam = am != null && am.isLowRamDevice();
+        int maxW = isLowRam ? 1920 : 3840;
+        int maxH = isLowRam ? 1080 : 2160;
+        return new int[]{ Math.min(maxW, Math.max(1280, targetW)), Math.min(maxH, Math.max(720, targetH)) };
+    }
+
     private ServerSocket serverSocket;
     private String lanIp;
     private int boundPort;
@@ -310,6 +338,8 @@ final class PhoneDropServer {
 
     private synchronized String saveUploadedWallpaper(byte[] rawBytes) {
         if (rawBytes == null || rawBytes.length < 32) return null;
+        int[] size=wallpaperSize();
+        int targetWidth=size[0],targetHeight=size[1];
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.length, bounds);
@@ -318,33 +348,37 @@ final class PhoneDropServer {
         boolean isJpeg = (rawBytes[0] & 0xFF) == 0xFF && (rawBytes[1] & 0xFF) == 0xD8;
         byte[] finalJpeg = null;
 
-        if (isJpeg && bounds.outWidth <= 1920 && bounds.outHeight <= 1080 && rawBytes.length <= 2_200_000) {
+        if (isJpeg && bounds.outWidth == targetWidth && bounds.outHeight == targetHeight && rawBytes.length <= 3_500_000) {
             finalJpeg = rawBytes;
         } else {
             int sample = 1;
-            while (bounds.outWidth / (sample * 2) >= 1920 && bounds.outHeight / (sample * 2) >= 1080) {
+            while ((bounds.outWidth / (sample * 2)) >= targetWidth && (bounds.outHeight / (sample * 2)) >= targetHeight) {
                 sample *= 2;
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = sample;
-            opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            opts.inSampleSize = Math.max(1, sample);
+            opts.inPreferredConfig = Bitmap.Config.RGB_565;
+            opts.inDither = true;
             Bitmap decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.length, opts);
             if (decoded == null) return null;
+            Bitmap target = null;
             try {
-                Bitmap target = Bitmap.createBitmap(1920, 1080, Bitmap.Config.ARGB_8888);
+                target = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565);
                 Canvas cv = new Canvas(target);
                 cv.drawColor(0xFF0B101A);
-                float scale = Math.max(1920f / decoded.getWidth(), 1080f / decoded.getHeight());
+                float scale = Math.max((float)targetWidth / decoded.getWidth(), (float)targetHeight / decoded.getHeight());
                 float dw = decoded.getWidth() * scale;
                 float dh = decoded.getHeight() * scale;
-                RectF dst = new RectF((1920f - dw) / 2f, (1080f - dh) / 2f, (1920f + dw) / 2f, (1080f + dh) / 2f);
+                RectF dst = new RectF((targetWidth - dw) / 2f, (targetHeight - dh) / 2f, (targetWidth + dw) / 2f, (targetHeight + dh) / 2f);
                 cv.drawBitmap(decoded, null, dst, new Paint(Paint.FILTER_BITMAP_FLAG));
-                ByteArrayOutputStream bos = new ByteArrayOutputStream(360 * 1024);
-                target.compress(Bitmap.CompressFormat.JPEG, 90, bos);
-                target.recycle();
+                decoded.recycle();
+                decoded = null;
+                ByteArrayOutputStream bos = new ByteArrayOutputStream(512 * 1024);
+                target.compress(Bitmap.CompressFormat.JPEG, 92, bos);
                 finalJpeg = bos.toByteArray();
             } finally {
-                decoded.recycle();
+                if (decoded != null && !decoded.isRecycled()) decoded.recycle();
+                if (target != null && !target.isRecycled()) target.recycle();
             }
         }
 
@@ -517,6 +551,7 @@ final class PhoneDropServer {
     }
 
     private String buildWebAppHtml() {
+        int[] size=wallpaperSize();
         return "<!doctype html>\n"
             + "<html lang='en'><head><meta charset='utf-8'>\n"
             + "<meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>\n"

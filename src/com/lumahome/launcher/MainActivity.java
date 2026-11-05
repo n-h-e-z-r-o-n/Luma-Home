@@ -1,6 +1,8 @@
 package com.lumahome.launcher;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.view.Display;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.role.RoleManager;
@@ -163,6 +165,12 @@ public final class MainActivity extends Activity {
     private final OvershootInterpolator liquidOvershoot=new OvershootInterpolator(0.75f);
     private final DecelerateInterpolator crispDecel=new DecelerateInterpolator(1.6f);
     private String lastFocus="", moving="", imageTarget="", search="";
+    private String homePageFocus="", allAppsPageFocus="";
+    private int savedHomeScroll, savedAllAppsScroll;
+    private boolean restoringPage;
+    private View pageTransitionOverlay;
+    private int recommendationRenderSerial=-1;
+    private String recommendationRenderKey="";
     private int screenWidth, screenHeight, contentHeight, serial;
     private float scale;
     private Typeface regular=Typeface.create("sans-serif",Typeface.NORMAL);
@@ -238,6 +246,7 @@ public final class MainActivity extends Activity {
     }
     private void noteNavKey(int key,KeyEvent event) {
         if(event!=null && event.getAction()==KeyEvent.ACTION_DOWN) {
+            if(key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN||key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT)restoringPage=false;
             if(key==KeyEvent.KEYCODE_DPAD_RIGHT || key==KeyEvent.KEYCODE_DPAD_DOWN) {
                 lastUserNavMs=android.os.SystemClock.uptimeMillis();
                 lastUserNavDir=1;
@@ -248,7 +257,8 @@ public final class MainActivity extends Activity {
         }
     }
     private boolean muteSystem() {
-        return sfx!=null && sfx.enabled() && store!=null && store.flag("ui_sounds_mute_system",true);
+        // App-local policy: custom audio or silence; never change the TV's global sound setting.
+        return true;
     }
     private void applyViewSoundPolicy(View v) {
         if(v==null) return;
@@ -272,6 +282,7 @@ public final class MainActivity extends Activity {
         if(root!=null) applyViewSoundPolicy(root);
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if(event!=null && handleRemoteSettingsKey(event))return true;
         if(event!=null) noteNavKey(event.getKeyCode(),event);
         resetIdleTimer();
         if(muteSystem()) {
@@ -288,11 +299,45 @@ public final class MainActivity extends Activity {
         }
         return super.dispatchKeyEvent(event);
     }
+    private boolean isSettingsKey(int code) {
+        return code == KeyEvent.KEYCODE_SETTINGS
+            || code == KeyEvent.KEYCODE_MENU
+            || code == 312 // KEYCODE_QUICK_SETTINGS (API 31+)
+            || code == 4077; // TCL Quick Menu
+    }
+    private boolean handleRemoteSettingsKey(KeyEvent event) {
+        int code = event.getKeyCode();
+        if (!isSettingsKey(code)) return false;
+        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+            dismissIdleClock();
+            closeBlade();
+            String[] actions = new String[]{
+                "android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL",
+                "android.app.action.OPEN_NOTIFICATION_HANDLER_PANEL",
+                "com.tcl.settings.action.QUICKSETTINGS",
+                "android.settings.QUICK_SETTINGS",
+                Settings.ACTION_SETTINGS
+            };
+            for (String action : actions) {
+                Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if ("com.tcl.settings.action.QUICKSETTINGS".equals(action)) intent.setPackage("com.tcl.settings");
+                if (intent.resolveActivity(getPackageManager()) != null) {
+                    try {
+                        startActivity(intent);
+                        android.util.Log.i("LumaRemote", "Opened settings popup via: " + action);
+                        return true;
+                    } catch (Exception ignored) {}
+                }
+            }
+            openSystemIntent(Settings.ACTION_SETTINGS);
+        }
+        return true;
+    }
     @Override public void onBackPressed() {
         if(heroVideo!=null){if(sfx!=null)sfx.playBack();stopHeroVideo();return;}
         if(!drawer&&header!=null&&header.hasFocus()&&!appViews.isEmpty()){if(sfx!=null)sfx.playBack();heroWantsFocus=false;appViews.get(0).requestFocus();return;}
         if (!moving.isEmpty()) { if(sfx!=null)sfx.playBack(); moving=""; render(); return; }
-        if (drawer) { if(sfx!=null)sfx.playBack(); hideKeyboard(); drawer=false; search=""; lastFocus=ALL; render(); }
+        if (drawer) { if(sfx!=null)sfx.playBack(); switchLauncherPage(false); }
     }
     private void refreshApps() {
         apps=catalog.all(); byPackage.clear();
@@ -570,7 +615,30 @@ public final class MainActivity extends Activity {
         } catch(Exception|OutOfMemoryError ignored) {}
     }
 
+    private int[] targetWallpaperSize() {
+        int targetW = screenWidth > 0 ? screenWidth : 1920;
+        int targetH = screenHeight > 0 ? screenHeight : 1080;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Display display = getWindowManager().getDefaultDisplay();
+                if (display != null) {
+                    Display.Mode mode = display.getMode();
+                    if (mode != null) {
+                        targetW = Math.max(targetW, mode.getPhysicalWidth());
+                        targetH = Math.max(targetH, mode.getPhysicalHeight());
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        boolean isLowRam = am != null && am.isLowRamDevice();
+        int maxW = isLowRam ? 1920 : 3840;
+        int maxH = isLowRam ? 1080 : 2160;
+        return new int[]{ Math.min(maxW, Math.max(1280, targetW)), Math.min(maxH, Math.max(720, targetH)) };
+    }
+
     private void updateBlurredWallpaper(android.graphics.Bitmap photo, String key) {
+        if("none".equals(backgroundTreatment())) return;
         if(photo==null || (key.equals(blurredWallpaperKey) && blurredWallpaperBackdrop!=null)) {
             if(treatmentBlurLayer!=null && blurredWallpaperBackdrop!=null) {
                 treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
@@ -578,26 +646,34 @@ public final class MainActivity extends Activity {
             }
             return;
         }
-        try {
-            int bw=384, bh=216;
-            if(blurredWallpaperBackdrop==null || blurredWallpaperBackdrop.getWidth()!=bw || blurredWallpaperBackdrop.getHeight()!=bh) {
-                blurredWallpaperBackdrop=android.graphics.Bitmap.createBitmap(bw,bh,android.graphics.Bitmap.Config.ARGB_8888);
-            }
-            android.graphics.Canvas cv=new android.graphics.Canvas(blurredWallpaperBackdrop);
-            int pw=Math.max(1,photo.getWidth()), ph=Math.max(1,photo.getHeight());
-            float scale=Math.max((float)bw/pw,(float)bh/ph);
-            float dw=pw*scale, dh=ph*scale;
-            android.graphics.RectF dst=new android.graphics.RectF((bw-dw)/2f,(bh-dh)/2f,(bw+dw)/2f,(bh+dh)/2f);
-            android.graphics.Paint bp=new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
-            cv.drawBitmap(photo,null,dst,bp);
-            blurBitmapInPlace(blurredWallpaperBackdrop,12);
-            blurBitmapInPlace(blurredWallpaperBackdrop,8);
-            blurredWallpaperKey=key;
-            if(treatmentBlurLayer!=null) {
-                treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
-                syncTreatmentLayers();
-            }
-        } catch(Exception|OutOfMemoryError ignored) {}
+        final android.graphics.Bitmap src = photo;
+        paletteWorker.execute(() -> {
+            try {
+                int bw = 384, bh = 216;
+                android.graphics.Bitmap blurred = android.graphics.Bitmap.createBitmap(bw, bh, android.graphics.Bitmap.Config.RGB_565);
+                android.graphics.Canvas cv = new android.graphics.Canvas(blurred);
+                int pw = Math.max(1, src.getWidth()), ph = Math.max(1, src.getHeight());
+                float scale = Math.max((float) bw / pw, (float) bh / ph);
+                float dw = pw * scale, dh = ph * scale;
+                android.graphics.RectF dst = new android.graphics.RectF((bw - dw) / 2f, (bh - dh) / 2f, (bw + dw) / 2f, (bh + dh) / 2f);
+                android.graphics.Paint bp = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+                cv.drawBitmap(src, null, dst, bp);
+                blurBitmapInPlace(blurred, 12);
+                blurBitmapInPlace(blurred, 8);
+                handler.post(() -> {
+                    if (destroyed) { blurred.recycle(); return; }
+                    if (blurredWallpaperBackdrop != null && blurredWallpaperBackdrop != blurred) {
+                        blurredWallpaperBackdrop.recycle();
+                    }
+                    blurredWallpaperBackdrop = blurred;
+                    blurredWallpaperKey = key;
+                    if (treatmentBlurLayer != null) {
+                        treatmentBlurLayer.setImageBitmap(blurredWallpaperBackdrop);
+                        syncTreatmentLayers();
+                    }
+                });
+            } catch (Throwable ignored) {}
+        });
     }
 
     private void updateFrostedFromPhoto(android.graphics.Bitmap photo,int dimAlpha,String key) {
@@ -1649,6 +1725,48 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void switchLauncherPage(boolean allApps) {
+        if(drawer==allApps)return;
+        hideKeyboard();
+        if(drawer){savedAllAppsScroll=drawerScroll==null?0:drawerScroll.getScrollY();allAppsPageFocus=lastFocus;}
+        else {savedHomeScroll=homeScroll==null?0:homeScroll.getScrollY();homePageFocus=lastFocus;}
+        if(pageTransitionOverlay!=null){pageTransitionOverlay.animate().cancel();root.removeView(pageTransitionOverlay);pageTransitionOverlay=null;}
+        final View outgoing=content;
+        if(outgoing!=null && outgoing.getParent() instanceof ViewGroup)((ViewGroup)outgoing.getParent()).removeView(outgoing);
+        drawer=allApps;search="";lastFocus=allApps?allAppsPageFocus:homePageFocus;
+        restoringPage=true;render();
+        final View incoming=content;
+        final ScrollView scrolling=drawer?drawerScroll:homeScroll;
+        final int y=drawer?savedAllAppsScroll:savedHomeScroll;
+        final int generation=serial;
+        final android.view.ViewTreeObserver observer=root.getViewTreeObserver();
+        final android.view.ViewTreeObserver.OnPreDrawListener holdScroll=new android.view.ViewTreeObserver.OnPreDrawListener(){
+            @Override public boolean onPreDraw(){
+                if(generation!=serial || !restoringPage){if(observer.isAlive())observer.removeOnPreDrawListener(this);return true;}
+                if(scrolling!=null)scrolling.scrollTo(0,y);
+                return true;
+            }
+        };
+        observer.addOnPreDrawListener(holdScroll);
+        root.postDelayed(()->{
+            if(observer.isAlive())observer.removeOnPreDrawListener(holdScroll);
+            if(generation==serial && restoringPage){
+                if(scrolling!=null){scrolling.smoothScrollTo(0,y);scrolling.smoothScrollTo(0,y);scrolling.scrollTo(0,y);}
+                restoringPage=false;
+            }
+        },650);
+        if(outgoing!=null && !instantFocus()){
+            pageTransitionOverlay=outgoing;outgoing.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            if(outgoing instanceof ViewGroup)((ViewGroup)outgoing).setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            root.addView(outgoing,new FrameLayout.LayoutParams(-1,-1));
+            incoming.setAlpha(0f);
+            incoming.animate().alpha(1f).setDuration(220).setInterpolator(crispDecel).start();
+            outgoing.animate().alpha(0f).setDuration(180).setInterpolator(crispDecel).withEndAction(()->{
+                if(outgoing.getParent()==root)root.removeView(outgoing);
+                if(pageTransitionOverlay==outgoing)pageTransitionOverlay=null;
+            }).start();
+        }
+    }
     private void render() {
         if (destroyed) return;
         stopSpringStages(); homeSpringStage=null; drawerSpringStage=null; recentSpringStage=null; dockSpringLens=null;
@@ -1733,7 +1851,7 @@ public final class MainActivity extends Activity {
             resetHomeStage3D(homeStage, false);
         }
         syncSystemSoundMuting();
-        root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
+        if(firstRoot)root.getViewTreeObserver().addOnGlobalFocusChangeListener((oldFocus,newFocus)->{
             if(destroyed || sfx==null || oldFocus==null || newFocus==null || oldFocus==newFocus) return;
             if(android.os.SystemClock.uptimeMillis()-lastUserNavMs<280L) {
                 sfx.playFocus(newFocus,screenWidth,lastUserNavDir);
@@ -1815,7 +1933,7 @@ public final class MainActivity extends Activity {
                 };image.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 wallpaperImageView=image;
                 backgroundStage.addView(image,new FrameLayout.LayoutParams(-1,-1));
-                images.show(image,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+                int[] wpSize=targetWallpaperSize(); images.show(image,path,wpSize[0],wpSize[1]);
             } else {
                 wallpaperImageView=null;
                 updateFrostedFromDrawable(backgroundStage.getBackground(),dimAlpha,frostKey);
@@ -1885,7 +2003,7 @@ public final class MainActivity extends Activity {
         incoming.setContentDescription(path);
         incoming.setAlpha(0f);pendingWallpaperImage=incoming;
         stage.addView(incoming,stage.indexOfChild(previous)+1,new FrameLayout.LayoutParams(-1,-1));
-        images.show(incoming,path,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+        int[] wpSizeTrans=targetWallpaperSize(); images.show(incoming,path,wpSizeTrans[0],wpSizeTrans[1]);
     }
     private String backgroundTreatment() { return store.value("background_treatment","none"); }
     private String treatmentStyleName() {
@@ -2124,7 +2242,7 @@ public final class MainActivity extends Activity {
         bar.setClipChildren(false);bar.setClipToPadding(false);
         addTopPill(bar,"pill.inputs","Inputs",LineIcon.HDMI,this::quickInputsMenu);
         addTopPill(bar,"pill.wifi","Wi-Fi",LineIcon.WIFI,()->openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS));
-        addTopPill(bar,"pill.apps",drawer?"Home":"All Apps",drawer?LineIcon.HOME:LineIcon.SPARKLES,()->{ hideKeyboard(); drawer=!drawer; search=""; lastFocus=""; render(); });
+        addTopPill(bar,"pill.apps",drawer?"Home":"All Apps",drawer?LineIcon.HOME:LineIcon.SPARKLES,()->{ switchLauncherPage(!drawer); });
         addTopPill(bar,"pill.settings","Settings",LineIcon.SETTINGS,this::settingsMenu);
         return bar;
     }
@@ -2480,11 +2598,7 @@ public final class MainActivity extends Activity {
         });
         homeBtn.setOnClickListener(v->{
             if(sfx!=null)sfx.playBack();
-            hideKeyboard();
-            drawer=false;
-            search="";
-            lastFocus=ALL;
-            render();
+            switchLauncherPage(false);
         });
         homeBtn.setOnKeyListener((v,key,event)->{
             if(event.getAction()==KeyEvent.ACTION_DOWN){
@@ -3253,7 +3367,7 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(recent) {
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            int iconSize=Math.min(px(80),Math.round(height*0.65f));
+            int iconSize=Math.max(1,Math.min(Math.round(width*0.36f),Math.round(height*0.65f)));
             if(appArt.drawable!=null) {
                 if("original".equals(store.value("icon_style","brand"))) {
                     image.setImageDrawable(appArt.drawable);
@@ -3357,7 +3471,7 @@ public final class MainActivity extends Activity {
             if (has) {
                 updateAmbient(pkg);
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
-                if(!recent)lastFocus=pkg;
+                if(!recent){lastFocus=pkg;if(drawer)allAppsPageFocus=pkg;else homePageFocus=pkg;}
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
                 else if(allApps && drawerScroll!=null) {
                     if(drawerScroll.getHeight()>0) centerDrawerChild(tile);
@@ -3525,7 +3639,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(64);place.bottomMargin=px(40);
         (drawer?drawerPage:homePage).addView(shell,place);
         List<TvInputInfo> inputs=hdmiInputs();
-        addDock(dock,ALL,drawer?"Home":"All Apps",null,()->{ hideKeyboard(); drawer=!drawer; search=""; lastFocus=""; render(); });
+        addDock(dock,ALL,drawer?"Home":"All Apps",null,()->{ switchLauncherPage(!drawer); });
         for (TvInputInfo input:inputs) addDock(dock,input.getId(),inputName(input),LineIcon.HDMI,()->openInput(input.getId()));
         addDock(dock,SETTINGS,"Settings",LineIcon.SETTINGS,this::settingsMenu);
         for (View view:dockViews) {
@@ -3564,6 +3678,17 @@ public final class MainActivity extends Activity {
                     });
                 }
             }
+        });
+        tile.setOnKeyListener((v,code,event)->{
+            if(code!=KeyEvent.KEYCODE_DPAD_LEFT && code!=KeyEvent.KEYCODE_DPAD_RIGHT)return false;
+            if(event.getAction()==KeyEvent.ACTION_DOWN){
+                // Own horizontal focus movement so the window's default D-pad handler
+                // cannot add a stock focus click to Luma's custom sound.
+                int index=dockViews.indexOf(v);
+                int next=Math.max(0,Math.min(dockViews.size()-1,index+(code==KeyEvent.KEYCODE_DPAD_RIGHT?1:-1)));
+                if(index>=0 && next!=index)dockViews.get(next).requestFocus();
+            }
+            return true;
         });
         tile.setOnClickListener(v->{
             if(sfx!=null && !SETTINGS.equals(key)) sfx.playSelect(v,screenWidth);
@@ -3644,6 +3769,11 @@ public final class MainActivity extends Activity {
     }
     private void updateRecommendationRows() {
         if (drawer || contentRail==null || destroyed) return;
+        StringBuilder rowKey=new StringBuilder().append(store.flag("recommendations_master")).append(':').append(recommendationSize());
+        for(AppCatalog.App app:apps)if(store.recommendations(app.pkg))rowKey.append(':').append(app.pkg);
+        String feedKey=rowKey.toString();
+        if(recommendationRenderSerial==serial && feedKey.equals(recommendationRenderKey))return;
+        recommendationRenderSerial=serial;recommendationRenderKey=feedKey;
         contentRail.removeAllViews();contentRows.clear();contentViews.clear();
         for(SpringStage stage:recommendationSpringStages) if(stage!=null) stage.stop();
         recommendationSpringStages.clear();
@@ -3654,14 +3784,18 @@ public final class MainActivity extends Activity {
         if(store.flag("recommendations_master"))for(String pkg:sources) {
             if(!store.recommendations(pkg))continue;
             LinearLayout section=new LinearLayout(this);section.setOrientation(LinearLayout.VERTICAL);
-            section.setClipChildren(false);section.setClipToPadding(false);section.setVisibility(View.GONE);
+            section.setClipChildren(false);section.setClipToPadding(false);
+            section.setMinimumHeight(px(52+16+artHeight+recommendationTitleHeight(size)+2*Math.max(32,glowRadiusSetting()+14)));
+            TextView loading=text(name(pkg),34,foreground());loading.setTypeface(medium);loading.setPadding(px(96),0,px(96),0);
+            section.addView(loading,new LinearLayout.LayoutParams(-1,px(52)));
             LinearLayout.LayoutParams sectionParams=new LinearLayout.LayoutParams(-1,-2);
             sectionParams.topMargin=px(28);sectionParams.bottomMargin=px(44);
             contentRail.addView(section,sectionParams);
             List<View> rowViews=new ArrayList<>();contentRows.add(rowViews);
             recommendations.load(pkg,feed->{
                 if(destroyed||drawer||current!=serial||section.getParent()!=contentRail)return;
-                if(!HomePolicy.recommendations(store.flag("recommendations_master"),store.recommendations(pkg),!feed.items.isEmpty()))return;
+                if(!HomePolicy.recommendations(store.flag("recommendations_master"),store.recommendations(pkg),!feed.items.isEmpty())){section.setVisibility(View.GONE);return;}
+                section.removeAllViews();
                 TextView label=text(name(pkg),34,foreground());label.setTypeface(medium);label.setPadding(px(96),0,px(96),0);
                 LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(52));
                 labelParams.bottomMargin=px(16);section.addView(label,labelParams);
@@ -3736,6 +3870,7 @@ public final class MainActivity extends Activity {
                             @Override public void setImageBitmap(android.graphics.Bitmap bitmap) {
                                 super.setImageBitmap(bitmap);
                                 if(bitmap==null||destroyed||current!=serial||drawer)return;
+                                if(!instantFocus()){setAlpha(0f);animate().alpha(1f).setDuration(200).start();}
                                 naturalWidth[0]=artworkWidth(bitmap.getWidth(),bitmap.getHeight(),px(artHeight),screenWidth-px(96));
                                 android.view.ViewGroup.LayoutParams params=card.getLayoutParams();
                                 if(params!=null && params.width!=naturalWidth[0]) {
@@ -3842,7 +3977,7 @@ public final class MainActivity extends Activity {
         revealHorizontalFocus(view,0);
     }
     private void positionHomeSection(View focused) {
-        if(homeScroll==null||homePage==null||focused==null||!focused.hasFocus())return;
+        if(restoringPage||homeScroll==null||homePage==null||focused==null||!focused.hasFocus())return;
         View section=focused;
         if(appViews.contains(focused)||topPillViews.contains(focused)||header.hasFocus()) {
             homeScroll.smoothScrollTo(0,0);
@@ -3889,7 +4024,7 @@ public final class MainActivity extends Activity {
         drawerScrollAnimator.start();
     }
     private void centerDrawerChild(View focused) {
-        if(destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
+        if(restoringPage || destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
         if(focused==searchBar || (views.get("drawer.home")!=null&&focused==views.get("drawer.home")) || (views.get("drawer.settings")!=null&&focused==views.get("drawer.settings"))) {
             glideDrawerScrollTo(0);
             return;
@@ -3932,39 +4067,44 @@ public final class MainActivity extends Activity {
         recentSection.setClipChildren(false);recentSection.setClipToPadding(false);
         recentSection.setPadding(px(12),px(20),px(12),px(20));
         recentSection.setBackground(glassPanelDrawable(recentSection,26f,false));
-        int count=Math.max(4,hdmiInputs().size()+2);
-        int availableWidth=screenWidth-homePage.getPaddingLeft()-homePage.getPaddingRight()
-                -recentSection.getPaddingLeft()-recentSection.getPaddingRight();
-        int cardWidth=Math.max(1,(availableWidth-px(24)*(count-1))/count);
-        int cardHeight=Math.max(1,Math.round(cardWidth*9f/16f));
-        HorizontalScrollView scroll=new HorizontalScrollView(this) {
-            @Override public void playSoundEffect(int soundConstant) {
-                if(muteSystem())return;
-                super.playSoundEffect(soundConstant);
+        final LinearLayout section=recentSection;
+        final FrameLayout viewport=new FrameLayout(this);
+        viewport.setClipChildren(false);viewport.setClipToPadding(false);
+        section.addView(viewport,new LinearLayout.LayoutParams(-1,-2));
+        final List<View> rowViews=new ArrayList<>();contentRows.add(rowViews);
+        final int[] laidOutWidth={-1};
+        Runnable fitRow=()->{
+            int width=section.getWidth()-section.getPaddingLeft()-section.getPaddingRight();
+            if(width<=0 || width==laidOutWidth[0] || section!=recentSection)return;
+            laidOutWidth[0]=width;
+            View focused=getCurrentFocus();String focusedPkg=focused!=null&&rowViews.contains(focused)?String.valueOf(focused.getTag()):null;
+            if(recentSpringStage!=null)recentSpringStage.stop();
+            viewport.removeAllViews();rowViews.clear();
+            int gap=px(24),safeEdge=Math.max(px(40),px(glowRadiusSetting()+18));
+            RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),gap,safeEdge,Math.max(1f,focusZoomScale(true)));
+            LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setClipChildren(false);row.setClipToPadding(false);
+            int verticalPad=Math.max(px(40),px(glowRadiusSetting()+18));
+            row.setPadding(plan.edge,verticalPad,plan.edge,verticalPad);
+            for(int i=0;i<plan.widths.length;i++){
+                int cardWidth=plan.widths[i];
+                int cardHeight=Math.min(px(220),Math.max(1,Math.round(cardWidth*9f/16f)));
+                View tile=appTile(recent.get(i),cardWidth,cardHeight,true,true);
+                LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
+                if(i+1<plan.widths.length)cell.rightMargin=gap;
+                row.addView(tile,cell);rowViews.add(tile);
             }
-            @Override protected void dispatchDraw(android.graphics.Canvas canvas) {
-                int save=canvas.save();
-                canvas.clipRect(getScrollX(),getScrollY(),getScrollX()+getWidth(),getScrollY()+getHeight());
-                super.dispatchDraw(canvas);
-                canvas.restoreToCount(save);
+            recentSpringStage=new SpringStage(row,false);
+            viewport.addView(recentSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
+            applyViewSoundPolicy(viewport);wireNavigation();
+            if(focusedPkg!=null){
+                View restore=null;for(View tile:rowViews)if(focusedPkg.equals(tile.getTag()))restore=tile;
+                if(restore==null&&!rowViews.isEmpty())restore=rowViews.get(rowViews.size()-1);
+                if(restore!=null)restore.requestFocus();
             }
         };
-        scroll.setSoundEffectsEnabled(!muteSystem());scroll.setHorizontalScrollBarEnabled(false);
-        scroll.setClipChildren(true);scroll.setClipToPadding(false);scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setClipChildren(false);row.setClipToPadding(false);
-        int edgePadding=Math.max(px(40),px(glowRadiusSetting()+18));
-        row.setPadding(edgePadding,px(40),edgePadding,px(40));
-        List<View> rowViews=new ArrayList<>();contentRows.add(rowViews);
-        for(int i=0;i<recent.size();i++) {
-            View tile=appTile(recent.get(i),cardWidth,cardHeight,true,true);
-            LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
-            if(i+1<recent.size())cell.rightMargin=px(24);
-            row.addView(tile,cell);rowViews.add(tile);
-        }
-        recentSpringStage=new SpringStage(row,false);
-        scroll.addView(recentSpringStage.host);
-        recentSection.addView(scroll,new LinearLayout.LayoutParams(-1,-2));
+        section.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->fitRow.run());
+        section.post(fitRow);
         LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(72);
         homePage.addView(recentSection,Math.max(0,homePage.getChildCount()-1),place);
     }
@@ -5709,7 +5849,7 @@ public final class MainActivity extends Activity {
                         null,
                         ()->chooseApp("App recommendations",false,this::toggleAppRecommendations,this::recommendationMenu),
                         this::requestListings,
-                        ()->{recommendations.clear();updateHeader();updateRecommendationRows();toast("Shared content will be checked again");recommendationMenu();},
+                        ()->{recommendationRenderSerial=-1;recommendations.clear();updateHeader();updateRecommendationRows();toast("Shared content will be checked again");recommendationMenu();},
                         ()->info("Recommendations are optional","Each enabled app keeps its own recommendation row on Home while shared content is available. Moving focus to another app does not hide that row.\n\nThe master switch pauses all rows and the featured banner while remembering your choices. Enable individual apps from their hold-OK menu. Some apps or TVs do not share this data. No subscription details are collected.",this::recommendationMenu)),this::settingsMenu);
     }
     private void recommendationSizeDialog() {
@@ -6157,7 +6297,6 @@ public final class MainActivity extends Activity {
         boolean spatial=store.flag("ui_sounds_spatial",true);
         boolean pitch=store.flag("ui_sounds_pitch",true);
         boolean detents=store.flag("ui_sounds_detents",true);
-        boolean muteSys=store.flag("ui_sounds_mute_system",true);
 
         menu("UI sounds",Arrays.asList(
                 "§SOUND PACK",
@@ -6168,7 +6307,6 @@ public final class MainActivity extends Activity {
                 "Spatial stereo pan: "+onOff(spatial),
                 "Melodic glide pitch: "+onOff(pitch),
                 "Slider & switch detents: "+onOff(detents),
-                "Mute stock TV click: "+onOff(muteSys),
                 "§RESET",
                 "Restore sound defaults"),
                 Arrays.asList(
@@ -6199,11 +6337,6 @@ public final class MainActivity extends Activity {
                         ()->{ store.setFlag("ui_sounds_spatial",!spatial); soundMenu(back); },
                         ()->{ store.setFlag("ui_sounds_pitch",!pitch); soundMenu(back); },
                         ()->{ store.setFlag("ui_sounds_detents",!detents); soundMenu(back); },
-                        ()->{
-                            store.setFlag("ui_sounds_mute_system",!muteSys);
-                            syncSystemSoundMuting();
-                            soundMenu(back);
-                        },
                         null,
                         ()->{
                             store.setFlag("ui_sounds_enabled",true);
@@ -6212,7 +6345,6 @@ public final class MainActivity extends Activity {
                             store.setFlag("ui_sounds_spatial",true);
                             store.setFlag("ui_sounds_pitch",true);
                             store.setFlag("ui_sounds_detents",true);
-                            store.setFlag("ui_sounds_mute_system",true);
                             syncSystemSoundMuting();
                             if(sfx!=null) sfx.preview("wood",UiSoundEngine.roleSelect(),65);
                             toast("UI sounds restored to defaults");
@@ -6822,7 +6954,7 @@ public final class MainActivity extends Activity {
                         ?(greetingText()+"  ·  "+(curPhotoIdx[0]+1)+" / "+photos.size())
                         :greetingText());
             }
-            images.show(nextView,uri,Math.min(screenWidth,1920),Math.min(screenHeight,1080));
+            int[] wpSlideSize=targetWallpaperSize(); images.show(nextView,uri,wpSlideSize[0],wpSlideSize[1]);
             if(photos.size()>1 && autoTick[0]!=null) {
                 handler.postDelayed(autoTick[0],slideMs);
             }
@@ -6998,11 +7130,11 @@ public final class MainActivity extends Activity {
             activeBladeList=null; activeBladeAdapter=null; activeBladeLabels=null; activeBladeActions=null; menuScrollHistory.clear();
 
             if(closingHost!=null && closingHost.getChildCount()>0) {
-                View closingPanel=closingHost.getChildAt(0);
+                View closingPanel=closingHost.getChildAt(closingHost.getChildCount()-1);
                 closingPanel.animate()
                         .translationX(px(60))
                         .alpha(0f)
-                        .setDuration(260)
+                        .setDuration(focusDuration(280))
                         .setInterpolator(new DecelerateInterpolator(1.5f))
                         .start();
             }
@@ -7011,9 +7143,9 @@ public final class MainActivity extends Activity {
                 resetHomeStage3D(homeStage,true);
                 homeStage.postDelayed(()->{
                     try { if(closing.isShowing()) closing.dismiss(); } catch(Exception ignored) {}
-                    View restore=views.get(lastFocus);
-                    if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();
-                }, 280);
+                    if(activeBlade==null){View restore=views.get(lastFocus);
+                    if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();}
+                }, focusDuration(280));
             } else {
                 try { if(closing.isShowing()) closing.dismiss(); } catch(Exception ignored) {}
                 View restore=views.get(lastFocus);
@@ -7092,6 +7224,7 @@ public final class MainActivity extends Activity {
             });
             dialog.setContentView(host);
             dialog.setOnKeyListener((d,key,event)->{
+                if(handleRemoteSettingsKey(event))return true;
                 noteNavKey(key,event);
                 if(muteSystem() && dialog.getWindow()!=null) {
                     View bDecor=dialog.getWindow().getDecorView();
@@ -7128,8 +7261,8 @@ public final class MainActivity extends Activity {
                     activeBladeList=null;activeBladeAdapter=null;activeBladeLabels=null;activeBladeActions=null;menuScrollHistory.clear();
                     if(homeStage!=null) resetHomeStage3D(homeStage,true);
                 }
-                View restore=views.get(lastFocus);
-                if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();
+                if(activeBlade==null){View restore=views.get(lastFocus);
+                if(restore!=null && restore.isAttachedToWindow()) restore.requestFocus();}
             });
             Window window=dialog.getWindow();
             if(window!=null){
@@ -7150,16 +7283,24 @@ public final class MainActivity extends Activity {
                 }
             }
             panel.setTranslationX(px(65)); panel.setAlpha(0f);
-            panel.animate().translationX(0).alpha(1f).setDuration(320).setInterpolator(new DecelerateInterpolator(1.7f)).start();
+            panel.animate().translationX(0).alpha(1f).setDuration(focusDuration(320)).setInterpolator(new DecelerateInterpolator(1.7f)).start();
         } else {
-            bladeHost.removeAllViews();
-            bladeHost.addView(panel,floatingLp);
+            final FrameLayout host=bladeHost;
+            final View previous=host.getChildCount()>0?host.getChildAt(host.getChildCount()-1):null;
+            for(int i=host.getChildCount()-2;i>=0;i--)host.removeViewAt(i);
+            if(previous!=null && previous instanceof ViewGroup)((ViewGroup)previous).setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            host.addView(panel,floatingLp);
+            if(previous!=null){
+                previous.animate().cancel();
+                if(animate&&!instantFocus())previous.animate().alpha(0f).setDuration(160).withEndAction(()->host.removeView(previous)).start();
+                else host.removeView(previous);
+            }
             if(activeBlade!=null && activeBlade.getWindow()!=null && activeBlade.getWindow().getDecorView()!=null) {
                 applyViewSoundPolicy(activeBlade.getWindow().getDecorView());
             }
-            if(animate) {
-                panel.setTranslationX(px(16)); panel.setAlpha(0.6f);
-                panel.animate().translationX(0).alpha(1f).setDuration(120).start();
+            if(animate && !instantFocus()) {
+                panel.setTranslationX(px(16)); panel.setAlpha(0f);
+                panel.animate().translationX(0).alpha(1f).setDuration(200).setInterpolator(crispDecel).start();
             }
         }
         applyViewSoundPolicy(panel);
