@@ -624,8 +624,7 @@ public final class MainActivity extends Activity {
                 if (display != null) {
                     Display.Mode mode = display.getMode();
                     if (mode != null) {
-                        targetW = Math.max(targetW, mode.getPhysicalWidth());
-                        targetH = Math.max(targetH, mode.getPhysicalHeight());
+                        if(mode.getPhysicalWidth()>0 && mode.getPhysicalHeight()>0){targetW=mode.getPhysicalWidth();targetH=mode.getPhysicalHeight();}
                     }
                 }
             }
@@ -634,7 +633,8 @@ public final class MainActivity extends Activity {
         boolean isLowRam = am != null && am.isLowRamDevice();
         int maxW = isLowRam ? 1920 : 3840;
         int maxH = isLowRam ? 1080 : 2160;
-        return new int[]{ Math.min(maxW, Math.max(1280, targetW)), Math.min(maxH, Math.max(720, targetH)) };
+        float scale=Math.min(1f,Math.min((float)maxW/targetW,(float)maxH/targetH));
+        return new int[]{ Math.max(1,Math.round(targetW*scale)), Math.max(1,Math.round(targetH*scale)) };
     }
 
     private void updateBlurredWallpaper(android.graphics.Bitmap photo, String key) {
@@ -6167,8 +6167,9 @@ public final class MainActivity extends Activity {
         final String target=imageTarget;
         if(target.isEmpty())return;
         toast("Importing image…");
-        images.importImage(data.getData(),target.replaceAll("[^A-Za-z0-9._-]","_"),target.equals("background_image")?1920:640,
-                target.equals("background_image")?1080:360,(path,error)->{
+        int[] wallpaperSize=targetWallpaperSize();
+        images.importImage(data.getData(),target.replaceAll("[^A-Za-z0-9._-]","_"),target.equals("background_image")?wallpaperSize[0]:640,
+                target.equals("background_image")?wallpaperSize[1]:360,(path,error)->{
                     if(error!=null){info("Image import",error,this::backgroundMenu);return;}
                     String previous=store.value(target,"");
                     store.set(target,path);if(target.equals("background_image"))store.set("background","photo");

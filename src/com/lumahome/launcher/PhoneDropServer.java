@@ -68,7 +68,8 @@ final class PhoneDropServer {
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     private int[] wallpaperSize() {
-        int targetW = 1920, targetH = 1080;
+        android.util.DisplayMetrics fallback=context.getResources().getDisplayMetrics();
+        int targetW = Math.max(1,fallback.widthPixels), targetH = Math.max(1,fallback.heightPixels);
         try {
             android.view.WindowManager wm = (android.view.WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
             if (wm != null) {
@@ -76,13 +77,11 @@ final class PhoneDropServer {
                 if (display != null) {
                     android.util.DisplayMetrics realMetrics = new android.util.DisplayMetrics();
                     display.getRealMetrics(realMetrics);
-                    targetW = Math.max(targetW, realMetrics.widthPixels);
-                    targetH = Math.max(targetH, realMetrics.heightPixels);
+                    if(realMetrics.widthPixels>0 && realMetrics.heightPixels>0){targetW=realMetrics.widthPixels;targetH=realMetrics.heightPixels;}
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                         android.view.Display.Mode mode = display.getMode();
                         if (mode != null) {
-                            targetW = Math.max(targetW, mode.getPhysicalWidth());
-                            targetH = Math.max(targetH, mode.getPhysicalHeight());
+                            if(mode.getPhysicalWidth()>0 && mode.getPhysicalHeight()>0){targetW=mode.getPhysicalWidth();targetH=mode.getPhysicalHeight();}
                         }
                     }
                 }
@@ -92,7 +91,8 @@ final class PhoneDropServer {
         boolean isLowRam = am != null && am.isLowRamDevice();
         int maxW = isLowRam ? 1920 : 3840;
         int maxH = isLowRam ? 1080 : 2160;
-        return new int[]{ Math.min(maxW, Math.max(1280, targetW)), Math.min(maxH, Math.max(720, targetH)) };
+        float scale=Math.min(1f,Math.min((float)maxW/targetW,(float)maxH/targetH));
+        return new int[]{ Math.max(1,Math.round(targetW*scale)), Math.max(1,Math.round(targetH*scale)) };
     }
 
     private ServerSocket serverSocket;
@@ -610,7 +610,7 @@ final class PhoneDropServer {
             + "<div class='wrap'>\n"
             + "  <div class='badge'><span class='dot'></span>Connected to Luma Home TV · Local Wi-Fi</div>\n"
             + "  <h1>Wallpaper Drop</h1>\n"
-            + "  <p class='sub'>Send photos straight to your TV in 1080p. Zero sign-in — stays 100% on your home Wi-Fi.</p>\n"
+            + "  <p class='sub'>Send photos sized for your TV. Zero sign-in — stays on your home Wi-Fi.</p>\n"
             + "  <div class='glass'>\n"
             + "    <div class='seg-label'>TV Framing</div>\n"
             + "    <div class='seg'>\n"
@@ -667,7 +667,7 @@ final class PhoneDropServer {
             + "  for(let i=0;i<files.length;i++){\n"
             + "    txt.textContent='Sending '+(i+1)+' of '+files.length+' to TV…';\n"
             + "    try{\n"
-            + "      const blob=await render1080pJpeg(files[i],fitMode);\n"
+            + "      const blob=await renderTvJpeg(files[i],fitMode);\n"
             + "      const res=await fetch('/api/upload?t='+TOKEN,{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});\n"
             + "      if(res.ok)sent++;\n"
             + "    }catch(e){}\n"
@@ -678,13 +678,13 @@ final class PhoneDropServer {
             + "  if(sent>0){showToast(sent===1?'Live on your TV!':sent+' wallpapers sent to TV!');loadGallery();}\n"
             + "  else showToast('Could not read that image format');\n"
             + "}\n"
-            + "function render1080pJpeg(file,mode){\n"
+            + "function renderTvJpeg(file,mode){\n"
             + "  return new Promise((resolve,reject)=>{\n"
             + "    const url=URL.createObjectURL(file);\n"
             + "    const img=new Image();\n"
             + "    img.onload=()=>{\n"
             + "      URL.revokeObjectURL(url);\n"
-            + "      const W=1920,H=1080;\n"
+            + "      const W="+size[0]+",H="+size[1]+";\n"
             + "      const cv=document.createElement('canvas'); cv.width=W; cv.height=H;\n"
             + "      const ctx=cv.getContext('2d');\n"
             + "      ctx.fillStyle='#0B101A'; ctx.fillRect(0,0,W,H);\n"
