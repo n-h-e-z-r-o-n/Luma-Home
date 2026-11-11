@@ -23,7 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <a className="skip-link" href="#main">Skip to content</a>
     <header className="site-header wrap">
       <Link className="brand" href="/" aria-label="Luma Home home"><img src="/luma-icon.png" width="40" height="40" alt="" /><span>Luma Home</span></Link>
-      <nav aria-label="Main navigation"><Link href="/#experience">The experience</Link><Link href="/privacy">Privacy</Link><Link className="nav-contact" href="/support">Get in touch <span aria-hidden="true">↗</span></Link></nav>
+      <nav aria-label="Main navigation"><Link href="/#simulator">Simulator</Link><Link href="/#experience">The experience</Link><Link href="/privacy">Privacy</Link><Link className="nav-contact" href="/support">Support</Link><a className="nav-play-pill" href={site.playStoreUrl} target="_blank" rel="noopener noreferrer">Google Play <span aria-hidden="true">↗</span></a></nav>
     </header>
     {children}
     <footer className="site-footer wrap">

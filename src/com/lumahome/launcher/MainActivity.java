@@ -210,7 +210,8 @@ public final class MainActivity extends Activity {
         phoneDropActive=true;
         handler.removeCallbacks(phoneDropNetworkTick);
         handler.post(phoneDropNetworkTick);
-        if (dirty || root==null) { refreshApps(); dirty=false; recommendations.clear(); render(); }
+        boolean sceneShifted=checkCircadianScene();
+        if (dirty || root==null || sceneShifted) { refreshApps(); dirty=false; recommendations.clear(); render(); }
         else { recommendations.clear(); updateHeader(); updateRecommendationRows(); }
         resetIdleTimer();
         resetWallpaperSlideshowTimer();
@@ -4228,31 +4229,40 @@ public final class MainActivity extends Activity {
     }
     private void settingsMenu() {
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
+        add(labels,actions,"@sparkles|Luma Settings",this::lumaSettingsMenu);
+        add(labels,actions,"@settings|All TV Settings",()->openSystemIntent(Settings.ACTION_SETTINGS));
+        add(labels,actions,"@heart|Support the Developer",this::supportDeveloperMenu);
+        add(labels,actions,"@wifi|Customize Your Launcher from Your Phone",()->phoneDropPanel(this::settingsMenu));
+        menu("Settings",labels,actions,null);
+    }
+    private void lumaSettingsMenu() {
+        List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         String source=store.value("featured_source","");
         String bannerState=!store.flag("featured")?"Off":source.isEmpty()?"Choose app":name(source);
         String recState=store.flag("recommendations_master")?recommendationSizeName(recommendationSize()):"Off";
         add(labels,actions,"§PERSONALIZE",null);
-        add(labels,actions,"@palette|Appearance: "+themeName(),this::appearanceMenu);
-        add(labels,actions,"@wifi|Wallpapers & QR drop: "+backgroundSummary(),()->backgroundMenu(this::settingsMenu));
-        add(labels,actions,"@sparkles|Glass & surfaces: "+glassSurfacesSummary(),()->glassSurfacesMenu(this::settingsMenu));
-        add(labels,actions,"@sparkles|Focus glow: "+glowSummary(),()->focusGlowMenu(this::settingsMenu));
-        add(labels,actions,"@sparkles|Focus motion: "+focusMotionSummary(),()->focusMotionMenu(this::settingsMenu));
-        add(labels,actions,"@sound|UI sounds: "+(sfx!=null?sfx.summary():"On"),()->soundMenu(this::settingsMenu));
-        add(labels,actions,"@clock|Idle screensaver: "+screensaverSummary(),()->screensaverMenu(this::settingsMenu));
-        add(labels,actions,"@banner|Featured banner: "+bannerState,this::bannerMenu);
-        add(labels,actions,"@sparkles|Recommendations: "+recState,this::recommendationMenu);
+        add(labels,actions,"@sparkles|Living-room scenes\n"+sceneSummary(),()->scenesMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@palette|Appearance\n"+themeName()+" · "+getIconStyleSummary(),this::appearanceMenu);
+        add(labels,actions,"@wifi|Wallpapers & QR studio\n"+backgroundSummary(),()->backgroundMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@sparkles|Glass & surfaces\n"+glassSurfacesSummary(),()->glassSurfacesMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@sparkles|Focus glow\n"+glowSummary(),()->focusGlowMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@sparkles|Focus motion\n"+focusMotionSummary(),()->focusMotionMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@sound|UI sounds\n"+(sfx!=null?sfx.summary():"On"),()->soundMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@clock|Idle screensaver\n"+screensaverSummary(),()->screensaverMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@banner|Featured banner\n"+bannerState,this::bannerMenu);
+        add(labels,actions,"@sparkles|Recommendations\n"+recState,this::recommendationMenu);
         add(labels,actions,"@clock|Recent shortcuts: "+onOff(store.flag("recents")),()->{
-            store.setFlag("recents",!store.flag("recents"));render();settingsMenu();
+            store.setFlag("recents",!store.flag("recents"));render();lumaSettingsMenu();
         });
         if (!store.list("recent_apps").isEmpty()) {
             add(labels,actions,"Clear recent history",()->{
-                store.list("recent_apps",new ArrayList<>());render();toast("Local recent history cleared");settingsMenu();
+                store.list("recent_apps",new ArrayList<>());render();toast("Local recent history cleared");lumaSettingsMenu();
             });
         }
         if (!store.list("removed_favorites").isEmpty()) {
             add(labels,actions,"Restore all Home icons",()->{
                 store.list("removed_favorites",new ArrayList<>());store.setFlag("favorites_custom_only",false);
-                syncFavorites();render();toast("All regular apps restored to Home");settingsMenu();
+                syncFavorites();render();toast("All regular apps restored to Home");lumaSettingsMenu();
             });
         }
         add(labels,actions,"§TV & LAUNCHER",null);
@@ -4265,9 +4275,228 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@wifi|Wi-Fi & network ↗",()->openSystemIntent(Settings.ACTION_WIFI_SETTINGS,Settings.ACTION_WIRELESS_SETTINGS));
         add(labels,actions,"@sparkles|Manage apps ↗",()->openSystemIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS));
         add(labels,actions,"@settings|All TV settings ↗",()->openSystemIntent(Settings.ACTION_SETTINGS));
-        add(labels,actions,"@heart|Support the developer: M-Pesa & tips",this::supportDeveloperMenu);
+        add(labels,actions,"@heart|Support the developer\nM-Pesa & tips",this::supportDeveloperMenu);
         add(labels,actions,"@info|About Luma Home: v"+versionName(),this::aboutMenu);
-        menu("Luma Settings",labels,actions,null);
+        menu("Luma Settings",labels,actions,this::settingsMenu);
+    }
+    private static final String[] SCENE_STR_KEYS={
+            "background","background_treatment","theme","ui_surface_style",
+            "icon_style","icon_color","icon_shape","icon_background","icon_effects",
+            "glow_color_mode","focus_motion_style","focus_glass_style","clock_style","ui_sounds_pack"
+    };
+    private static final String[] SCENE_INT_KEYS={
+            "dimming","color_intensity","glass_frost","glass_sheen",
+            "icon_size_pct","glow_intensity","glow_radius","focus_spring_speed","focus_zoom_mode","clock_size"
+    };
+    private static final String[] SCENE_BOOL_KEYS={
+            "glass_refraction","ambient_glow","ui_sounds_enabled"
+    };
+    private String sceneDisplayName(String id) {
+        if("daylight".equals(id)) return "Daylight Gallery";
+        if("cinema".equals(id)) return "Cinema Night (OLED)";
+        if("study".equals(id)) return "Warm Study";
+        if("cyber".equals(id)) return "Liquid Cyber";
+        if("custom".equals(id)) return "Saved Look";
+        return "Custom";
+    }
+    private String sceneSummary() {
+        String cur=store.value("active_scene","");
+        String base=cur.isEmpty()?"Custom":sceneDisplayName(cur);
+        if(store.flag("scene_auto_day_night",false)) return base+" · Auto";
+        return base;
+    }
+    private void saveCustomSceneSnapshot() {
+        for(String k:SCENE_STR_KEYS) {
+            if(store.prefs.contains(k)) store.set("scene_custom.s."+k,store.value(k,""));
+        }
+        for(String k:SCENE_INT_KEYS) {
+            if(store.prefs.contains(k)) store.setNumber("scene_custom.i."+k,store.number(k,0));
+        }
+        for(String k:SCENE_BOOL_KEYS) {
+            if(store.prefs.contains(k)) store.setFlag("scene_custom.b."+k,store.flag(k,false));
+        }
+        store.setFlag("scene_custom_saved",true);
+        store.set("active_scene","custom");
+    }
+    private boolean applyScene(String id,boolean updateUi) {
+        if(id==null || id.isEmpty()) return false;
+        if("daylight".equals(id)) {
+            store.set("background","sky");
+            store.set("background_treatment","none");
+            store.setNumber("dimming",0);
+            store.set("theme","warm");
+            store.setNumber("color_intensity",70);
+            store.set("ui_surface_style","glass");
+            store.setFlag("glass_refraction",false);
+            store.setNumber("glass_frost",30);
+            store.setNumber("glass_sheen",1);
+            store.set("icon_style","brand");
+            store.set("icon_color","original");
+            store.set("icon_shape","squircle");
+            store.setNumber("icon_size_pct",100);
+            store.set("icon_background","auto");
+            store.set("icon_effects","shadow");
+            store.setFlag("ambient_glow",false);
+            store.set("focus_motion_style","liquid");
+            store.set("clock_style","modern");
+            store.set("ui_sounds_pack","dew");
+            store.setFlag("ui_sounds_enabled",true);
+        } else if("cinema".equals(id)) {
+            store.set("background","solid_black");
+            store.set("background_treatment","vignette");
+            store.setNumber("dimming",35);
+            store.set("theme","cool");
+            store.setNumber("color_intensity",45);
+            store.set("ui_surface_style","matte");
+            store.setFlag("glass_refraction",false);
+            store.setNumber("glass_frost",75);
+            store.setNumber("glass_sheen",0);
+            store.set("icon_style","dark");
+            store.set("icon_color","original");
+            store.set("icon_shape","circle");
+            store.setNumber("icon_size_pct",100);
+            store.set("icon_background","solid_dark");
+            store.set("icon_effects","border");
+            store.setFlag("ambient_glow",true);
+            store.setNumber("glow_intensity",32);
+            store.setNumber("glow_radius",34);
+            store.set("glow_color_mode","auto");
+            store.set("focus_motion_style","crisp");
+            store.set("clock_style","condensed");
+            store.set("ui_sounds_pack","pulse");
+            store.setFlag("ui_sounds_enabled",true);
+        } else if("study".equals(id)) {
+            store.set("background","ember");
+            store.set("background_treatment","blur");
+            store.setNumber("dimming",25);
+            store.set("theme","warm");
+            store.setNumber("color_intensity",85);
+            store.set("ui_surface_style","glass");
+            store.setFlag("glass_refraction",false);
+            store.setNumber("glass_frost",45);
+            store.setNumber("glass_sheen",0);
+            store.set("icon_style","paper");
+            store.set("icon_color","original");
+            store.set("icon_shape","rounded");
+            store.setNumber("icon_size_pct",100);
+            store.set("icon_background","auto");
+            store.set("icon_effects","depth");
+            store.setFlag("ambient_glow",false);
+            store.set("focus_motion_style","liquid");
+            store.set("clock_style","editorial");
+            store.set("ui_sounds_pack","wood");
+            store.setFlag("ui_sounds_enabled",true);
+        } else if("cyber".equals(id)) {
+            store.set("background","app_glow");
+            store.set("background_treatment","studio");
+            store.setNumber("dimming",20);
+            store.set("theme","wallpaper");
+            store.setNumber("color_intensity",95);
+            store.set("ui_surface_style","glass");
+            store.setFlag("glass_refraction",true);
+            store.setNumber("glass_frost",36);
+            store.setNumber("glass_sheen",2);
+            store.set("icon_style","glass");
+            store.set("icon_color","original");
+            store.set("icon_shape","squircle");
+            store.setNumber("icon_size_pct",115);
+            store.set("icon_background","glass");
+            store.set("icon_effects","border");
+            store.setFlag("ambient_glow",true);
+            store.setNumber("glow_intensity",68);
+            store.setNumber("glow_radius",52);
+            store.set("glow_color_mode","auto");
+            store.set("focus_motion_style","liquid");
+            store.set("clock_style","mono");
+            store.set("ui_sounds_pack","glass");
+            store.setFlag("ui_sounds_enabled",true);
+        } else if("custom".equals(id)) {
+            if(!store.flag("scene_custom_saved",false)) return false;
+            for(String k:SCENE_STR_KEYS) {
+                if(store.prefs.contains("scene_custom.s."+k)) store.set(k,store.value("scene_custom.s."+k,""));
+            }
+            for(String k:SCENE_INT_KEYS) {
+                if(store.prefs.contains("scene_custom.i."+k)) store.setNumber(k,store.number("scene_custom.i."+k,0));
+            }
+            for(String k:SCENE_BOOL_KEYS) {
+                if(store.prefs.contains("scene_custom.b."+k)) store.setFlag(k,store.flag("scene_custom.b."+k,false));
+            }
+        } else {
+            return false;
+        }
+        store.set("active_scene",id);
+        IconStylingEngine.clearCache();
+        resetWallpaperSlideshowTimer();
+        syncSystemSoundMuting();
+        if(updateUi && root!=null) {
+            refreshWallpaperPalette();
+            updateBackgroundInPlace();
+            rebuildContentInPlace();
+            updateWorkspaceAndMenuSurfaces();
+        }
+        return true;
+    }
+    private boolean checkCircadianScene() {
+        if(store==null || !store.flag("scene_auto_day_night",false)) return false;
+        int hour=java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        int min=java.util.Calendar.getInstance().get(java.util.Calendar.MINUTE);
+        boolean isDay=(hour>6 || (hour==6 && min>=0)) && (hour<19 || (hour==19 && min<30));
+        String target=isDay?store.value("scene_day_id","daylight"):store.value("scene_night_id","cinema");
+        if(!target.equals(store.value("active_scene",""))) {
+            return applyScene(target,false);
+        }
+        return false;
+    }
+    private void scenesMenu(Runnable back) {
+        String cur=store.value("active_scene","");
+        boolean hasCustom=store.flag("scene_custom_saved",false);
+        boolean autoShift=store.flag("scene_auto_day_night",false);
+        List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
+        add(labels,actions,"§ONE-TAP AMBIENCE PROFILES",null);
+        String[][] presets={
+                {"daylight","Daylight Gallery · Dynamic sky, warm glass, squircle brand icons & Dewdrop audio"},
+                {"cinema","Cinema Night (OLED) · Pitch black, smoked slate, dark icons & Velvet Pulse audio"},
+                {"study","Warm Study · Ember glow, paper-like icons, editorial serif clock & Warm Wood audio"},
+                {"cyber","Liquid Cyber · App-color glow, refraction glass, neon halo & Liquid Glass audio"}
+        };
+        for(String[] p:presets) {
+            final String id=p[0];
+            boolean act=id.equals(cur);
+            add(labels,actions,(act?"✓ ":"○ ")+p[1],()->{
+                applyScene(id,true);
+                if(sfx!=null) sfx.preview(store.value("ui_sounds_pack","wood"),UiSoundEngine.roleSelect(),-1);
+                toast("Applied "+sceneDisplayName(id));
+                scenesMenu(back);
+            });
+        }
+        add(labels,actions,"§YOUR CUSTOM SNAPSHOT",null);
+        if(hasCustom) {
+            boolean act="custom".equals(cur);
+            add(labels,actions,(act?"✓ ":"○ ")+"Saved Look · Restore your personal snapshot",()->{
+                if(applyScene("custom",true)) {
+                    toast("Restored your saved look");
+                    scenesMenu(back);
+                }
+            });
+        }
+        add(labels,actions,"@sparkles|Save current look as my snapshot",()->{
+            saveCustomSceneSnapshot();
+            toast("Current appearance saved to your snapshot");
+            scenesMenu(back);
+        });
+        add(labels,actions,"§CIRCADIAN AUTO-SHIFT",null);
+        add(labels,actions,"Day / Night auto-shift: "+onOff(autoShift),()->{
+            boolean next=!autoShift;
+            store.setFlag("scene_auto_day_night",next);
+            if(next && checkCircadianScene()) {
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
+                rebuildContentInPlace();
+                updateWorkspaceAndMenuSurfaces();
+            }
+            scenesMenu(back);
+        });
+        menu("Living-room scenes",labels,actions,back);
     }
     private Intent mirroringConnectionSettings() {
         Intent intent=new Intent("com.tcl.miracast.app.DeviceList").setPackage("com.tcl.miracast");
@@ -4391,7 +4620,7 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("contrast",!store.flag("contrast"));rebuildContentInPlace();updateWorkspaceAndMenuSurfaces();appearanceMenu();},
                         ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();rebuildContentInPlace();appearanceMenu();},
                         null,
-                        ()->perspectiveMenu(this::appearanceMenu)),this::settingsMenu);
+                        ()->perspectiveMenu(this::appearanceMenu)),this::lumaSettingsMenu);
     }
 
     private IconStylingEngine.Config iconConfig() {
@@ -5305,6 +5534,156 @@ public final class MainActivity extends Activity {
         });
         menu("Background",labels,actions,back);
     }
+    private static String jsonEscape(String s) {
+        if(s==null) return "";
+        return s.replace("\\","\\\\").replace("\"","\\\"").replace("\n"," ").replace("\r"," ");
+    }
+    private String buildStudioStateJson() {
+        StringBuilder sb=new StringBuilder(2048);
+        sb.append('{');
+        sb.append("\"activeScene\":\"").append(jsonEscape(store.value("active_scene",""))).append("\",");
+        sb.append("\"sceneLabel\":\"").append(jsonEscape(sceneSummary())).append("\",");
+        sb.append("\"autoDayNight\":").append(store.flag("scene_auto_day_night",false)).append(',');
+        sb.append("\"background\":\"").append(jsonEscape(store.value("background","app_glow"))).append("\",");
+        sb.append("\"theme\":\"").append(jsonEscape(store.value("theme","warm"))).append("\",");
+        sb.append("\"glassFrost\":").append(glassFrostDepth()).append(',');
+        sb.append("\"colorIntensity\":").append(colorIntensity()).append(',');
+        sb.append("\"iconStyle\":\"").append(jsonEscape(store.value("icon_style","brand"))).append("\",");
+        sb.append("\"iconShape\":\"").append(jsonEscape(store.value("icon_shape","circle"))).append("\",");
+        sb.append("\"iconSize\":").append(store.number("icon_size_pct",100)).append(',');
+        sb.append("\"clockStyle\":\"").append(jsonEscape(store.value("clock_style","modern"))).append("\",");
+        sb.append("\"soundPack\":\"").append(jsonEscape(sfx!=null?sfx.pack():store.value("ui_sounds_pack","wood"))).append("\",");
+        sb.append("\"ambientGlow\":").append(store.flag("ambient_glow",false)).append(',');
+        sb.append("\"labels\":").append(store.flag("labels",false)).append(',');
+        sb.append("\"showDock\":").append(store.flag("show_dock",true)).append(',');
+        sb.append("\"weatherCity\":\"").append(jsonEscape(store.value("weather_custom_city",""))).append("\",");
+        sb.append("\"apps\":[");
+        List<String> favs=favorites();
+        List<String> ordered=new ArrayList<>(favs);
+        for(AppCatalog.App app:apps) {
+            if(!ordered.contains(app.pkg)) ordered.add(app.pkg);
+        }
+        for(int i=0;i<ordered.size();i++) {
+            String pkg=ordered.get(i);
+            boolean pinned=favs.contains(pkg);
+            if(i>0) sb.append(',');
+            sb.append("{\"pkg\":\"").append(jsonEscape(pkg)).append("\",")
+              .append("\"name\":\"").append(jsonEscape(name(pkg))).append("\",")
+              .append("\"pinned\":").append(pinned).append('}');
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+    private String handleStudioActionOnUi(Map<String,String> params) {
+        if(destroyed || store==null) return "{\"ok\":false}";
+        String op=params.getOrDefault("op","");
+        String msg="Updated on TV";
+        if("scene".equals(op)) {
+            String sc=params.getOrDefault("scene","");
+            if(applyScene(sc,true)) {
+                if(sfx!=null) sfx.preview(store.value("ui_sounds_pack","wood"),UiSoundEngine.roleSelect(),-1);
+                msg="Applied "+sceneDisplayName(sc);
+                toast(msg);
+            } else {
+                msg="Save a custom look first";
+            }
+        } else if("save_scene".equals(op)) {
+            saveCustomSceneSnapshot();
+            msg="Saved your current look!";
+            toast(msg);
+        } else if("set".equals(op)) {
+            String k=params.getOrDefault("key","");
+            String v=params.getOrDefault("val","");
+            if(!k.isEmpty()) {
+                store.set(k,v);
+                if(k.startsWith("icon_")) IconStylingEngine.clearCache();
+                if("ui_sounds_pack".equals(k)) {
+                    store.setFlag("ui_sounds_enabled",true);
+                    syncSystemSoundMuting();
+                    if(sfx!=null) sfx.preview(v,UiSoundEngine.roleSelect(),-1);
+                }
+                resetWallpaperSlideshowTimer();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
+                rebuildContentInPlace();
+                updateWorkspaceAndMenuSurfaces();
+            }
+        } else if("num".equals(op)) {
+            String k=params.getOrDefault("key","");
+            int v=0;
+            try { v=Integer.parseInt(params.getOrDefault("val","0")); } catch(Exception ignored) {}
+            if(!k.isEmpty()) {
+                store.setNumber(k,v);
+                if(k.startsWith("icon_")) IconStylingEngine.clearCache();
+                refreshGlassSurfaces();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
+                rebuildContentInPlace();
+                updateWorkspaceAndMenuSurfaces();
+            }
+        } else if("toggle".equals(op)) {
+            String k=params.getOrDefault("key","");
+            if(!k.isEmpty()) {
+                boolean def="show_dock".equals(k);
+                boolean next=!store.flag(k,def);
+                store.setFlag(k,next);
+                if("scene_auto_day_night".equals(k) && next) checkCircadianScene();
+                refreshWallpaperPalette();
+                updateBackgroundInPlace();
+                rebuildContentInPlace();
+                updateWorkspaceAndMenuSurfaces();
+            }
+        } else if("city".equals(op)) {
+            String city=params.getOrDefault("city","").trim();
+            store.set("weather_custom_city",city);
+            if(weatherService!=null) weatherService.fetch(store,true,this::updateGlanceWeather);
+            rebuildContentInPlace();
+            msg=city.isEmpty()?"Weather set to Auto-detect":"Weather city: "+city;
+        } else if("pin_app".equals(op)) {
+            String pkg=params.getOrDefault("pkg","");
+            if(byPackage.containsKey(pkg)) {
+                List<String> favs=favorites();
+                List<String> removed=store.list("removed_favorites");
+                if(favs.contains(pkg)) {
+                    if(!removed.contains(pkg)) removed.add(pkg);
+                    store.list("removed_favorites",removed);
+                    favs.remove(pkg);
+                    store.list("favorites",favs);
+                    msg="Removed "+name(pkg)+" from Home";
+                } else {
+                    removed.remove(pkg);
+                    store.list("removed_favorites",removed);
+                    favs.add(pkg);
+                    store.list("favorites",favs);
+                    msg="Added "+name(pkg)+" to Home";
+                }
+                rebuildContentInPlace();
+            }
+        } else if("move_app".equals(op)) {
+            String pkg=params.getOrDefault("pkg","");
+            int dir=0;
+            try { dir=Integer.parseInt(params.getOrDefault("dir","0")); } catch(Exception ignored) {}
+            List<String> list=favorites();
+            int from=list.indexOf(pkg), to=from+dir;
+            if(from>=0 && to>=0 && to<list.size()) {
+                list.remove(from); list.add(to,pkg);
+                store.list("favorites",list);
+                rebuildContentInPlace();
+                msg="Moved "+name(pkg);
+            }
+        } else if("rename_app".equals(op)) {
+            String pkg=params.getOrDefault("pkg","");
+            String nm=params.getOrDefault("name","").trim();
+            if(byPackage.containsKey(pkg)) {
+                store.set("name."+pkg,nm.isEmpty()?byPackage.get(pkg).originalName:nm);
+                refreshApps();
+                rebuildContentInPlace();
+                msg="Renamed to "+name(pkg);
+            }
+        }
+        if(phoneDropPanelListener!=null) phoneDropPanelListener.onPhoneConnected();
+        return "{\"ok\":true,\"message\":\""+jsonEscape(msg)+"\",\"state\":"+buildStudioStateJson()+"}";
+    }
     private void ensurePhoneDrop() {
         if(phoneDrop!=null && phoneDrop.isRunning())return;
         PhoneDropServer server=new PhoneDropServer(this,store,new PhoneDropServer.Listener(){
@@ -5324,6 +5703,12 @@ public final class MainActivity extends Activity {
             public void onSlideshowChanged(int minutes){
                 store.setNumber("wallpaper_interval_min",minutes);resetWallpaperSlideshowTimer();
                 if(phoneDropPanelListener!=null)phoneDropPanelListener.onSlideshowChanged(minutes);
+            }
+            public String onStudioStateRequested(){
+                return buildStudioStateJson();
+            }
+            public String onStudioAction(Map<String,String> params){
+                return handleStudioActionOnUi(params);
             }
         });
         if(server.start())phoneDrop=server;else server.stop();
@@ -5489,7 +5874,7 @@ public final class MainActivity extends Activity {
                 statusPill.setBackground(shapeRadius(0x2410B981,0x5534D399,1,14));
                 dot.setBackground(shapeRadius(0xFF34D399,0,0,5));
                 statusTxt.setTextColor(0xFFA7F3D0);
-                statusTxt.setText("Phone connected · Choose photos!");
+                statusTxt.setText("Phone connected · Customize live!");
             }
             @Override public void onWallpaperReceived(String fileUri,int sessionCount) {
                 if(destroyed) return;
@@ -5538,7 +5923,7 @@ public final class MainActivity extends Activity {
         box.addView(qrStage,qp);
 
         // Concise instructions + fallback URL
-        TextView steps=text("1. Point your phone camera at the QR code\n2. Pick photos from Camera Roll, Google Photos, or Drive — zero login!",17,0xEAFFFFFF);
+        TextView steps=text("1. Scan the QR code with your phone camera\n2. Customize scenes, icons, glass, Home apps & send wallpapers live!",17,0xEAFFFFFF);
         steps.setLineSpacing(px(3),1f);
         box.addView(steps,new LinearLayout.LayoutParams(-1,-2));
 
@@ -5582,7 +5967,7 @@ public final class MainActivity extends Activity {
         lp.topMargin=px(12);
         box.addView(liveRow,lp);
 
-        showBladePanel("Phone Drop",box,"Done",this::closeBlade,()->{
+        showBladePanel("Customize from Phone",box,"Done",this::closeBlade,()->{
             if(back!=null) back.run();
         },null);
         phoneDropPanelListener=panelListener;
@@ -5593,7 +5978,7 @@ public final class MainActivity extends Activity {
                 statusTxt.setText("Connect the TV to your home network");
             }else{
                 qrImg.setImageBitmap(QrCode.encodeBitmap(url,px(236),3,0xFF0B101A,0xFFFFFFFF));
-                urlPill.setText(url);statusTxt.setText("Ready for phone uploads on your home network");
+                urlPill.setText(url);statusTxt.setText("Ready for phone customization & wallpapers");
             }
         };
         phoneDropAddressUi.run();
@@ -5850,7 +6235,7 @@ public final class MainActivity extends Activity {
                         ()->chooseApp("App recommendations",false,this::toggleAppRecommendations,this::recommendationMenu),
                         this::requestListings,
                         ()->{recommendationRenderSerial=-1;recommendations.clear();updateHeader();updateRecommendationRows();toast("Shared content will be checked again");recommendationMenu();},
-                        ()->info("Recommendations are optional","Each enabled app keeps its own recommendation row on Home while shared content is available. Moving focus to another app does not hide that row.\n\nThe master switch pauses all rows and the featured banner while remembering your choices. Enable individual apps from their hold-OK menu. Some apps or TVs do not share this data. No subscription details are collected.",this::recommendationMenu)),this::settingsMenu);
+                        ()->info("Recommendations are optional","Each enabled app keeps its own recommendation row on Home while shared content is available. Moving focus to another app does not hide that row.\n\nThe master switch pauses all rows and the featured banner while remembering your choices. Enable individual apps from their hold-OK menu. Some apps or TVs do not share this data. No subscription details are collected.",this::recommendationMenu)),this::lumaSettingsMenu);
     }
     private void recommendationSizeDialog() {
         final int[] selected={recommendationSize()};
@@ -5941,7 +6326,7 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("hero_sound",!store.flag("hero_sound"));render();bannerMenu();},
                         null,
                         ()->info("Clock fallback","The clock appears when no source is selected, recommendations are disabled, the app shares no accessible content, or the artwork cannot load. Your source choice is kept when you turn the banner off.",this::bannerMenu),
-                        ()->{store.setFlag("featured",false);store.set("featured_source","");render();bannerMenu();}),this::settingsMenu);
+                        ()->{store.setFlag("featured",false);store.set("featured_source","");render();bannerMenu();}),this::lumaSettingsMenu);
         if (!source.isEmpty() && recommendations.cached(source)==null) recommendations.load(source,feed->{ /* Cache availability without changing the user's choices. */ });
     }
     private void inputMenu() {
@@ -5954,8 +6339,8 @@ public final class MainActivity extends Activity {
                 store.setFlag(key,!store.flag(key,!input.isHidden(this)));render();inputMenu();
             });
         }
-        if(labels.isEmpty()){info("HDMI inputs","This device does not expose built-in HDMI inputs. The app and settings dock remain available.",this::settingsMenu);return;}
-        menu("HDMI inputs",labels,actions,this::settingsMenu);
+        if(labels.isEmpty()){info("HDMI inputs","This device does not expose built-in HDMI inputs. The app and settings dock remain available.",this::lumaSettingsMenu);return;}
+        menu("HDMI inputs",labels,actions,this::lumaSettingsMenu);
     }
     private ResolveInfo defaultHome(){
         return getPackageManager().resolveActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),PackageManager.MATCH_DEFAULT_ONLY);
@@ -5988,7 +6373,7 @@ public final class MainActivity extends Activity {
                         ()->{choosingLuma=false;launcherManager(false);},
                         null,
                         this::otherHome,
-                        ()->info("Recovery","Device settings remain available in Luma Settings.\n\nYou can open another enabled launcher here at any time. Restoring an app previously disabled through ADB requires the approved computer-side undo commands. Luma Home cannot silently re-enable protected system apps.",this::defaultLauncherMenu)),this::settingsMenu);
+                        ()->info("Recovery","Device settings remain available in Luma Settings.\n\nYou can open another enabled launcher here at any time. Restoring an app previously disabled through ADB requires the approved computer-side undo commands. Luma Home cannot silently re-enable protected system apps.",this::defaultLauncherMenu)),this::lumaSettingsMenu);
     }
     private void finishLauncherSetup(){
         menu("Use Luma Home",Arrays.asList("Disable other launchers","Done"),
@@ -6137,7 +6522,7 @@ public final class MainActivity extends Activity {
         menu("About Luma Home",Arrays.asList("Version: "+versionName(),"Your privacy","Open-source license"),Arrays.asList(
                 ()->info("Luma Home","A personal Android TV home screen. Home apps, visual choices, recommendation switches and banner source are stored locally on this TV.",this::aboutMenu),
                 ()->info("Local preferences","Luma Home has no analytics or account sign-in. Optional recent history records only apps launched here and can be cleared. Imported images are copied locally. Shared artwork is fetched only for enabled content; streaming apps retain their own accounts and subscriptions.",this::aboutMenu),
-                ()->{try(java.io.InputStream stream=getAssets().open("LICENSE")){java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();byte[] b=new byte[2048];int n;while((n=stream.read(b))!=-1)bytes.write(b,0,n);info("MIT license",bytes.toString("UTF-8"),this::aboutMenu);}catch(Exception e){toast("License could not be opened");}}),this::settingsMenu);
+                ()->{try(java.io.InputStream stream=getAssets().open("LICENSE")){java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();byte[] b=new byte[2048];int n;while((n=stream.read(b))!=-1)bytes.write(b,0,n);info("MIT license",bytes.toString("UTF-8"),this::aboutMenu);}catch(Exception e){toast("License could not be opened");}}),this::lumaSettingsMenu);
     }
     private void pickImage(String target) {
         Intent pick=new Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE);
