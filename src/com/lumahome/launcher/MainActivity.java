@@ -304,6 +304,41 @@ public final class MainActivity extends Activity {
             if(event.getAction()==KeyEvent.ACTION_UP) dismissIdleClock();
             return true;
         }
+
+        if(event!=null && (activeBlade==null || !activeBlade.isShowing())) {
+            int code=event.getKeyCode();
+            if(code==KeyEvent.KEYCODE_DPAD_LEFT || code==KeyEvent.KEYCODE_DPAD_RIGHT
+                    || code==KeyEvent.KEYCODE_DPAD_UP || code==KeyEvent.KEYCODE_DPAD_DOWN) {
+                if(getWindow()!=null && getWindow().superDispatchKeyEvent(event)) {
+                    return true;
+                }
+                int direction=(code==KeyEvent.KEYCODE_DPAD_LEFT)?View.FOCUS_LEFT
+                        :(code==KeyEvent.KEYCODE_DPAD_RIGHT)?View.FOCUS_RIGHT
+                        :(code==KeyEvent.KEYCODE_DPAD_UP)?View.FOCUS_UP:View.FOCUS_DOWN;
+                if(event.getAction()==KeyEvent.ACTION_DOWN) {
+                    View current=getCurrentFocus();
+                    if(current!=null) {
+                        View next=current.focusSearch(direction);
+                        if(next!=null && next!=current) {
+                            next.requestFocus(direction);
+                            return true;
+                        } else if(sfx!=null) {
+                            sfx.playDetent(0.5f,50);
+                            return true;
+                        }
+                    } else if(root!=null) {
+                        View next=root.focusSearch(direction);
+                        if(next!=null) {
+                            next.requestFocus(direction);
+                            return true;
+                        }
+                    }
+                } else if(event.getAction()==KeyEvent.ACTION_UP) {
+                    return true;
+                }
+            }
+        }
+
         return super.dispatchKeyEvent(event);
     }
     private boolean isSettingsKey(int code) {
