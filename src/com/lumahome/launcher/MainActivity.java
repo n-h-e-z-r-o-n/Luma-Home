@@ -90,6 +90,9 @@ public final class MainActivity extends Activity {
     private FrameLayout root, content, header, homeStage;
     private View homeStageBorder, homeStageShadow, homeStageAmbientGlow;
     private AmbientGlowDrawable ambientGlowDrawable;
+    private LiquidAuraDrawable liquidAuraDrawable;
+    private float currentAuraFocalX = 0.35f;
+    private int currentAuraSecondary = 0xFF4A3430;
     private android.animation.ValueAnimator stageAmbientColorAnimator;
     private int currentAmbientPrimary = 0, currentAmbientSecondary = 0;
     private int photoAmbientPrimary = 0, photoAmbientSecondary = 0;
@@ -151,6 +154,8 @@ public final class MainActivity extends Activity {
     private final Runnable wallpaperSlideshowTick=this::advanceWallpaperSlideshow;
     private android.graphics.Bitmap frostedBackdrop;
     private android.graphics.BitmapShader frostedShader;
+    private android.graphics.Bitmap liquidBackdrop;
+    private android.graphics.BitmapShader liquidShader;
     private String frostedBackdropKey="";
     private String overrideTreatmentStyle;
     private int overrideTreatmentIntensity=-1;
@@ -539,14 +544,14 @@ public final class MainActivity extends Activity {
     private String uiSurfaceStyle() { return store.value("ui_surface_style","glass"); }
     private String uiSurfaceStyleName() {
         String st=uiSurfaceStyle();
-        return "matte".equals(st)?"Matte":"solid".equals(st)?"Solid dark":"Liquid glass";
+        return "matte".equals(st)?"Frosted glass":"solid".equals(st)?"Solid dark":"Liquid glass";
     }
-    private boolean glassRefractionEnabled() { return store.flag("glass_refraction",false); }
-    private int glassFrostDepth() { return Math.max(25,Math.min(92,store.number("glass_frost",25))); }
-    private String glassFrostName(int v) { return v<45?"Crystal":v<=72?"Balanced":"Smoked"; }
-    private int glassSheenMode() { return Math.max(0,Math.min(2,store.number("glass_sheen",0))); }
-    private String glassSheenName() { int m=glassSheenMode(); return m==0?"Subtle":m==2?"Bright":"Balanced"; }
-    private float sheenMultiplier() { int m=glassSheenMode(); return m==0?0.55f:m==2?1.48f:1.0f; }
+    private boolean glassRefractionEnabled() { return "glass".equals(uiSurfaceStyle()) || store.flag("glass_refraction",true); }
+    private int glassFrostDepth() { return Math.max(0,Math.min(100,store.number("glass_frost",0))); }
+    private String glassFrostName(int v) { return v==0?"Clear":v<45?"Crystal":v<=72?"Balanced":"Smoked"; }
+    private int glassSheenMode() { return Math.max(0,Math.min(3,store.number("glass_sheen",1))); }
+    private String glassSheenName() { int m=glassSheenMode(); return m==0?"None":m==1?"Subtle":m==3?"Bright":"Balanced"; }
+    private float sheenMultiplier() { int m=glassSheenMode(); return m==0?0.0f:m==1?0.55f:m==3?1.48f:1.0f; }
     private String glassSurfacesSummary() {
         if("solid".equals(uiSurfaceStyle())) return "Solid dark";
         return uiSurfaceStyleName()+" · "+glassFrostDepth()+"%";
@@ -605,10 +610,24 @@ public final class MainActivity extends Activity {
             android.graphics.Rect saved=new android.graphics.Rect(bg.getBounds());
             try { bg.setBounds(0,0,bw,bh); bg.draw(cv); } finally { bg.setBounds(saved); }
             if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+            int lw=960, lh=540;
+            if(liquidBackdrop==null || liquidBackdrop.getWidth()!=lw || liquidBackdrop.getHeight()!=lh) {
+                liquidBackdrop=android.graphics.Bitmap.createBitmap(lw,lh,android.graphics.Bitmap.Config.ARGB_8888);
+            }
+            android.graphics.Canvas lcv=new android.graphics.Canvas(liquidBackdrop);
+            lcv.drawColor(0xFF0B101A);
+            android.graphics.Rect savedL=new android.graphics.Rect(bg.getBounds());
+            try { bg.setBounds(0,0,lw,lh); bg.draw(lcv); } finally { bg.setBounds(savedL); }
+            if(dimAlpha>0) lcv.drawColor(Color.argb(dimAlpha,0,0,0));
+            liquidShader=new android.graphics.BitmapShader(liquidBackdrop,
+                    android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+
             blurBitmapInPlace(frostedBackdrop,6);
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
+            LiquidGlassRenderer.invalidateBackdropCache();
+            refreshGlassSurfaces();
             if(treatmentBlurLayer!=null && !"photo".equals(store.value("background","app_glow"))) {
                 treatmentBlurLayer.setImageBitmap(frostedBackdrop);
                 syncTreatmentLayers();
@@ -693,20 +712,156 @@ public final class MainActivity extends Activity {
             android.graphics.Paint bp=new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
             cv.drawBitmap(photo,null,dst,bp);
             if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
+            int lw=960, lh=540;
+            if(liquidBackdrop==null || liquidBackdrop.getWidth()!=lw || liquidBackdrop.getHeight()!=lh) {
+                liquidBackdrop=android.graphics.Bitmap.createBitmap(lw,lh,android.graphics.Bitmap.Config.ARGB_8888);
+            }
+            android.graphics.Canvas lcv=new android.graphics.Canvas(liquidBackdrop);
+            lcv.drawColor(0xFF0B101A);
+            float lscale=Math.max((float)lw/pw,(float)lh/ph);
+            float ldw=pw*lscale, ldh=ph*lscale;
+            android.graphics.RectF ldst=new android.graphics.RectF((lw-ldw)/2f,(lh-ldh)/2f,(lw+ldw)/2f,(lh+ldh)/2f);
+            lcv.drawBitmap(photo,null,ldst,bp);
+            if(dimAlpha>0) lcv.drawColor(Color.argb(dimAlpha,0,0,0));
+            liquidShader=new android.graphics.BitmapShader(liquidBackdrop,
+                    android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+
             blurBitmapInPlace(frostedBackdrop,6);
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
+            LiquidGlassRenderer.invalidateBackdropCache();
             refreshGlassSurfaces();
         } catch(Exception|OutOfMemoryError ignored) {}
     }
 
     private void refreshGlassSurfaces() {
-        if(dockBar!=null) dockBar.invalidate();
-        if(recentSection!=null) recentSection.invalidate();
-        if(searchBar!=null) searchBar.invalidate();
-        for(View pill:topPillViews) pill.invalidate();
-        if(activeBladeBox!=null) activeBladeBox.invalidate();
+        runOnUiThread(() -> {
+            if(dockBar!=null) dockBar.invalidate();
+            if(recentSection!=null) recentSection.invalidate();
+            if(searchBar!=null) searchBar.invalidate();
+            for(View pill:topPillViews) if(pill!=null) pill.invalidate();
+            if(activeBladeBox!=null) activeBladeBox.invalidate();
+        });
+    }
+
+    private static final class LiquidPatchState {
+        android.graphics.Bitmap patch;
+        String key="";
+        int locX, locY, w, h, frost;
+        float rad, sheen;
+    }
+
+    private void drawRefractedBackdrop(android.graphics.Canvas c,android.graphics.RectF r,float rad,
+            boolean isBlade,boolean isGlass,View anchor,android.graphics.Paint p,android.graphics.Matrix mat,int[] loc,LiquidPatchState state) {
+        if(anchor==null || screenWidth<=0 || screenHeight<=0) return;
+        if(isGlass && liquidBackdrop!=null && state!=null) {
+            anchor.getLocationOnScreen(loc);
+            int iw=Math.round(r.width()), ih=Math.round(r.height());
+            int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
+            float sh=sheenMultiplier();
+            boolean needRender = state.patch==null || !frostedBackdropKey.equals(state.key)
+                    || Math.abs(state.locX - loc[0]) > 4 || Math.abs(state.locY - loc[1]) > 4
+                    || state.w!=iw || state.h!=ih || Math.abs(state.rad-rad)>0.5f
+                    || state.frost!=frost || Math.abs(state.sheen-sh)>0.01f;
+            if(needRender) {
+                float bevelW=isBlade?px(12f):px(26f);
+                float refrH=isBlade?px(20f):px(56f);
+                float effRad=isBlade?0f:rad;
+                int tintCol=themed(0xFF171114,0xFF0E1725);
+                float tintA=Math.min(0.68f,frost/145f);
+                float spec=Math.min(0.95f,0.42f*sh);
+                state.patch=LiquidGlassRenderer.renderRefractedPatch(
+                        liquidBackdrop,screenWidth,screenHeight,loc[0],loc[1],
+                        r.width(),r.height(),effRad,bevelW,refrH,
+                        0.14f,1.65f,spec,tintCol,tintA,state.patch);
+                state.key=frostedBackdropKey;
+                state.locX=loc[0]; state.locY=loc[1]; state.w=iw; state.h=ih; state.rad=rad;
+                state.frost=frost; state.sheen=sh;
+            }
+            if(state.patch!=null) {
+                LiquidGlassRenderer.drawPatch(c,state.patch,r,p);
+            }
+        } else if(!isGlass && frostedShader!=null && frostedBackdrop!=null) {
+            anchor.getLocationOnScreen(loc);
+            mat.reset();
+            mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
+            mat.postTranslate(-loc[0],-loc[1]);
+            frostedShader.setLocalMatrix(mat);
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setShader(frostedShader);
+            if(isBlade) c.drawRect(r,p); else c.drawRoundRect(r,rad,rad,p);
+            p.setShader(null);
+        }
+    }
+
+    private void drawLiquidCausticsAndRim(android.graphics.Canvas c,android.graphics.RectF r,float rad,
+            boolean isBlade,boolean focused,int tintCol,float sh,android.graphics.Paint p) {
+        if(isBlade) {
+            if(sh > 0.001f) {
+                float gleamH=Math.min(r.height(),px(280));
+                c.save();
+                c.clipRect(r.left,r.top,r.right,r.top+gleamH);
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+gleamH,
+                        Color.argb(Math.min(92,Math.round(34*sh)),255,255,255),0x00FFFFFF,
+                        android.graphics.Shader.TileMode.CLAMP));
+                c.drawRect(r,p);
+                c.restore();
+                p.setShader(null);
+            }
+            return;
+        }
+        if(sh > 0.001f) {
+            // Diagonal Fresnel & internal caustic glow (bright top-left, crystal-clear center, subtle bottom-right bounce)
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            int topGlow=Color.argb(Math.min(150,Math.round((focused?76:48)*sh)),255,255,255);
+            int botCaustic=Color.argb(Math.min(72,Math.round((focused?38:22)*sh)),215,240,255);
+            p.setShader(new android.graphics.LinearGradient(r.left,r.top,r.right,r.bottom,
+                    new int[]{topGlow,0x00FFFFFF,0x00FFFFFF,botCaustic},
+                    new float[]{0f,0.34f,0.72f,1f},android.graphics.Shader.TileMode.CLAMP));
+            c.drawRoundRect(r,rad,rad,p);
+            p.setShader(null);
+
+            // Top specular dome highlight
+            c.save();
+            c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.42f);
+            p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.42f,
+                    Color.argb(Math.min(138,Math.round((focused?68:36)*sh)),255,255,255),0x00FFFFFF,
+                    android.graphics.Shader.TileMode.CLAMP));
+            c.drawRoundRect(r,rad,rad,p);
+            c.restore();
+            p.setShader(null);
+        }
+
+        // Beveled 5-stop diagonal specular rim
+        float sw=Math.max(1f,px(focused?(store.flag("contrast")?2.8f:2.1f):(store.flag("contrast")?2.0f:1.45f)));
+        p.setStyle(android.graphics.Paint.Style.STROKE);
+        p.setStrokeWidth(sw);
+        if(store.flag("contrast")) {
+            p.setColor(accent());
+        } else if(sh <= 0.001f) {
+            int rimTop=themed(0x55FFFFFF,0x68FFFFFF);
+            int rimBot=themed(0x22FFFFFF,0x2AFFFFFF);
+            p.setShader(new android.graphics.LinearGradient(r.left,r.top,r.right,r.bottom,
+                    rimTop,rimBot,android.graphics.Shader.TileMode.CLAMP));
+        } else {
+            int rimTop=Color.argb(Math.min(242,Math.round((focused?218:165)*sh)),255,255,255);
+            int rimMid=0x1CFFFFFF;
+            int rimDim=0x10000000;
+            int rimChromatic=focused
+                    ?((tintCol!=0?tintCol:accent())&0x00FFFFFF)|0x88000000
+                    :Color.argb(Math.min(115,Math.round(58*sh)),186,230,253);
+            int rimBot=Color.argb(Math.min(195,Math.round((focused?160:110)*sh)),255,255,255);
+            p.setShader(new android.graphics.LinearGradient(r.left,r.top,r.right,r.bottom,
+                    new int[]{rimTop,rimMid,rimDim,rimChromatic,rimBot},
+                    new float[]{0f,0.26f,0.52f,0.78f,1f},android.graphics.Shader.TileMode.CLAMP));
+        }
+        android.graphics.RectF strokeRect=new android.graphics.RectF(r);
+        float inset=sw/2f;
+        strokeRect.inset(inset,inset);
+        c.drawRoundRect(strokeRect,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
+        p.setShader(null);
     }
 
     private Drawable glassPanelDrawable(final View anchor,final float cornerDp,final boolean isBlade) {
@@ -715,6 +870,7 @@ public final class MainActivity extends Activity {
             private final android.graphics.RectF r=new android.graphics.RectF();
             private final android.graphics.Matrix mat=new android.graphics.Matrix();
             private final int[] loc=new int[2];
+            private final LiquidPatchState patchState=new LiquidPatchState();
 
             @Override public void draw(android.graphics.Canvas c) {
                 r.set(getBounds());
@@ -725,23 +881,19 @@ public final class MainActivity extends Activity {
                 boolean isSolid="solid".equals(style);
                 int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
 
-                if(!isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
-                        && anchor!=null && screenWidth>0 && screenHeight>0) {
-                    anchor.getLocationOnScreen(loc);
-                    mat.reset();
-                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
-                    mat.postTranslate(-loc[0],-loc[1]);
-                    frostedShader.setLocalMatrix(mat);
-                    p.setStyle(android.graphics.Paint.Style.FILL);
-                    p.setShader(frostedShader);
-                    if(isBlade) c.drawRect(r,p); else c.drawRoundRect(r,rad,rad,p);
-                    p.setShader(null);
+                if(!isSolid && glassRefractionEnabled()) {
+                    drawRefractedBackdrop(c,r,rad,isBlade,isGlass,anchor,p,mat,loc,patchState);
                 }
 
                 int baseRgb=themed(0xFF171114,0xFF0E1725)&0x00FFFFFF;
                 int topAlpha, botAlpha;
                 if(isSolid) {
                     topAlpha=248; botAlpha=252;
+                } else if(isGlass) {
+                    // Crystal-clear liquid glass body (low opacity so refracted backdrop shines through)
+                    int eff=isBlade?Math.min(82,Math.round(frost*0.82f)):Math.min(54,Math.round(frost*0.58f));
+                    topAlpha=Math.max(12,Math.min(180,Math.round(eff*1.15f)));
+                    botAlpha=Math.max(18,Math.min(200,Math.round(eff*1.45f)));
                 } else {
                     int eff=isBlade?Math.min(94,Math.max(48,frost+12)):frost;
                     topAlpha=Math.min(242,Math.round(eff*2.18f));
@@ -755,25 +907,7 @@ public final class MainActivity extends Activity {
 
                 float sh=sheenMultiplier();
                 if(isGlass) {
-                    if(isBlade) {
-                        float gleamH=Math.min(r.height(),px(280));
-                        c.save();
-                        c.clipRect(r.left,r.top,r.right,r.top+gleamH);
-                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+gleamH,
-                                Color.argb(Math.min(76,Math.round(28*sh)),255,255,255),0x00FFFFFF,
-                                android.graphics.Shader.TileMode.CLAMP));
-                        c.drawRect(r,p);
-                        c.restore();
-                    } else {
-                        c.save();
-                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.44f);
-                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.44f,
-                                Color.argb(Math.min(115,Math.round(44*sh)),255,255,255),0x00FFFFFF,
-                                android.graphics.Shader.TileMode.CLAMP));
-                        c.drawRoundRect(r,rad,rad,p);
-                        c.restore();
-                    }
-                    p.setShader(null);
+                    drawLiquidCausticsAndRim(c,r,rad,isBlade,false,accent(),sh,p);
                 }
 
                 if(isBlade) {
@@ -784,30 +918,21 @@ public final class MainActivity extends Activity {
                         p.setColor(accent());
                     } else if(isGlass) {
                         p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                                new int[]{Color.argb(Math.min(200,Math.round(112*sh)),255,255,255),0x28FFFFFF,0x44FFFFFF},
+                                new int[]{Color.argb(Math.min(220,Math.round(140*sh)),255,255,255),0x30FFFFFF,0x55FFFFFF},
                                 new float[]{0f,0.5f,1f},android.graphics.Shader.TileMode.CLAMP));
                     } else {
                         p.setColor(themed(0x28FFFFFF,0x44607D9E));
                     }
                     c.drawLine(r.left+sw/2f,r.top,r.left+sw/2f,r.bottom,p);
                     p.setShader(null);
-                } else {
+                } else if(!isGlass) {
                     float sw=Math.max(1f,px(store.flag("contrast")?2f:1.35f));
                     p.setStyle(android.graphics.Paint.Style.STROKE);
                     p.setStrokeWidth(sw);
-                    if(store.flag("contrast")) {
-                        p.setColor(accent());
-                    } else if(isGlass) {
-                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                                new int[]{Color.argb(Math.min(200,Math.round(98*sh)),255,255,255),0x1EFFFFFF,0x36FFFFFF},
-                                new float[]{0f,0.55f,1f},android.graphics.Shader.TileMode.CLAMP));
-                    } else {
-                        p.setColor(themed(0x24FFFFFF,0x5547556D));
-                    }
+                    p.setColor(store.flag("contrast")?accent():themed(0x24FFFFFF,0x5547556D));
                     float inset=sw/2f;
                     r.inset(inset,inset);
                     c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
-                    p.setShader(null);
                 }
             }
             @Override public void setAlpha(int a) {}
@@ -823,6 +948,7 @@ public final class MainActivity extends Activity {
             private final android.graphics.RectF r=new android.graphics.RectF();
             private final android.graphics.Matrix mat=new android.graphics.Matrix();
             private final int[] loc=new int[2];
+            private final LiquidPatchState patchState=new LiquidPatchState();
 
             @Override public void draw(android.graphics.Canvas c) {
                 if(!focused && transparentWhenIdle) return;
@@ -834,37 +960,19 @@ public final class MainActivity extends Activity {
                 boolean isSolid="solid".equals(style);
                 float sh=sheenMultiplier();
 
-                if(refractBackdrop && !isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
-                        && anchor!=null && screenWidth>0 && screenHeight>0) {
-                    anchor.getLocationOnScreen(loc);
-                    mat.reset();
-                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
-                    mat.postTranslate(-loc[0],-loc[1]);
-                    frostedShader.setLocalMatrix(mat);
-                    p.setStyle(android.graphics.Paint.Style.FILL);
-                    p.setShader(frostedShader);
-                    c.drawRoundRect(r,rad,rad,p);
-                    p.setShader(null);
+                if(refractBackdrop && !isSolid && glassRefractionEnabled()) {
+                    drawRefractedBackdrop(c,r,rad,false,isGlass,anchor,p,mat,loc,patchState);
                 }
 
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 if(focused) {
                     if(isGlass) {
                         int effTint=tintCol!=0?tintCol:accent();
-                        int botTint=(effTint&0x00FFFFFF)|0x2A000000;
-                        int topWhite=Color.argb(Math.min(132,Math.round(62*sh)),255,255,255);
+                        int botTint=(effTint&0x00FFFFFF)|0x36000000;
+                        int topWhite=Color.argb(Math.min(118,Math.round(52*sh)),255,255,255);
                         p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
                                 topWhite,botTint,android.graphics.Shader.TileMode.CLAMP));
                         c.drawRoundRect(r,rad,rad,p);
-                        p.setShader(null);
-
-                        c.save();
-                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.45f);
-                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.45f,
-                                Color.argb(Math.min(148,Math.round(74*sh)),255,255,255),0x00FFFFFF,
-                                android.graphics.Shader.TileMode.CLAMP));
-                        c.drawRoundRect(r,rad,rad,p);
-                        c.restore();
                         p.setShader(null);
                     } else {
                         p.setColor(themed(0x38FFFFFF,0xFF2B4360));
@@ -874,44 +982,27 @@ public final class MainActivity extends Activity {
                     if(refractBackdrop) {
                         int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
                         int baseRgb=themed(0xFF171114,0xFF0E1725)&0x00FFFFFF;
-                        int a=isSolid?244:Math.min(220,Math.round(frost*1.9f));
+                        int a=isSolid?244:isGlass?Math.min(125,Math.round(frost*0.95f)):Math.min(220,Math.round(frost*1.9f));
                         p.setColor((a<<24)|baseRgb);
                         c.drawRoundRect(r,rad,rad,p);
                     } else {
                         p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                                isGlass?0x12FFFFFF:0x0AFFFFFF,0x05FFFFFF,android.graphics.Shader.TileMode.CLAMP));
+                                isGlass?0x1AFFFFFF:0x0AFFFFFF,isGlass?0x08FFFFFF:0x05FFFFFF,android.graphics.Shader.TileMode.CLAMP));
                         c.drawRoundRect(r,rad,rad,p);
                         p.setShader(null);
                     }
-                    if(isGlass) {
-                        c.save();
-                        c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.42f);
-                        p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.42f,
-                                Color.argb(Math.min(64,Math.round(22*sh)),255,255,255),0x00FFFFFF,
-                                android.graphics.Shader.TileMode.CLAMP));
-                        c.drawRoundRect(r,rad,rad,p);
-                        c.restore();
-                        p.setShader(null);
-                    }
+                }
+
+                if(isGlass) {
+                    drawLiquidCausticsAndRim(c,r,rad,false,focused,tintCol,sh,p);
+                    return;
                 }
 
                 float sw=Math.max(1f,px(focused?(store.flag("contrast")?2.8f:2.0f):1.1f));
                 p.setStyle(android.graphics.Paint.Style.STROKE);
                 p.setStrokeWidth(sw);
                 if(focused) {
-                    if(store.flag("contrast") || !isGlass) {
-                        p.setColor(accent());
-                    } else {
-                        int tc=tintCol!=0?tintCol:accent();
-                        int rr=(((tc>>16)&0xFF)+510)/3;
-                        int gg=(((tc>>8)&0xFF)+510)/3;
-                        int bb=((tc&0xFF)+510)/3;
-                        p.setColor(0xEC000000|(Math.min(255,rr)<<16)|(Math.min(255,gg)<<8)|Math.min(255,bb));
-                    }
-                } else if(isGlass) {
-                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                            Color.argb(Math.min(120,Math.round(58*sh)),255,255,255),0x16FFFFFF,
-                            android.graphics.Shader.TileMode.CLAMP));
+                    p.setColor(accent());
                 } else {
                     p.setColor(0x1EFFFFFF);
                 }
@@ -1021,6 +1112,160 @@ public final class MainActivity extends Activity {
                 c.restore();
             }
 
+            paint.setShader(null);
+        }
+
+        @Override public void setAlpha(int a) { paint.setAlpha(a); }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { paint.setColorFilter(cf); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    private final class LiquidAuraDrawable extends Drawable {
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private int primaryColor = 0xFF604844;
+        private int secondaryColor = 0xFF4A3430;
+        private float focalX = 0.35f;
+        private boolean initialized = false;
+        private int lastW = 0, lastH = 0;
+        private android.graphics.Shader bloomShader;
+        private android.graphics.Shader floorShader;
+        private android.graphics.Shader weatherShader;
+
+        LiquidAuraDrawable(int primary, int secondary, float x) {
+            this.primaryColor = primary;
+            this.secondaryColor = secondary;
+            this.focalX = x;
+        }
+
+        public void update(int primary, int secondary, float x) {
+            if(this.primaryColor == primary && this.secondaryColor == secondary && Math.abs(this.focalX - x) < 0.005f) return;
+            this.primaryColor = primary;
+            this.secondaryColor = secondary;
+            this.focalX = x;
+            this.initialized = false;
+            invalidateSelf();
+        }
+
+        private void init(int w, int h) {
+            if(w <= 0 || h <= 0) return;
+            lastW = w;
+            lastH = h;
+            boolean isLiquid = store.flag("liquid_ambient_glow", true);
+            int pRgb = primaryColor & 0x00FFFFFF;
+
+            if(!isLiquid) {
+                float cx = w * (154f / 480f);
+                float cy = h * (113f / 270f);
+                float radius = Math.max(w, h) * (298f / 480f);
+                int[] colors = new int[]{
+                    0x70000000 | pRgb,
+                    0x30000000 | pRgb,
+                    0x00000000
+                };
+                float[] stops = new float[]{0f, 0.45f, 1f};
+                bloomShader = new android.graphics.RadialGradient(cx, cy, radius, colors, stops, android.graphics.Shader.TileMode.CLAMP);
+                floorShader = null;
+                initialized = true;
+                return;
+            }
+
+            int sRgb = secondaryColor & 0x00FFFFFF;
+            if(store.flag("living_weather_ambient", true)) {
+                WeatherService.WeatherInfo wInfo = latestWeather != null ? latestWeather : WeatherService.getCached(store);
+                if(wInfo != null) {
+                    int wCode = wInfo.weatherCode;
+                    boolean isDay = wInfo.isDay;
+                    int weatherTint;
+                    if(wCode >= 95) {
+                        weatherTint = 0x4338CA;
+                    } else if(wCode >= 71 && wCode <= 77) {
+                        weatherTint = 0x38BDF8;
+                    } else if((wCode >= 51 && wCode <= 67) || (wCode >= 80 && wCode <= 82)) {
+                        weatherTint = 0x0284C7;
+                    } else if(wCode == 45 || wCode == 48) {
+                        weatherTint = 0x475569;
+                    } else if(wCode == 0 || wCode == 1) {
+                        weatherTint = isDay ? 0xF59E0B : 0x1E1B4B;
+                    } else {
+                        weatherTint = 0x334155;
+                    }
+                    float wR = ((weatherTint >> 16) & 0xFF) / 255f;
+                    float wG = ((weatherTint >> 8) & 0xFF) / 255f;
+                    float wB = (weatherTint & 0xFF) / 255f;
+                    float sR = ((sRgb >> 16) & 0xFF) / 255f;
+                    float sG = ((sRgb >> 8) & 0xFF) / 255f;
+                    float sB = (sRgb & 0xFF) / 255f;
+                    int blendedS = (Math.round((sR * 0.65f + wR * 0.35f) * 255f) << 16)
+                                 | (Math.round((sG * 0.65f + wG * 0.35f) * 255f) << 8)
+                                 | Math.round((sB * 0.65f + wB * 0.35f) * 255f);
+                    sRgb = blendedS;
+                    int[] weatherColors = new int[]{
+                        0x26000000 | (weatherTint & 0x00FFFFFF),
+                        0x0F000000 | (weatherTint & 0x00FFFFFF),
+                        0x00000000
+                    };
+                    weatherShader = new android.graphics.LinearGradient(0, 0, 0, h * 0.48f, weatherColors, new float[]{0f, 0.5f, 1f}, android.graphics.Shader.TileMode.CLAMP);
+                } else {
+                    weatherShader = null;
+                }
+            } else {
+                weatherShader = null;
+            }
+            float cx = w * focalX;
+            float cy = h * 0.44f;
+            float radius = Math.max(w, h) * 0.62f;
+
+            int[] bloomColors = new int[]{
+                0x5A000000 | pRgb,
+                0x3C000000 | sRgb,
+                0x1E000000 | pRgb,
+                0x08000000 | sRgb,
+                0x00000000
+            };
+            float[] bloomStops = new float[]{0.0f, 0.26f, 0.54f, 0.78f, 1.0f};
+            bloomShader = new android.graphics.RadialGradient(cx, cy, radius, bloomColors, bloomStops, android.graphics.Shader.TileMode.CLAMP);
+
+            float underCx = w * focalX;
+            float underCy = h * 0.94f;
+            float underRadius = h * 0.48f;
+            int[] floorColors = new int[]{
+                0x88000000 | sRgb,
+                0x60000000 | pRgb,
+                0x34000000 | sRgb,
+                0x12000000 | pRgb,
+                0x00000000
+            };
+            float[] floorStops = new float[]{0.0f, 0.22f, 0.48f, 0.74f, 1.0f};
+            floorShader = new android.graphics.RadialGradient(underCx, underCy, underRadius, floorColors, floorStops, android.graphics.Shader.TileMode.CLAMP);
+            initialized = true;
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect b = getBounds();
+            int w = b.width();
+            int h = b.height();
+            if(w <= 0 || h <= 0) return;
+            if(!initialized || w != lastW || h != lastH) init(w, h);
+
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            if(bloomShader != null) {
+                paint.setShader(bloomShader);
+                c.drawRect(0, 0, w, h, paint);
+            }
+            if(weatherShader != null) {
+                paint.setShader(weatherShader);
+                c.drawRect(0, 0, w, h * 0.48f, paint);
+            }
+            if(floorShader != null) {
+                float underCx = w * focalX;
+                float underCy = h * 0.94f;
+                c.save();
+                c.scale(2.20f, 0.50f, underCx, underCy);
+                paint.setShader(floorShader);
+                c.drawCircle(underCx, underCy, h * 0.48f, paint);
+                c.restore();
+            }
             paint.setShader(null);
         }
 
@@ -1783,7 +2028,7 @@ public final class MainActivity extends Activity {
         screenHeight=getResources().getDisplayMetrics().heightPixels;
         scale=Math.min(screenWidth/1920f,screenHeight/1080f);
         if(ambientAnimator!=null){ambientAnimator.cancel();ambientAnimator=null;}
-        ambientBackground=null;ambientTexture=null;
+        ambientBackground=null;ambientTexture=null;liquidAuraDrawable=null;
         boolean firstRoot=(root==null);
         if(firstRoot) {
             root=new FrameLayout(this) {
@@ -1945,15 +2190,14 @@ public final class MainActivity extends Activity {
         }
         if("app_glow".equals(style)) {
             ambientBackground=new View(this);
-            android.graphics.Bitmap mask=android.graphics.Bitmap.createBitmap(480,270,android.graphics.Bitmap.Config.ARGB_8888);
-            android.graphics.Canvas canvas=new android.graphics.Canvas(mask);
-            android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            paint.setShader(new android.graphics.RadialGradient(154,113,298,
-                    new int[]{0x70FFFFFF,0x30FFFFFF,0x00FFFFFF},new float[]{0f,.45f,1f},android.graphics.Shader.TileMode.CLAMP));
-            canvas.drawRect(0,0,480,270,paint);
-            ambientTexture=new android.graphics.drawable.BitmapDrawable(getResources(),mask);
-            ambientTexture.setGravity(Gravity.FILL);ambientTexture.setFilterBitmap(true);
-            ambientTexture.setTint(ambientColor);ambientBackground.setBackground(ambientTexture);
+            if(currentAuraSecondary == 0) {
+                float[] hsv = new float[3];
+                android.graphics.Color.colorToHSV(ambientColor, hsv);
+                float h2 = (hsv[0] + 20f) % 360f;
+                currentAuraSecondary = android.graphics.Color.HSVToColor(new float[]{h2, Math.min(1f, hsv[1] * 0.95f), Math.min(1f, hsv[2] * 1.05f)});
+            }
+            liquidAuraDrawable = new LiquidAuraDrawable(ambientColor, currentAuraSecondary, currentAuraFocalX);
+            ambientBackground.setBackground(liquidAuraDrawable);
             ambientBackground.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             backgroundStage.addView(ambientBackground,new FrameLayout.LayoutParams(-1,-1));
         }
@@ -2142,17 +2386,53 @@ public final class MainActivity extends Activity {
         }
     }
     private boolean backgroundGlow(){return "app_glow".equals(store.value("background","app_glow"));}
-    private void updateAmbient(String pkg){
-        if(!backgroundGlow()||ambientTexture==null)return;
+    private void updateAmbientInPlace(){
+        if(liquidAuraDrawable!=null){
+            liquidAuraDrawable.update(ambientColor,currentAuraSecondary,currentAuraFocalX);
+        }
+    }
+    private void updateAmbient(String pkg){ updateAmbient(pkg, null); }
+    private void updateAmbient(String pkg, View focusedView){
+        if(!backgroundGlow() || (liquidAuraDrawable==null && ambientTexture==null)) return;
         int color=extractAppColor(pkg)|0xFF000000;
-        if(ambientAnimator!=null)ambientAnimator.cancel();
-        if(color==ambientColor)return;
-        final android.graphics.drawable.BitmapDrawable texture=ambientTexture;
-        ambientAnimator=android.animation.ValueAnimator.ofObject(new android.animation.ArgbEvaluator(),ambientColor,color);
+        float[] hsv = new float[3];
+        android.graphics.Color.colorToHSV(color, hsv);
+        float sat = Math.max(0.65f, hsv[1]);
+        float val = Math.max(0.70f, hsv[2]);
+        float h2 = (hsv[0] + 20f) % 360f;
+        int targetSecondary = android.graphics.Color.HSVToColor(new float[]{h2, Math.min(1.0f, sat * 0.95f), Math.min(1.0f, val * 1.05f)});
+        float targetX = currentAuraFocalX;
+        View targetV = focusedView != null ? focusedView : focusedFavorite;
+        if(targetV != null && screenWidth > 0) {
+            int[] loc = new int[2];
+            targetV.getLocationOnScreen(loc);
+            float cx = loc[0] + targetV.getWidth() / 2f;
+            targetX = Math.max(0.12f, Math.min(0.88f, cx / (float)screenWidth));
+        }
+        if(ambientAnimator!=null) ambientAnimator.cancel();
+        if(color==ambientColor && targetSecondary==currentAuraSecondary && Math.abs(targetX - currentAuraFocalX) < 0.01f) return;
+        final float startX = currentAuraFocalX;
+        final float endX = targetX;
+        final int startP = ambientColor;
+        final int endP = color;
+        final int startS = currentAuraSecondary;
+        final int endS = targetSecondary;
+        final android.animation.ArgbEvaluator evaluator = new android.animation.ArgbEvaluator();
+
+        ambientAnimator=android.animation.ValueAnimator.ofFloat(0f, 1f);
         ambientAnimator.setDuration(focusDuration(360));
+        ambientAnimator.setInterpolator(new android.view.animation.DecelerateInterpolator(1.4f));
         ambientAnimator.addUpdateListener(a->{
-            ambientColor=(Integer)a.getAnimatedValue();
-            texture.setTint(ambientColor);
+            float f = a.getAnimatedFraction();
+            ambientColor=(Integer)evaluator.evaluate(f, startP, endP);
+            currentAuraSecondary=(Integer)evaluator.evaluate(f, startS, endS);
+            currentAuraFocalX=startX + (endX - startX) * f;
+            if(liquidAuraDrawable != null) {
+                liquidAuraDrawable.update(ambientColor, currentAuraSecondary, currentAuraFocalX);
+            }
+            if(ambientTexture != null) {
+                ambientTexture.setTint(ambientColor);
+            }
             if(isBladeActive) {
                 updateStageAmbientColors(false);
             }
@@ -3208,6 +3488,12 @@ public final class MainActivity extends Activity {
                     targetColor=0; colorT=1f;
                     glassView.setTintAndCorner(0,cornerPx);
                 }
+                if(store.flag("focus_kinetic_momentum", true)) {
+                    float dist = tx - cx;
+                    if(Math.abs(dist) > 1f) {
+                        vx += Math.signum(dist) * Math.min(600f, Math.abs(dist) * 1.8f);
+                    }
+                }
                 startSpring();
             }
         }
@@ -3263,10 +3549,11 @@ public final class MainActivity extends Activity {
             lastFrameNanos=frameTimeNanos;
 
             boolean crisp="crisp".equals(focusMotionStyle());
+            boolean kinetic=store.flag("focus_kinetic_momentum", true);
             int speedPct=overrideSpeedPct>0?overrideSpeedPct:focusSpringSpeed();
             float speedFactor=(float)Math.pow(speedPct/100.0,1.45);
-            float stiffness=("magnetic".equals(focusMotionStyle())?420f:crisp?490f:340f)*speedFactor;
-            float zeta="magnetic".equals(focusMotionStyle())?.88f:crisp?1.0f:.76f;
+            float stiffness=("magnetic".equals(focusMotionStyle())?420f:crisp?490f:kinetic?310f:340f)*speedFactor;
+            float zeta="magnetic".equals(focusMotionStyle())?.88f:crisp?1.0f:kinetic?.70f:.76f;
             float damping=2f*zeta*(float)Math.sqrt(stiffness);
 
             int steps=Math.max(1,(int)Math.ceil(dt/0.008f));
@@ -3470,7 +3757,7 @@ public final class MainActivity extends Activity {
                 }
             }
             if (has) {
-                updateAmbient(pkg);
+                updateAmbient(pkg, tile);
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent){lastFocus=pkg;if(drawer)allAppsPageFocus=pkg;else homePageFocus=pkg;}
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
@@ -3944,7 +4231,7 @@ public final class MainActivity extends Activity {
                             }
                         }
 
-                        if(has){updateAmbient(pkg);revealHorizontalFocus(card,vertPad);}
+                        if(has){updateAmbient(pkg, card);revealHorizontalFocus(card,vertPad);}
                     });
                     card.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
                         if(v.hasFocus()&&(left!=oldLeft||right!=oldRight||top!=oldTop||bottom!=oldBottom)){
@@ -4056,17 +4343,34 @@ public final class MainActivity extends Activity {
             view.requestRectangleOnScreen(area,false);
         });
     }
+    private List<String> lastRecentAppsLoaded=new ArrayList<>();
     private void showRecentRow() {
+        if(homePage==null || drawer || !store.flag("recents")) {
+            if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
+            if(recentSection!=null && recentSection.getParent()==homePage)homePage.removeView(recentSection);
+            recentSection=null;
+            lastRecentAppsLoaded.clear();
+            return;
+        }
+        List<String> recent=new ArrayList<>();
+        for(String pkg:store.list("recent_apps"))if(byPackage.containsKey(pkg))recent.add(pkg);
+        if(recent.isEmpty()) {
+            if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
+            if(recentSection!=null && recentSection.getParent()==homePage)homePage.removeView(recentSection);
+            recentSection=null;
+            lastRecentAppsLoaded.clear();
+            return;
+        }
+        if(recentSection!=null && recentSection.getParent()==homePage && recent.equals(lastRecentAppsLoaded)) {
+            return;
+        }
+        lastRecentAppsLoaded=new ArrayList<>(recent);
         if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
         if(recentSection!=null && recentSection.getParent()==homePage)homePage.removeView(recentSection);
         recentSection=null;
-        if(homePage==null || drawer || !store.flag("recents"))return;
-        List<String> recent=new ArrayList<>();
-        for(String pkg:store.list("recent_apps"))if(byPackage.containsKey(pkg))recent.add(pkg);
-        if(recent.isEmpty())return;
         recentSection=new LinearLayout(this);recentSection.setOrientation(LinearLayout.VERTICAL);
         recentSection.setClipChildren(false);recentSection.setClipToPadding(false);
-        recentSection.setPadding(px(12),px(20),px(12),px(20));
+        recentSection.setPadding(px(12),px(12),px(12),px(12));
         recentSection.setBackground(glassPanelDrawable(recentSection,26f,false));
         final LinearLayout section=recentSection;
         final FrameLayout viewport=new FrameLayout(this);
@@ -4081,11 +4385,11 @@ public final class MainActivity extends Activity {
             View focused=getCurrentFocus();String focusedPkg=focused!=null&&rowViews.contains(focused)?String.valueOf(focused.getTag()):null;
             if(recentSpringStage!=null)recentSpringStage.stop();
             viewport.removeAllViews();rowViews.clear();
-            int gap=px(24),safeEdge=Math.max(px(40),px(glowRadiusSetting()+18));
+            int gap=px(24),safeEdge=Math.max(px(24),px(glowRadiusSetting()+8));
             RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),gap,safeEdge,Math.max(1f,focusZoomScale(true)));
             LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
             row.setClipChildren(false);row.setClipToPadding(false);
-            int verticalPad=Math.max(px(40),px(glowRadiusSetting()+18));
+            int verticalPad=px(10);
             row.setPadding(plan.edge,verticalPad,plan.edge,verticalPad);
             for(int i=0;i<plan.widths.length;i++){
                 int cardWidth=plan.widths[i];
@@ -4329,7 +4633,7 @@ public final class MainActivity extends Activity {
             store.set("ui_surface_style","glass");
             store.setFlag("glass_refraction",false);
             store.setNumber("glass_frost",30);
-            store.setNumber("glass_sheen",1);
+            store.setNumber("glass_sheen",2);
             store.set("icon_style","brand");
             store.set("icon_color","original");
             store.set("icon_shape","squircle");
@@ -4350,7 +4654,7 @@ public final class MainActivity extends Activity {
             store.set("ui_surface_style","matte");
             store.setFlag("glass_refraction",false);
             store.setNumber("glass_frost",75);
-            store.setNumber("glass_sheen",0);
+            store.setNumber("glass_sheen",1);
             store.set("icon_style","dark");
             store.set("icon_color","original");
             store.set("icon_shape","circle");
@@ -4374,7 +4678,7 @@ public final class MainActivity extends Activity {
             store.set("ui_surface_style","glass");
             store.setFlag("glass_refraction",false);
             store.setNumber("glass_frost",45);
-            store.setNumber("glass_sheen",0);
+            store.setNumber("glass_sheen",1);
             store.set("icon_style","paper");
             store.set("icon_color","original");
             store.set("icon_shape","rounded");
@@ -4395,7 +4699,7 @@ public final class MainActivity extends Activity {
             store.set("ui_surface_style","glass");
             store.setFlag("glass_refraction",true);
             store.setNumber("glass_frost",36);
-            store.setNumber("glass_sheen",2);
+            store.setNumber("glass_sheen",3);
             store.set("icon_style","glass");
             store.set("icon_color","original");
             store.set("icon_shape","squircle");
@@ -4976,7 +5280,7 @@ public final class MainActivity extends Activity {
         menu("Glass & surfaces",Arrays.asList(
                 "§GLASS MATERIAL",
                 "Surface style: "+uiSurfaceStyleName(),
-                "Frosted refraction: "+onOff(glassRefractionEnabled()),
+                "Optical lens refraction: "+onOff(glassRefractionEnabled()),
                 "Glass frost: "+frost+"% · "+glassFrostName(frost),
                 "Specular sheen: "+glassSheenName(),
                 "§WIDGET LENS",
@@ -4986,8 +5290,8 @@ public final class MainActivity extends Activity {
                 Arrays.asList(
                         null,
                         ()->choice("Surface style",new String[]{
-                                "Liquid glass · Specular lens reflections & beveled rims",
-                                "Matte translucent · Soft frosted tint without specular glare",
+                                "Liquid glass · Clear refractive lens & specular rims",
+                                "Frosted glass · Soft blurred tint without lens glare",
                                 "Solid dark · Opaque high-contrast panels"},
                                 "matte".equals(st)?1:"solid".equals(st)?2:0,
                                 idx->{
@@ -5001,6 +5305,7 @@ public final class MainActivity extends Activity {
                         },
                         ()->glassFrostSliderDialog(back),
                         ()->choice("Specular sheen",new String[]{
+                                "None · Pure liquid glass with no specular glare",
                                 "Subtle · Delicate top highlight",
                                 "Balanced · Natural optical glass reflection",
                                 "Bright · High-gloss crystal catchlight"},
@@ -5017,9 +5322,9 @@ public final class MainActivity extends Activity {
                         null,
                         ()->{
                             store.set("ui_surface_style","glass");
-                            store.setFlag("glass_refraction",false);
-                            store.setNumber("glass_frost",25);
-                            store.setNumber("glass_sheen",0);
+                            store.setFlag("glass_refraction",true);
+                            store.setNumber("glass_frost",0);
+                            store.setNumber("glass_sheen",1);
                             store.setFlag("dock_spring_lens",true);
                             updateWorkspaceAndMenuSurfaces();
                             toast("Glass surfaces restored to defaults");
@@ -5050,15 +5355,15 @@ public final class MainActivity extends Activity {
 
         SeekBar slider=new SeekBar(this);
         slider.setFocusableInTouchMode(true);
-        slider.setMax(67);
-        slider.setProgress(glassFrostDepth()-25);
+        slider.setMax(100);
+        slider.setProgress(glassFrostDepth());
         slider.setKeyProgressIncrement(4);
         slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
         slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
         box.addView(slider,new LinearLayout.LayoutParams(-1,px(60)));
 
         Runnable update=()->{
-            int f=slider.getProgress()+25;
+            int f=slider.getProgress();
             overrideFrostPct=f;
             value.setText("Glass frost · "+f+"% ("+glassFrostName(f)+")");
             card.invalidate();
@@ -5073,7 +5378,7 @@ public final class MainActivity extends Activity {
         update.run();
 
         showBladePanel("Glass frost",box,"Save",()->{
-            int f=slider.getProgress()+25;
+            int f=slider.getProgress();
             overrideFrostPct=-1;
             if("solid".equals(uiSurfaceStyle())) store.set("ui_surface_style","glass");
             store.setNumber("glass_frost",f);
@@ -5097,6 +5402,8 @@ public final class MainActivity extends Activity {
         menu("Focus glow",Arrays.asList(
                 "§GLOW PARAMETERS",
                 "Focus glow: "+onOff(store.flag("ambient_glow",false)),
+                "Liquid room aura: "+onOff(store.flag("liquid_ambient_glow",true)),
+                "Living weather lighting: "+onOff(store.flag("living_weather_ambient",true)),
                 "Intensity: "+glowIntensity()+"%",
                 "Radius: "+rad+"px · "+glowRadiusName(rad),
                 "§GLOW COLOR",
@@ -5107,6 +5414,8 @@ public final class MainActivity extends Activity {
                 Arrays.asList(
                         null,
                         ()->{store.setFlag("ambient_glow",!store.flag("ambient_glow",false));focusGlowMenu(back);},
+                        ()->{store.setFlag("liquid_ambient_glow",!store.flag("liquid_ambient_glow",true));updateAmbientInPlace();focusGlowMenu(back);},
+                        ()->{store.setFlag("living_weather_ambient",!store.flag("living_weather_ambient",true));updateAmbientInPlace();focusGlowMenu(back);},
                         ()->glowSliderDialog(true,back),
                         ()->glowSliderDialog(false,back),
                         null,
@@ -5125,9 +5434,12 @@ public final class MainActivity extends Activity {
                         null,
                         ()->{
                             store.setFlag("ambient_glow",false);
+                            store.setFlag("liquid_ambient_glow",true);
+                            store.setFlag("living_weather_ambient",true);
                             store.setNumber("glow_intensity",10);
                             store.setNumber("glow_radius",20);
                             store.set("glow_color_mode","auto");
+                            updateAmbientInPlace();
                             toast("Focus glow restored to defaults");
                             focusGlowMenu(back);
                         }),back);
@@ -5140,6 +5452,7 @@ public final class MainActivity extends Activity {
                 "§SPRING & GLIDE",
                 "Motion style: "+focusMotionStyleName(),
                 "Glide speed: "+focusSpringSpeed()+"%",
+                "Kinetic momentum: "+onOff(store.flag("focus_kinetic_momentum",true)),
                 "§LENS & DEPTH",
                 "Glass lens: "+focusGlassStyleName(),
                 "Tile zoom: "+focusZoomName(),
@@ -5161,6 +5474,7 @@ public final class MainActivity extends Activity {
                                     store.set("focus_motion_style",new String[]{"liquid","crisp","classic","soft","magnetic","instant"}[idx]);
                                 },()->focusMotionMenu(back)),
                         ()->focusSpeedSliderDialog(back),
+                        ()->{store.setFlag("focus_kinetic_momentum",!store.flag("focus_kinetic_momentum",true));focusMotionMenu(back);},
                         null,
                         ()->choice("Glass lens",new String[]{
                                 "Specular glass · Translucent top sheen + luminous rim",
@@ -5187,6 +5501,7 @@ public final class MainActivity extends Activity {
                             store.set("focus_glass_style","full");
                             store.setNumber("focus_zoom_mode",1);
                             store.setFlag("focus_parallax",true);
+                            store.setFlag("focus_kinetic_momentum",true);
                             store.setFlag("focus_slide_labels",true);
                             toast("Focus motion restored to defaults");
                             focusMotionMenu(back);
@@ -5352,7 +5667,7 @@ public final class MainActivity extends Activity {
         SeekBar slider=new SeekBar(this);
         slider.setFocusableInTouchMode(true);
         if(isIntensity) {
-            slider.setMax(90); slider.setProgress(glowIntensity()-10); slider.setKeyProgressIncrement(5);
+            slider.setMax(100); slider.setProgress(glowIntensity()); slider.setKeyProgressIncrement(5);
         } else {
             slider.setMax(76); slider.setProgress(glowRadiusSetting()-20); slider.setKeyProgressIncrement(4);
         }
@@ -5363,7 +5678,7 @@ public final class MainActivity extends Activity {
 
         final int iconSize=px(116);
         Runnable update=()->{
-            int curInt=isIntensity?(slider.getProgress()+10):glowIntensity();
+            int curInt=isIntensity?slider.getProgress():glowIntensity();
             int curRad=isIntensity?glowRadiusSetting():(slider.getProgress()+20);
             if(isIntensity) value.setText("Intensity · "+curInt+"%");
             else value.setText("Radius · "+curRad+"px ("+glowRadiusName(curRad)+")");
@@ -5379,7 +5694,7 @@ public final class MainActivity extends Activity {
         });
         update.run();
         showBladePanel(isIntensity?"Glow intensity":"Glow radius",box,"Save",()->{
-            if(isIntensity) store.setNumber("glow_intensity",slider.getProgress()+10);
+            if(isIntensity) store.setNumber("glow_intensity",slider.getProgress());
             else store.setNumber("glow_radius",slider.getProgress()+20);
             store.setFlag("ambient_glow",false);
             focusGlowMenu(back);
@@ -5484,6 +5799,18 @@ public final class MainActivity extends Activity {
             updateBackgroundInPlace();
             backgroundMenu(back);
         });
+        if("app_glow".equals(bg)) {
+            add(labels,actions,"  Liquid room aura: "+onOff(store.flag("liquid_ambient_glow",true)),()->{
+                store.setFlag("liquid_ambient_glow",!store.flag("liquid_ambient_glow",true));
+                updateAmbientInPlace();
+                backgroundMenu(back);
+            });
+            add(labels,actions,"  Living weather lighting: "+onOff(store.flag("living_weather_ambient",true)),()->{
+                store.setFlag("living_weather_ambient",!store.flag("living_weather_ambient",true));
+                updateAmbientInPlace();
+                backgroundMenu(back);
+            });
+        }
         add(labels,actions,"Dynamic sky: "+("sky".equals(bg)?"Active":"Time of day"),()->{
             store.set("background","sky");
             resetWallpaperSlideshowTimer();
@@ -6744,8 +7071,8 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2); sp.topMargin=px(4); box.addView(sub,sp);
 
         final SeekBar slider=new SeekBar(this);
-        slider.setMax(90);
-        slider.setProgress((sfx!=null?sfx.volumePct():65)-10);
+        slider.setMax(100);
+        slider.setProgress(sfx!=null?sfx.volumePct():65);
         slider.setKeyProgressIncrement(5);
         slider.setFocusableInTouchMode(true);
         slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
@@ -6776,7 +7103,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<4;i++) {
             final int role=padRoles[i];
             Button pad=button(padNames[i],()->{
-                if(sfx!=null) sfx.preview(sfx.pack(),role,slider.getProgress()+10);
+                if(sfx!=null) sfx.preview(sfx.pack(),role,slider.getProgress());
             });
             pad.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(18));
             LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(0,px(48),1f);
@@ -6788,14 +7115,14 @@ public final class MainActivity extends Activity {
         box.addView(card,new LinearLayout.LayoutParams(-1,-2));
 
         Runnable update=()->{
-            int v=slider.getProgress()+10;
+            int v=slider.getProgress();
             String tag=v<=30?"Whisper subtle":v<=70?"Balanced tactile":"Crisp & prominent";
             value.setText("Sound volume · "+v+"% ("+tag+")");
         };
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar bar,int progress,boolean user) {
                 update.run();
-                if(user && sfx!=null) sfx.preview(sfx.pack(),UiSoundEngine.roleFocus(),progress+10);
+                if(user && sfx!=null) sfx.preview(sfx.pack(),UiSoundEngine.roleFocus(),progress);
             }
             public void onStartTrackingTouch(SeekBar bar) {}
             public void onStopTrackingTouch(SeekBar bar) {}
@@ -6803,7 +7130,7 @@ public final class MainActivity extends Activity {
         update.run();
 
         showBladePanel("Sound volume",box,"Save",()->{
-            int v=slider.getProgress()+10;
+            int v=slider.getProgress();
             store.setNumber("ui_sounds_volume",v);
             store.setFlag("ui_sounds_enabled",true);
             syncSystemSoundMuting();
@@ -6955,7 +7282,7 @@ public final class MainActivity extends Activity {
         box.addView(preview,pp);
 
         SeekBar slider=new SeekBar(this);
-        slider.setMax(75); slider.setProgress(screensaverDimming());
+        slider.setMax(100); slider.setProgress(screensaverDimming());
         slider.setKeyProgressIncrement(5); slider.setFocusableInTouchMode(true);
         slider.setProgressTintList(android.content.res.ColorStateList.valueOf(accent()));
         slider.setThumbTintList(android.content.res.ColorStateList.valueOf(accent()));
@@ -7381,6 +7708,7 @@ public final class MainActivity extends Activity {
             private final android.graphics.RectF r=new android.graphics.RectF();
             private final android.graphics.Matrix mat=new android.graphics.Matrix();
             private final int[] loc=new int[2];
+            private final LiquidPatchState patchState=new LiquidPatchState();
 
             @Override public void draw(android.graphics.Canvas c) {
                 r.set(getBounds());
@@ -7390,22 +7718,14 @@ public final class MainActivity extends Activity {
                 boolean isGlass="glass".equals(style);
                 boolean isSolid="solid".equals(style);
 
-                if(!isSolid && glassRefractionEnabled() && frostedShader!=null && frostedBackdrop!=null
-                        && anchor!=null && screenWidth>0 && screenHeight>0) {
-                    anchor.getLocationOnScreen(loc);
-                    mat.reset();
-                    mat.setScale((float)screenWidth/frostedBackdrop.getWidth(),(float)screenHeight/frostedBackdrop.getHeight());
-                    mat.postTranslate(-loc[0],-loc[1]);
-                    frostedShader.setLocalMatrix(mat);
-                    p.setStyle(android.graphics.Paint.Style.FILL);
-                    p.setShader(frostedShader);
-                    c.drawRoundRect(r,rad,rad,p);
-                    p.setShader(null);
+                if(!isSolid && glassRefractionEnabled()) {
+                    drawRefractedBackdrop(c,r,rad,false,isGlass,anchor,p,mat,loc,patchState);
                 }
 
+                int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
                 int baseRgb=themed(0xFF131A26,0xFF0A0F17)&0x00FFFFFF;
-                int topAlpha=isSolid?250:238;
-                int botAlpha=isSolid?254:246;
+                int topAlpha=isSolid?250:isGlass?Math.max(38,Math.min(235,Math.round(frost*1.8f))):238;
+                int botAlpha=isSolid?254:isGlass?Math.max(48,Math.min(242,Math.round(frost*2.0f))):246;
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
                         (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));
@@ -7414,33 +7734,17 @@ public final class MainActivity extends Activity {
 
                 float sh=sheenMultiplier();
                 if(isGlass) {
-                    float gleamH=Math.min(r.height()*0.38f,px(260));
-                    c.save();
-                    c.clipRect(r.left,r.top,r.right,r.top+gleamH);
-                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+gleamH,
-                            Color.argb(Math.min(80,Math.round(30*sh)),255,255,255),0x00FFFFFF,
-                            android.graphics.Shader.TileMode.CLAMP));
-                    c.drawRoundRect(r,rad,rad,p);
-                    c.restore();
-                    p.setShader(null);
+                    drawLiquidCausticsAndRim(c,r,rad,false,false,accent(),sh,p);
+                    return;
                 }
 
                 float sw=Math.max(1f,px(store.flag("contrast")?2f:1.2f));
                 p.setStyle(android.graphics.Paint.Style.STROKE);
                 p.setStrokeWidth(sw);
-                if(store.flag("contrast")) {
-                    p.setColor(accent());
-                } else if(isGlass) {
-                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                            new int[]{Color.argb(Math.min(180,Math.round(85*sh)),255,255,255),0x18FFFFFF,0x2AFFFFFF},
-                            new float[]{0f,0.5f,1f},android.graphics.Shader.TileMode.CLAMP));
-                } else {
-                    p.setColor(0x28FFFFFF);
-                }
+                p.setColor(store.flag("contrast")?accent():0x28FFFFFF);
                 float inset=sw/2f;
                 r.inset(inset,inset);
                 c.drawRoundRect(r,Math.max(0f,rad-inset),Math.max(0f,rad-inset),p);
-                p.setShader(null);
             }
             @Override public void setAlpha(int a) {}
             @Override public void setColorFilter(android.graphics.ColorFilter cf) {}

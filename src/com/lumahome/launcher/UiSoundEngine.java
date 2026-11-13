@@ -92,13 +92,15 @@ final class UiSoundEngine {
         if (now - lastFocusPlayMs < 34L) return;
 
         float rate = 1.0f;
+        boolean kinetic = store.flag("focus_kinetic_momentum", true);
         if (store.flag("ui_sounds_pitch", true)) {
             if (now - lastFocusPlayMs < 360L) {
-                glideStep = Math.max(-4, Math.min(4, glideStep + (direction >= 0 ? 1 : -1)));
+                int maxStep = kinetic ? 6 : 4;
+                glideStep = Math.max(-maxStep, Math.min(maxStep, glideStep + (direction >= 0 ? 1 : -1)));
             } else {
                 glideStep = 0;
             }
-            rate = 1.0f + glideStep * 0.016f;
+            rate = 1.0f + glideStep * (kinetic ? 0.024f : 0.016f);
         } else {
             glideStep = 0;
         }
