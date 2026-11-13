@@ -14,6 +14,7 @@ import android.graphics.Path;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.PorterDuffXfermode;
+import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -196,7 +197,7 @@ public final class IconStylingEngine {
             if(diagonal>limit){w*=limit/diagonal;h*=limit/diagonal;}
         }
         RectF destination=new RectF((targetSize-w)/2f,(targetSize-h)/2f,(targetSize+w)/2f,(targetSize+h)/2f);
-        if("shadow".equals(config.effects)||"depth".equals(config.effects)){
+        if("shadow".equals(config.effects)||"depth".equals(config.effects)||"glass".equals(config.effects)){
             Paint shadow=new Paint(paint);shadow.setColorFilter(new PorterDuffColorFilter(0x55000000,PorterDuff.Mode.SRC_IN));
             RectF offset=new RectF(destination);offset.offset(0,targetSize*.018f);canvas.drawBitmap(fullOriginal,null,offset,shadow);
         }
@@ -231,7 +232,7 @@ public final class IconStylingEngine {
             filter = new ColorMatrixColorFilter(cm);
         }
         Bitmap out = renderShapedArtwork(full, targetSize, config, filter);
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects)) {
+        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects) || "glass".equals(config.effects)) {
             RectF bounds = new RectF(0, 0, targetSize, targetSize);
             float radius = getShapeCornerRadius(config.shape, targetSize);
             renderBorderRim(new Canvas(out), shapePath(bounds, radius, targetSize), bounds, radius, config);
@@ -264,7 +265,7 @@ public final class IconStylingEngine {
             Rect dst = new Rect(Math.round(box.left), Math.round(box.top), Math.round(box.right), Math.round(box.bottom));
 
             // Optional drop shadow effect under the glyph
-            if (("shadow".equals(config.effects)||"depth".equals(config.effects)) && !"flat".equals(config.style)) {
+            if (("shadow".equals(config.effects)||"depth".equals(config.effects)||"glass".equals(config.effects)) && !"flat".equals(config.style)) {
                 Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
                 shadowPaint.setColorFilter(new PorterDuffColorFilter(0x40000000, PorterDuff.Mode.SRC_IN));
                 int off = Math.max(1, targetSize / 50);
@@ -279,7 +280,7 @@ public final class IconStylingEngine {
 
         if("depth".equals(config.effects))renderMaterialEdge(canvas,bounds,radius,targetSize);
         // Step 4: Render subtle specular rim / border if requested or for glass style
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects)) {
+        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects) || "glass".equals(config.effects)) {
             renderBorderRim(canvas, shapePath, bounds, radius, config);
         }
 
@@ -329,7 +330,13 @@ public final class IconStylingEngine {
         if("black".equals(config.color)&&"auto".equals(config.background)){top=0xFFE4E7EB;bottom=0xFFC9CFD6;}
         if("solid_dark".equals(config.background)){top=bottom=0xFF141920;}
         else if("gradient".equals(config.background)){top=0xFF202A38;bottom=0xB0000000|(config.accentColor&0xFFFFFF);}
-        else if("glass".equals(config.background)){top=0x44FFFFFF;bottom=0x26000000|(config.accentColor&0xFFFFFF);}
+        else if("glass".equals(config.background)){top=0x42FFFFFF;bottom=0x22121822;}
+        if("glass".equals(config.effects) && !"solid_dark".equals(config.background) && !"flat".equals(style)){
+            p.setShader(new LinearGradient(0,bounds.top,0,bounds.bottom,0x44FFFFFF,0x22121822,Shader.TileMode.CLAMP));
+            canvas.drawRect(bounds,p);p.setShader(null);
+            canvas.restore();
+            return;
+        }
         p.setShader(new LinearGradient(0,bounds.top,0,bounds.bottom,top,bottom,Shader.TileMode.CLAMP));canvas.drawRect(bounds,p);p.setShader(null);
         if("paper".equals(style)){
             p.setColor(0x0CFFFFFF);p.setStrokeWidth(Math.max(1,bounds.width()/220f));
@@ -348,6 +355,10 @@ public final class IconStylingEngine {
     }
 
     private static void renderBorderRim(Canvas canvas, Path shapePath, RectF bounds, float radius, Config config) {
+        if ("glass".equals(config.effects)) {
+            renderLiquidGlassIconEffect(canvas, shapePath, bounds, radius);
+            return;
+        }
         Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         rimPaint.setStyle(Paint.Style.STROKE);
         rimPaint.setStrokeWidth(Math.max(1.2f, bounds.width() / 100f));
@@ -362,6 +373,56 @@ public final class IconStylingEngine {
             canvas.drawOval(strokeBounds, rimPaint);
         } else {
             float innerRad = Math.max(0, radius - inset);
+            canvas.drawRoundRect(strokeBounds, innerRad, innerRad, rimPaint);
+        }
+    }
+
+    private static void renderLiquidGlassIconEffect(Canvas canvas, Path shapePath, RectF bounds, float radius) {
+        float w = bounds.width();
+        float h = bounds.height();
+
+        // 1. Crystal liquid caustics (matching drawLiquidCausticsAndRim from MainActivity)
+        canvas.save();
+        canvas.clipPath(shapePath);
+        Paint caustic = new Paint(Paint.ANTI_ALIAS_FLAG);
+        caustic.setShader(new LinearGradient(
+                bounds.left, bounds.top,
+                bounds.right, bounds.bottom,
+                new int[]{0x22FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x12BAE6FD},
+                new float[]{0f, 0.32f, 0.72f, 1f},
+                Shader.TileMode.CLAMP
+        ));
+        canvas.drawRect(bounds, caustic);
+        canvas.restore();
+
+        // 2. Optical beveled rim: hairline meniscus matching MainActivity's glass surface
+        // Stroke width is a razor-fine hairline (approx 1.2f - 1.5f), NOT a thick white ring.
+        float sw = Math.max(1.0f, Math.min(1.8f, w / 90f));
+        float inset = sw * 0.55f;
+        RectF strokeBounds = new RectF(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset);
+        float innerRad = Math.max(0f, radius - inset);
+
+        Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        rimPaint.setStyle(Paint.Style.STROKE);
+        rimPaint.setStrokeWidth(sw);
+        // Beveled 5-stop diagonal specular rim matching MainActivity:
+        // top apex gleam is subtle translucent (0x58), mid flanks are clean/transparent (0x12/0x08), bottom is faint bounce (0x24)
+        int rimTop = 0x58FFFFFF;
+        int rimMid = 0x12FFFFFF;
+        int rimDim = 0x08000000;
+        int rimChromatic = 0x18BAE6FD;
+        int rimBot = 0x24FFFFFF;
+        rimPaint.setShader(new LinearGradient(
+                strokeBounds.left, strokeBounds.top,
+                strokeBounds.right, strokeBounds.bottom,
+                new int[]{rimTop, rimMid, rimDim, rimChromatic, rimBot},
+                new float[]{0f, 0.28f, 0.52f, 0.78f, 1f},
+                Shader.TileMode.CLAMP
+        ));
+
+        if (radius >= w / 2f - 0.5f) {
+            canvas.drawOval(strokeBounds, rimPaint);
+        } else {
             canvas.drawRoundRect(strokeBounds, innerRad, innerRad, rimPaint);
         }
     }

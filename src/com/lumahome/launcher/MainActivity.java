@@ -223,8 +223,9 @@ public final class MainActivity extends Activity {
         syncSystemSoundMuting();
     }
     @Override protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent); setIntent(intent); applyIntent(intent);
+        super.onNewIntent(intent); setIntent(intent);
         dismissIdleClock(); closeBlade(); drawer=false; search=""; moving=""; refreshApps(); render();
+        applyIntent(intent);
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putString("imageTarget",imageTarget); state.putBoolean("drawer",drawer);
@@ -371,7 +372,24 @@ public final class MainActivity extends Activity {
         if (!updated.equals(current)) store.list("favorites",updated);
     }
     private void applyIntent(Intent intent) {
-        if (intent==null || !intent.hasExtra("apps")) return;
+        if (intent==null) return;
+        if (intent.hasExtra("open_page")) {
+            String p = intent.getStringExtra("open_page");
+            if ("all_apps".equals(p) || "drawer".equals(p)) {
+                handler.postDelayed(() -> switchLauncherPage(true), 150);
+            } else if ("home".equals(p)) {
+                handler.postDelayed(() -> switchLauncherPage(false), 150);
+            }
+        }
+        if (intent.hasExtra("open_blade")) {
+            String b = intent.getStringExtra("open_blade");
+            if ("icon_effects".equals(b)) {
+                handler.postDelayed(() -> iconEffectsChoice(this::closeBlade), 350);
+            } else if ("app_icons".equals(b)) {
+                handler.postDelayed(() -> appIconsMenu(this::closeBlade), 350);
+            }
+        }
+        if (!intent.hasExtra("apps")) return;
         String stamp=intent.getStringExtra("stamp"), raw=intent.getStringExtra("apps");
         if (stamp!=null && stamp.equals(store.value("intent_stamp",""))) return;
         if (stamp!=null) store.set("intent_stamp",stamp);
@@ -765,8 +783,8 @@ public final class MainActivity extends Activity {
                     || state.w!=iw || state.h!=ih || Math.abs(state.rad-rad)>0.5f
                     || state.frost!=frost || Math.abs(state.sheen-sh)>0.01f;
             if(needRender) {
-                float bevelW=isBlade?px(12f):px(26f);
-                float refrH=isBlade?px(20f):px(56f);
+                float bevelW=isBlade?px(12f):Math.min(r.width()*0.18f,px(26f));
+                float refrH=isBlade?px(20f):Math.min(r.width()*0.32f,px(56f));
                 float effRad=isBlade?0f:rad;
                 int tintCol=themed(0xFF171114,0xFF0E1725);
                 float tintA=Math.min(0.68f,frost/145f);
@@ -3012,37 +3030,56 @@ public final class MainActivity extends Activity {
         return rows;
     }
     private Drawable glassSurface(boolean oval,boolean bannerStyle,boolean focused,int glowColor) {
+        return glassSurface(null,oval,bannerStyle,focused,glowColor);
+    }
+    private Drawable glassSurface(final View anchor,final boolean oval,final boolean bannerStyle,final boolean focused,final int glowColor) {
         return new Drawable() {
             private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
             private final android.graphics.RectF r=new android.graphics.RectF();
+            private final android.graphics.Matrix mat=new android.graphics.Matrix();
+            private final int[] loc=new int[2];
+            private final LiquidPatchState patchState=new LiquidPatchState();
+
             @Override public void draw(android.graphics.Canvas c) {
                 r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0) return;
                 float rad=oval?iconShapeRadius(r.width(),r.height()):px(22);
+                String style=uiSurfaceStyle();
+                boolean isGlass="glass".equals(style);
+                boolean isSolid="solid".equals(style);
+                float sh=sheenMultiplier();
+
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 if(bannerStyle) {
                     p.setShader(null);
                     p.setColor(0xFF1E1A1C);
                     c.drawRoundRect(r,rad,rad,p);
+                } else if(isGlass) {
+                    int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
+                    int eff=Math.min(50,Math.round(frost*0.55f));
+                    int topAlpha=Math.max(14,Math.min(180,Math.round(eff*1.15f)));
+                    int botAlpha=Math.max(22,Math.min(200,Math.round(eff*1.45f)));
+                    int baseRgb=themed(0xFF171114,0xFF0E1725)&0x00FFFFFF;
+                    p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
+                            (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));
+                    c.drawRoundRect(r,rad,rad,p);
+                    p.setShader(null);
+                    drawLiquidCausticsAndRim(c,r,rad,false,focused,focused?glowColor:0,sh,p);
                 } else {
                     int tint=(glowColor&0x00FFFFFF)|(focused?0x38000000:0x14000000);
                     p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
                             focused?0x46FFFFFF:0x1EFFFFFF,tint,android.graphics.Shader.TileMode.CLAMP));
                     c.drawRoundRect(r,rad,rad,p);
-                    // Top 45% specular sheen
-                    android.graphics.RectF sheen=new android.graphics.RectF(r.left,r.top,r.right,r.top+r.height()*0.45f);
-                    p.setShader(new android.graphics.LinearGradient(0,sheen.top,0,sheen.bottom,
-                            focused?0x34FFFFFF:0x14FFFFFF,0x00FFFFFF,android.graphics.Shader.TileMode.CLAMP));
-                    c.drawRoundRect(sheen,rad,rad,p);
-                }
-                p.setShader(null);
-                if(focused || !bannerStyle) {
-                    p.setStyle(android.graphics.Paint.Style.STROKE);
-                    p.setStrokeWidth(Math.max(1f,px(focused?(store.flag("contrast")?3f:2.2f):1f)));
-                    int rim=focused?(store.flag("contrast")?accent():0xE8FFFFFF):0x26FFFFFF;
-                    p.setColor(rim);
-                    float inset=p.getStrokeWidth()/2f;
-                    r.inset(inset,inset);
-                    c.drawRoundRect(r,rad,rad,p);
+                    p.setShader(null);
+                    if(focused || !bannerStyle) {
+                        p.setStyle(android.graphics.Paint.Style.STROKE);
+                        p.setStrokeWidth(Math.max(1f,px(focused?(store.flag("contrast")?3f:2.2f):1f)));
+                        int rim=focused?(store.flag("contrast")?accent():0xE8FFFFFF):0x26FFFFFF;
+                        p.setColor(rim);
+                        float inset=p.getStrokeWidth()/2f;
+                        r.inset(inset,inset);
+                        c.drawRoundRect(r,rad,rad,p);
+                    }
                 }
             }
             @Override public void setAlpha(int a) {}
@@ -3642,7 +3679,7 @@ public final class MainActivity extends Activity {
         String artwork=store.value("art."+pkg,"");
         AppCatalog.Artwork appArt=catalog.artwork(pkg,recent?false:allApps?store.flag("icon."+pkg):!store.flag("home_banner."+pkg));
         final boolean bannerStyle=!artwork.isEmpty()||appArt.banner;
-        picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(!allApps,bannerStyle,false,surfaceTint));
+        picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(picture,!allApps,bannerStyle,false,surfaceTint));
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if(artwork.isEmpty()) {
@@ -3709,7 +3746,7 @@ public final class MainActivity extends Activity {
             int dur=has?(useSpring?220:140):(useSpring?170:140);
 
             tile.animate().translationZ(has?px(16):0).setDuration(focusDuration(dur)).start();
-            picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(!allApps,bannerStyle,has&&!useSpring,surfaceTint));
+            picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(picture,!allApps,bannerStyle,has&&!useSpring,surfaceTint));
             picture.invalidate();
             picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
                     .translationY(has?focusLift():0f)
@@ -4147,7 +4184,7 @@ public final class MainActivity extends Activity {
                             outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),px(22));
                         }
                     });
-                    picture.setBackground(glassSurface(false,true,false,surfaceTint));
+                    picture.setBackground(glassSurface(picture,false,true,false,surfaceTint));
                     iconSlot.addView(picture,new FrameLayout.LayoutParams(-1,-1));
                     card.addView(iconSlot,new LinearLayout.LayoutParams(-1,px(artHeight)));
 
@@ -4185,7 +4222,7 @@ public final class MainActivity extends Activity {
                         int dur=has?(useSpring?220:140):(useSpring?170:140);
 
                         card.animate().translationZ(has?px(16):0).setDuration(focusDuration(dur)).start();
-                        picture.setBackground(glassSurface(false,true,has&&!useSpring,surfaceTint));
+                        picture.setBackground(glassSurface(picture,false,true,has&&!useSpring,surfaceTint));
                         picture.invalidate();
                         picture.animate().scaleX(has?zoom:1f).scaleY(has?zoom:1f)
                                 .translationY(has?focusLift():0f)
@@ -5081,13 +5118,14 @@ public final class MainActivity extends Activity {
     private void iconEffectsChoice(Runnable back) {
         String curEf = store.value("icon_effects", "shadow");
         String[] options = {
+                "Liquid Glass · Refractive lens & optical rim",
                 "Soft Shadow · Subtle ambient drop shadow (Default)",
                 "Specular Rim · Delicate glass / metal border",
                 "Embossed Depth · Tactile raised bevel",
                 "None · Clean flat minimalist"
         };
-        int selected = "border".equals(curEf) ? 1 : "depth".equals(curEf) ? 2 : "none".equals(curEf) ? 3 : 0;
-        String[] keys = {"shadow", "border", "depth", "none"};
+        int selected = "glass".equals(curEf) ? 0 : "shadow".equals(curEf) ? 1 : "border".equals(curEf) ? 2 : "depth".equals(curEf) ? 3 : 4;
+        String[] keys = {"glass", "shadow", "border", "depth", "none"};
         choice("Icon effects", options, selected, idx -> {
             store.set("icon_effects", keys[idx]);
             IconStylingEngine.clearCache();
@@ -5267,6 +5305,7 @@ public final class MainActivity extends Activity {
     }
 
     private String iconEffectsDisplayName(String ef) {
+        if ("glass".equals(ef)) return "Liquid Glass · Refractive lens & optical rim";
         if ("border".equals(ef)) return "Specular Rim · Delicate glass / metal border";
         if ("depth".equals(ef)) return "Embossed Depth · Tactile raised bevel";
         if ("none".equals(ef)) return "None · Clean flat minimalist";
