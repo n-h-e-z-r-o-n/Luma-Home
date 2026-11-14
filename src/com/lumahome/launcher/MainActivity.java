@@ -869,21 +869,22 @@ public final class MainActivity extends Activity {
             return;
         }
         if(sh > 0.001f) {
-            // Diagonal Fresnel & internal caustic glow (bright top-left, crystal-clear center, subtle bottom-right bounce)
+            // Subtle diagonal Fresnel & internal caustic bounce without milky white wash
             p.setStyle(android.graphics.Paint.Style.FILL);
-            int topGlow=Color.argb(Math.min(150,Math.round((focused?76:48)*sh)),255,255,255);
-            int botCaustic=Color.argb(Math.min(72,Math.round((focused?38:22)*sh)),215,240,255);
+            int topGlow=Color.argb(Math.min(48,Math.round(20*sh)),255,255,255);
+            int botCaustic=Color.argb(Math.min(56,Math.round((focused?28:18)*sh)),186,230,253);
             p.setShader(new android.graphics.LinearGradient(r.left,r.top,r.right,r.bottom,
                     new int[]{topGlow,0x00FFFFFF,0x00FFFFFF,botCaustic},
-                    new float[]{0f,0.34f,0.72f,1f},android.graphics.Shader.TileMode.CLAMP));
+                    new float[]{0f,0.26f,0.74f,1f},android.graphics.Shader.TileMode.CLAMP));
             c.drawRoundRect(r,rad,rad,p);
             p.setShader(null);
 
-            // Top specular dome highlight
+            // Capped top crown catchlight (never covers tall menu blades or washes out controls)
+            float domeH=Math.min(px(52),r.height()*0.32f);
             c.save();
-            c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.42f);
-            p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.42f,
-                    Color.argb(Math.min(138,Math.round((focused?68:36)*sh)),255,255,255),0x00FFFFFF,
+            c.clipRect(r.left,r.top,r.right,r.top+domeH);
+            p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+domeH,
+                    Color.argb(Math.min(42,Math.round(16*sh)),255,255,255),0x00FFFFFF,
                     android.graphics.Shader.TileMode.CLAMP));
             c.drawRoundRect(r,rad,rad,p);
             c.restore();
@@ -1024,10 +1025,10 @@ public final class MainActivity extends Activity {
                 if(focused) {
                     if(isGlass) {
                         int effTint=tintCol!=0?tintCol:accent();
-                        int botTint=(effTint&0x00FFFFFF)|0x36000000;
-                        int topWhite=Color.argb(Math.min(118,Math.round(52*sh)),255,255,255);
+                        int topTint=(effTint&0x00FFFFFF)|0x22000000;
+                        int botTint=(effTint&0x00FFFFFF)|0x38000000;
                         p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
-                                topWhite,botTint,android.graphics.Shader.TileMode.CLAMP));
+                                topTint,botTint,android.graphics.Shader.TileMode.CLAMP));
                         c.drawRoundRect(r,rad,rad,p);
                         p.setShader(null);
                     } else {
@@ -3407,20 +3408,7 @@ public final class MainActivity extends Activity {
             float pad=px(3);
             rect.set(pad,pad,w-pad,h-pad);
             float rad=oval?Math.min(rect.width(),rect.height())/2f:cornerRadius;
-            if(h!=shaderH) {
-                shaderH=h;
-                fill.setShader(new android.graphics.LinearGradient(0,rect.top,0,rect.bottom,
-                        0x20FFFFFF,0x04FFFFFF,android.graphics.Shader.TileMode.CLAMP));
-                spec.setShader(new android.graphics.LinearGradient(0,rect.top,0,rect.top+rect.height()*0.44f,
-                        0x44FFFFFF,0x00FFFFFF,android.graphics.Shader.TileMode.CLAMP));
-            }
-            if("full".equals(style)) {
-                c.drawRoundRect(rect,rad,rad,fill);
-                c.save();
-                c.clipRect(rect.left,rect.top,rect.right,rect.top+rect.height()*0.44f);
-                c.drawRoundRect(rect,rad,rad,spec);
-                c.restore();
-            }
+            // Draw only the optical focus rim above the tile; never paint a white wash over icon/card artwork.
             rim.setStrokeWidth(Math.max(2f,px(store.flag("contrast")?3f:2.35f)));
             int rimCol;
             if(store.flag("contrast")) {
@@ -7831,8 +7819,8 @@ public final class MainActivity extends Activity {
 
                 int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
                 int baseRgb=themed(0xFF131A26,0xFF0A0F17)&0x00FFFFFF;
-                int topAlpha=isSolid?250:isGlass?Math.max(38,Math.min(235,Math.round(frost*1.8f))):238;
-                int botAlpha=isSolid?254:isGlass?Math.max(48,Math.min(242,Math.round(frost*2.0f))):246;
+                int topAlpha=isSolid?250:isGlass?Math.max(148,Math.min(235,Math.round(148+frost*0.85f))):238;
+                int botAlpha=isSolid?254:isGlass?Math.max(176,Math.min(244,Math.round(176+frost*0.68f))):246;
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
                         (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));
@@ -7869,23 +7857,13 @@ public final class MainActivity extends Activity {
                 r.set(getBounds());
                 if(r.width()<=0 || r.height()<=0) return;
                 float rad=px(cornerDp);
-                float sh=sheenMultiplier();
                 int effTint=accent();
 
                 p.setStyle(android.graphics.Paint.Style.FILL);
-                int fillTop=(effTint&0x00FFFFFF)|0x36000000;
+                int fillTop=(effTint&0x00FFFFFF)|0x2E000000;
                 int fillBot=(effTint&0x00FFFFFF)|0x18000000;
                 p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,fillTop,fillBot,android.graphics.Shader.TileMode.CLAMP));
                 c.drawRoundRect(r,rad,rad,p);
-                p.setShader(null);
-
-                c.save();
-                c.clipRect(r.left,r.top,r.right,r.top+r.height()*0.46f);
-                p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.top+r.height()*0.46f,
-                        Color.argb(Math.min(130,Math.round(55*sh)),255,255,255),0x00FFFFFF,
-                        android.graphics.Shader.TileMode.CLAMP));
-                c.drawRoundRect(r,rad,rad,p);
-                c.restore();
                 p.setShader(null);
 
                 float sw=Math.max(1.6f,px(store.flag("contrast")?2.8f:1.9f));
