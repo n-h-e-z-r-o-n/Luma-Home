@@ -420,6 +420,8 @@ public final class MainActivity extends Activity {
             String b = intent.getStringExtra("open_blade");
             if ("icon_effects".equals(b)) {
                 handler.postDelayed(() -> iconEffectsChoice(this::closeBlade), 350);
+            } else if ("icon_background".equals(b)) {
+                handler.postDelayed(() -> iconBackgroundChoice(this::closeBlade), 350);
             } else if ("app_icons".equals(b)) {
                 handler.postDelayed(() -> appIconsMenu(this::closeBlade), 350);
             }
@@ -812,9 +814,9 @@ public final class MainActivity extends Activity {
             anchor.getLocationOnScreen(loc);
             int iw=Math.round(r.width()), ih=Math.round(r.height());
             int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
-            float sh=sheenMultiplier();
+            float sh=Math.max(0.75f,sheenMultiplier());
             boolean needRender = state.patch==null || !frostedBackdropKey.equals(state.key)
-                    || Math.abs(state.locX - loc[0]) > 4 || Math.abs(state.locY - loc[1]) > 4
+                    || Math.abs(state.locX - loc[0]) > 1 || Math.abs(state.locY - loc[1]) > 1
                     || state.w!=iw || state.h!=ih || Math.abs(state.rad-rad)>0.5f
                     || state.frost!=frost || Math.abs(state.sheen-sh)>0.01f;
             if(needRender) {
@@ -849,7 +851,8 @@ public final class MainActivity extends Activity {
     }
 
     private void drawLiquidCausticsAndRim(android.graphics.Canvas c,android.graphics.RectF r,float rad,
-            boolean isBlade,boolean focused,int tintCol,float sh,android.graphics.Paint p) {
+            boolean isBlade,boolean focused,int tintCol,float rawSh,android.graphics.Paint p) {
+        float sh=Math.max(0.85f,rawSh);
         if(isBlade) {
             if(sh > 0.001f) {
                 float gleamH=Math.min(r.height(),px(280));
@@ -1942,7 +1945,14 @@ public final class MainActivity extends Activity {
         if(dockBar!=null) dockBar.setBackground(glassPanelDrawable(dockBar,26f,false));
         if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
         if(activeBladeList!=null) activeBladeList.invalidateViews();
+        // Baked glass icons (recents, all apps) carry the glass settings in their cache key: rebuild them
+        // only when the glass look actually changed, so they keep matching the dock.
+        String iconGlassSig=glassFrostDepth()+":"+glassSheenMode()+":"+Integer.toHexString(themed(0xFF171114,0xFF0E1725))+":"+store.flag("contrast");
+        boolean iconGlassChanged=lastIconGlassSig!=null && !iconGlassSig.equals(lastIconGlassSig);
+        lastIconGlassSig=iconGlassSig;
+        if(iconGlassChanged && IconStylingEngine.usesGlassPlate(iconConfig())) rebuildContentInPlace();
     }
+    private String lastIconGlassSig;
 
     private void resetHomeStage3D(ViewGroup stage, boolean animate) {
         if(stage==null) return;
@@ -2538,8 +2548,8 @@ public final class MainActivity extends Activity {
         appsRow.setPadding(px(88),rowTopPad,px(88),rowBotPad);
         List<View> navigationRow=new ArrayList<>();appRows.add(navigationRow);
         int baseIconSize=px(columns()==4?176:columns()==8?112:144);
-        float sizeScale=store.number("icon_size_pct",100)/100f;
-        int iconSize=baseIconSize;
+        float sizeScale=iconSizeScale();
+        int iconSize=Math.round(baseIconSize*sizeScale);
         int iconSpacing=px(52);
         for(int i=0;i<favorite.size();i++) {
             View tile=appTile(favorite.get(i),iconSize,iconSize,false);
@@ -3727,7 +3737,8 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(-1,-1));
         } else if(recent) {
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-            int iconSize=Math.max(1,Math.min(Math.round(width*0.36f),Math.round(height*0.65f)));
+            int baseRecentIcon=Math.max(1,Math.min(Math.round(width*0.36f),Math.round(height*0.65f)));
+            int iconSize=Math.max(1,Math.min(Math.round(height*0.86f),Math.round(baseRecentIcon*iconSizeScale())));
             if(appArt.drawable!=null) {
                 if("original".equals(store.value("icon_style","brand"))) {
                     image.setImageDrawable(appArt.drawable);
@@ -3738,7 +3749,9 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
-            int iconSize=allApps?px(102):px(64);
+            int baseAllAppsIcon=allApps?px(102):px(64);
+            int maxAllAppsIcon=Math.max(baseAllAppsIcon,height-px(62));
+            int iconSize=Math.max(1,Math.min(maxAllAppsIcon,Math.round(baseAllAppsIcon*iconSizeScale())));
             if(appArt.drawable!=null) {
                 if("original".equals(store.value("icon_style","brand"))) {
                     image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
@@ -4999,15 +5012,29 @@ public final class MainActivity extends Activity {
                         ()->perspectiveMenu(this::appearanceMenu)),this::lumaSettingsMenu);
     }
 
+    private float iconSizeScale() {
+        return Math.max(0.65f, Math.min(1.35f, store.number("icon_size_pct", 100) / 100f));
+    }
+
     private IconStylingEngine.Config iconConfig() {
+        String ef = store.value("icon_effects", "shadow");
+        if ("glass".equals(ef)) ef = "shadow";
+        // Outer icon containers now scale by iconSizeScale(), so keep inner glyph proportion at 100%
+        // so the shape, glass plate, rim, and inner glyph all scale together as a single unit.
         return new IconStylingEngine.Config(
                 store.value("icon_style", "brand"),
                 store.value("icon_color", "original"),
                 store.value("icon_shape", "circle"),
-                store.number("icon_size_pct", 100),
+                100,
                 store.value("icon_background", "auto"),
-                store.value("icon_effects", "shadow"),
-                accent()
+                ef,
+                accent(),
+                // Same glass inputs as the dock / control surfaces, so glass icons follow them exactly.
+                overrideFrostPct>=0?overrideFrostPct:glassFrostDepth(),
+                Math.max(1.0f,sheenMultiplier()),
+                themed(0xFF171114,0xFF0E1725),
+                store.flag("contrast"),
+                false
         );
     }
 
@@ -5145,22 +5172,28 @@ public final class MainActivity extends Activity {
 
     private void iconBackgroundChoice(Runnable back){
         String[] keys={"auto","glass","solid_dark","transparent","gradient"};
-        String[] labels={"Style default - Material follows the style","Frosted Glass - Translucent override","Solid Dark - Charcoal override","Transparent - No surrounding plate","Accent Gradient - Wallpaper color"};
+        String[] labels={
+                "Style default · Material follows the style",
+                "Liquid Glass · Refractive crystal lens & caustics",
+                "Solid Dark · Charcoal override",
+                "Transparent · No surrounding plate",
+                "Accent Gradient · Wallpaper color"
+        };
         int selected=java.util.Arrays.asList(keys).indexOf(store.value("icon_background","auto"));
         choice("Icon background",labels,Math.max(0,selected),idx->{store.set("icon_background",keys[idx]);IconStylingEngine.clearCache();rebuildContentInPlace();},()->appIconsMenu(back));
     }
 
     private void iconEffectsChoice(Runnable back) {
         String curEf = store.value("icon_effects", "shadow");
+        if ("glass".equals(curEf)) curEf = "shadow";
         String[] options = {
-                "Liquid Glass · Refractive lens & optical rim",
                 "Soft Shadow · Subtle ambient drop shadow (Default)",
                 "Specular Rim · Delicate glass / metal border",
                 "Embossed Depth · Tactile raised bevel",
                 "None · Clean flat minimalist"
         };
-        int selected = "glass".equals(curEf) ? 0 : "shadow".equals(curEf) ? 1 : "border".equals(curEf) ? 2 : "depth".equals(curEf) ? 3 : 4;
-        String[] keys = {"glass", "shadow", "border", "depth", "none"};
+        int selected = "border".equals(curEf) ? 1 : "depth".equals(curEf) ? 2 : "none".equals(curEf) ? 3 : 0;
+        String[] keys = {"shadow", "border", "depth", "none"};
         choice("Icon effects", options, selected, idx -> {
             store.set("icon_effects", keys[idx]);
             IconStylingEngine.clearCache();
@@ -5231,7 +5264,7 @@ public final class MainActivity extends Activity {
 
         String[] samplePkgs = findSampleIconPackages();
         final ImageView[] sampleViews = new ImageView[samplePkgs.length];
-        int sampleIconSize = px(128);
+        int sampleIconSize = Math.round(px(120) * iconSizeScale());
 
         LinearLayout sampleLine=null;
         for (int i = 0; i < samplePkgs.length; i++) {
@@ -5332,15 +5365,15 @@ public final class MainActivity extends Activity {
     }
 
     private String iconBackgroundDisplayName(String bg) {
-        if ("auto".equals(bg)) return "Style default - Material follows the style";
+        if ("auto".equals(bg)) return "Style default · Material follows the style";
+        if ("glass".equals(bg)) return "Liquid Glass · Refractive crystal plate";
         if ("solid_dark".equals(bg)) return "Solid Dark · Deep charcoal slate plate";
         if ("transparent".equals(bg)) return "Transparent · Floating glyphs directly on wallpaper";
         if ("gradient".equals(bg)) return "Accent Gradient · Subtle ambient illumination";
-        return "Frosted Glass - Translucent surface";
+        return "Liquid Glass · Refractive crystal plate";
     }
 
     private String iconEffectsDisplayName(String ef) {
-        if ("glass".equals(ef)) return "Liquid Glass · Refractive lens & optical rim";
         if ("border".equals(ef)) return "Specular Rim · Delicate glass / metal border";
         if ("depth".equals(ef)) return "Embossed Depth · Tactile raised bevel";
         if ("none".equals(ef)) return "None · Clean flat minimalist";

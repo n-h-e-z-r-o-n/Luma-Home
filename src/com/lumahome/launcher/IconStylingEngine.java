@@ -47,8 +47,19 @@ public final class IconStylingEngine {
         public final String background;  // "glass", "solid_dark", "transparent", "gradient"
         public final String effects;     // "shadow", "border", "depth", "none"
         public final int accentColor;
+        // Liquid glass plate parameters, shared with the launcher's glass surfaces (dock, controls).
+        public final int glassFrost;      // 0..100, same as the "Glass Frost Depth" setting
+        public final float glassSheen;    // same multiplier the launcher's surfaces use (0 = none)
+        public final int glassTint;       // theme tint of the glass body (opaque RGB)
+        public final boolean glassContrast; // high-contrast mode: accent rim instead of specular rim
+        public final boolean livePlate;   // host draws a live refracted plate behind; engine renders glyph only
 
         public Config(String style, String color, String shape, int sizePct, String background, String effects, int accentColor) {
+            this(style, color, shape, sizePct, background, effects, accentColor, 0, 0.55f, 0xFF171114, false, false);
+        }
+
+        public Config(String style, String color, String shape, int sizePct, String background, String effects, int accentColor,
+                      int glassFrost, float glassSheen, int glassTint, boolean glassContrast, boolean livePlate) {
             this.style = style != null ? style : "brand";
             this.color = color != null ? color : "original";
             this.shape = shape != null ? shape : "circle";
@@ -56,11 +67,32 @@ public final class IconStylingEngine {
             this.background = background != null ? background : "auto";
             this.effects = effects != null ? effects : "shadow";
             this.accentColor = accentColor;
+            this.glassFrost = Math.max(0, Math.min(100, glassFrost));
+            this.glassSheen = Math.max(0f, glassSheen);
+            this.glassTint = glassTint | 0xFF000000;
+            this.glassContrast = glassContrast;
+            this.livePlate = livePlate;
+        }
+
+        public Config withLivePlate(boolean live) {
+            return new Config(style, color, shape, sizePct, background, effects, accentColor,
+                    glassFrost, glassSheen, glassTint, glassContrast, live);
         }
 
         public String cacheKey(String pkg, int targetSize) {
-            return pkg + ":" + targetSize + ":" + style + ":" + color + ":" + shape + ":" + sizePct + ":" + background + ":" + effects + ":" + accentColor;
+            String key = pkg + ":" + targetSize + ":" + style + ":" + color + ":" + shape + ":" + sizePct + ":" + background + ":" + effects + ":" + accentColor;
+            if (usesGlassPlate(this)) {
+                key += ":g" + glassFrost + ":" + Math.round(glassSheen * 100f) + ":" + Integer.toHexString(glassTint)
+                        + ":" + (glassContrast ? 1 : 0) + ":" + (livePlate ? "live" : "baked");
+            }
+            return key;
         }
+    }
+
+    /** True when the icon sits on the liquid glass plate (explicit glass background, or glass style on auto). */
+    public static boolean usesGlassPlate(Config config) {
+        if (config == null) return false;
+        return "glass".equals(config.background) || ("glass".equals(config.style) && "auto".equals(config.background));
     }
 
     /** Result of glyph extraction for one app icon. Style-independent, so it is cached separately. */
@@ -119,8 +151,12 @@ public final class IconStylingEngine {
         if (cached != null) return cached.getConstantState().newDrawable(context.getResources()).mutate();
 
         try {
-            // Brand and Original never infer or redraw a flattened app logo.
-            Glyph glyph=("brand".equals(config.style)||"original".equals(config.style))?null:obtainGlyph((pkg==null?"sample":pkg)+":"+revision,original,targetSize);
+            // Brand and Original keep flattened logos intact on "auto" background,
+            // but when the user explicitly selects the "glass" background, extract adaptive foreground glyphs
+            // so the liquid glass plate is visible behind the app symbol.
+            boolean extractGlyph = (!"brand".equals(config.style) && !"original".equals(config.style))
+                    || "glass".equals(config.background);
+            Glyph glyph=extractGlyph?obtainGlyph((pkg==null?"sample":pkg)+":"+revision,original,targetSize):null;
             Bitmap rendered=(glyph!=null&&glyph.ok)?renderStyledBitmap(glyph,targetSize,config):renderOriginalFallback(original,targetSize,config);
             if (rendered != null) {
                 Drawable result = new BitmapDrawable(context.getResources(), rendered);
@@ -197,12 +233,12 @@ public final class IconStylingEngine {
             if(diagonal>limit){w*=limit/diagonal;h*=limit/diagonal;}
         }
         RectF destination=new RectF((targetSize-w)/2f,(targetSize-h)/2f,(targetSize+w)/2f,(targetSize+h)/2f);
-        if("shadow".equals(config.effects)||"depth".equals(config.effects)||"glass".equals(config.effects)){
+        if("shadow".equals(config.effects)||"depth".equals(config.effects)){
             Paint shadow=new Paint(paint);shadow.setColorFilter(new PorterDuffColorFilter(0x55000000,PorterDuff.Mode.SRC_IN));
             RectF offset=new RectF(destination);offset.offset(0,targetSize*.018f);canvas.drawBitmap(fullOriginal,null,offset,shadow);
         }
         canvas.drawBitmap(fullOriginal,null,destination,paint);canvas.restore();
-        if("paper".equals(config.style)||"depth".equals(config.effects))renderMaterialEdge(canvas,bounds,radius,targetSize);
+        if(!usesGlassPlate(config)&&(("paper".equals(config.style)&&!"glass".equals(config.effects))||"depth".equals(config.effects)))renderMaterialEdge(canvas,bounds,radius,targetSize);
         return output;
     }
 
@@ -232,7 +268,7 @@ public final class IconStylingEngine {
             filter = new ColorMatrixColorFilter(cm);
         }
         Bitmap out = renderShapedArtwork(full, targetSize, config, filter);
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects) || "glass".equals(config.effects)) {
+        if (wantsBorderRim(config)) {
             RectF bounds = new RectF(0, 0, targetSize, targetSize);
             float radius = getShapeCornerRadius(config.shape, targetSize);
             renderBorderRim(new Canvas(out), shapePath(bounds, radius, targetSize), bounds, radius, config);
@@ -265,7 +301,7 @@ public final class IconStylingEngine {
             Rect dst = new Rect(Math.round(box.left), Math.round(box.top), Math.round(box.right), Math.round(box.bottom));
 
             // Optional drop shadow effect under the glyph
-            if (("shadow".equals(config.effects)||"depth".equals(config.effects)||"glass".equals(config.effects)) && !"flat".equals(config.style)) {
+            if (("shadow".equals(config.effects)||"depth".equals(config.effects)) && !"flat".equals(config.style)) {
                 Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
                 shadowPaint.setColorFilter(new PorterDuffColorFilter(0x40000000, PorterDuff.Mode.SRC_IN));
                 int off = Math.max(1, targetSize / 50);
@@ -278,13 +314,19 @@ public final class IconStylingEngine {
             canvas.restore();
         }
 
-        if("depth".equals(config.effects))renderMaterialEdge(canvas,bounds,radius,targetSize);
-        // Step 4: Render subtle specular rim / border if requested or for glass style
-        if ("border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects) || "glass".equals(config.effects)) {
+        if("depth".equals(config.effects)&&!usesGlassPlate(config))renderMaterialEdge(canvas,bounds,radius,targetSize);
+        // Step 4: Render subtle specular rim / border if requested or for glass style.
+        // The liquid glass plate already carries its own optical rim, so never stack a second one on it.
+        if (wantsBorderRim(config)) {
             renderBorderRim(canvas, shapePath, bounds, radius, config);
         }
 
         return output;
+    }
+
+    private static boolean wantsBorderRim(Config config) {
+        if (usesGlassPlate(config)) return false;
+        return "border".equals(config.effects) || "glass".equals(config.style) || "outlined".equals(config.style) || "depth".equals(config.effects);
     }
 
     /**
@@ -319,6 +361,12 @@ public final class IconStylingEngine {
     private static void renderBackground(Canvas canvas,Path shapePath,RectF bounds,float radius,Config config){
         if("transparent".equals(config.background)||("original".equals(config.style)&&"auto".equals(config.background)))return;
         Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);canvas.save();canvas.clipPath(shapePath);
+        if(usesGlassPlate(config)){
+            // Live plate: the host view draws refracted backdrop + body + rim behind a transparent icon.
+            if(!config.livePlate) renderDockMatchedLiquidGlass(canvas, bounds, radius, config);
+            canvas.restore();
+            return;
+        }
         String style=config.style;int top=0xFF202A32,bottom=0xFF131B22;
         if("paper".equals(style)){top=0xFF514A41;bottom=0xFF39342F;}
         else if("dark".equals(style)){top=0xFF14181F;bottom=0xFF06090E;}
@@ -330,13 +378,6 @@ public final class IconStylingEngine {
         if("black".equals(config.color)&&"auto".equals(config.background)){top=0xFFE4E7EB;bottom=0xFFC9CFD6;}
         if("solid_dark".equals(config.background)){top=bottom=0xFF141920;}
         else if("gradient".equals(config.background)){top=0xFF202A38;bottom=0xB0000000|(config.accentColor&0xFFFFFF);}
-        else if("glass".equals(config.background)){top=0x42FFFFFF;bottom=0x22121822;}
-        if("glass".equals(config.effects) && !"solid_dark".equals(config.background) && !"flat".equals(style)){
-            p.setShader(new LinearGradient(0,bounds.top,0,bounds.bottom,0x44FFFFFF,0x22121822,Shader.TileMode.CLAMP));
-            canvas.drawRect(bounds,p);p.setShader(null);
-            canvas.restore();
-            return;
-        }
         p.setShader(new LinearGradient(0,bounds.top,0,bounds.bottom,top,bottom,Shader.TileMode.CLAMP));canvas.drawRect(bounds,p);p.setShader(null);
         if("paper".equals(style)){
             p.setColor(0x0CFFFFFF);p.setStrokeWidth(Math.max(1,bounds.width()/220f));
@@ -347,6 +388,92 @@ public final class IconStylingEngine {
         }
         canvas.restore();
     }
+
+    /**
+     * Translucent optical Liquid Glass lens for icon backgrounds.
+     *
+     * Unlike a static screen-captured bitmap patch (which freezes the background image from an old screen
+     * coordinate when scrolling or changing focus), this renders a true see-through optical glass lens:
+     * 1. Smoked-crystal translucent body so the live wallpaper behind the icon flows through in real time
+     * 2. Inverse-power radial bevel meniscus near the rim (clear center, compressed glowing glass edge)
+     * 3. Diagonal Fresnel reflection & internal cyan caustic bounce
+     * 4. Top 42% curved specular dome catchlight
+     * 5. Razor-sharp 5-stop diagonal dual-lobe (30 deg / 210 deg) specular rim
+     */
+    private static void renderDockMatchedLiquidGlass(Canvas canvas, RectF bounds, float radius, Config config) {
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        // Always maintain optical liquid glass highlights even if global sheen pref is 0
+        float sh = Math.max(1.0f, config.glassSheen);
+        int baseRgb = config.glassTint & 0x00FFFFFF;
+
+        // 1. Translucent smoked-crystal body (lets live wallpaper show through continuously while scrolling)
+        int eff = Math.min(62, Math.max(24, Math.round(config.glassFrost * 0.62f)));
+        int topA = Math.max(42, Math.min(170, Math.round(eff * 1.15f)));
+        int botA = Math.max(64, Math.min(195, Math.round(eff * 1.50f)));
+        int topRgb = 0x202C3D;
+        p.setStyle(Paint.Style.FILL);
+        p.setShader(new LinearGradient(0, bounds.top, 0, bounds.bottom,
+                (topA << 24) | topRgb, (botA << 24) | baseRgb, Shader.TileMode.CLAMP));
+        canvas.drawRect(bounds, p);
+
+        // 2. Inverse-power radial bevel meniscus: crystal-clear interior (0..70%), compressed refractive rim glow (70..100%)
+        float cx = bounds.centerX();
+        float cy = bounds.centerY();
+        float maxR = Math.max(1f, Math.min(bounds.width(), bounds.height()) * 0.5f);
+        int meniscusEdge = Color.argb(Math.min(96, Math.round(52 * sh)), 220, 242, 255);
+        int meniscusMid = Color.argb(Math.min(48, Math.round(22 * sh)), 186, 230, 253);
+        p.setShader(new RadialGradient(
+                cx, cy, maxR,
+                new int[]{0x00FFFFFF, 0x00FFFFFF, meniscusMid, meniscusEdge},
+                new float[]{0f, 0.68f, 0.88f, 1f},
+                Shader.TileMode.CLAMP
+        ));
+        canvas.drawRect(bounds, p);
+
+        // 3. Diagonal Fresnel reflection & bottom-right internal cyan caustic bounce
+        int topGlow = Color.argb(Math.min(165, Math.round(62 * sh)), 255, 255, 255);
+        int botCaustic = Color.argb(Math.min(92, Math.round(36 * sh)), 186, 230, 253);
+        p.setShader(new LinearGradient(bounds.left, bounds.top, bounds.right, bounds.bottom,
+                new int[]{topGlow, 0x00FFFFFF, 0x00FFFFFF, botCaustic},
+                new float[]{0f, 0.34f, 0.70f, 1f}, Shader.TileMode.CLAMP));
+        canvas.drawRect(bounds, p);
+
+        // 4. Top specular dome highlight (curved upper crown catchlight)
+        float domeH = bounds.height() * 0.42f;
+        canvas.save();
+        canvas.clipRect(bounds.left, bounds.top, bounds.right, bounds.top + domeH);
+        p.setShader(new LinearGradient(0, bounds.top, 0, bounds.top + domeH,
+                Color.argb(Math.min(148, Math.round(48 * sh)), 255, 255, 255), 0x00FFFFFF,
+                Shader.TileMode.CLAMP));
+        canvas.drawRect(bounds, p);
+        canvas.restore();
+        p.setShader(null);
+
+        // 5. Single beveled 5-stop diagonal dual-lobe specular rim
+        float sw = Math.max(1.25f, Math.min(2.6f, bounds.width() / 64f));
+        float inset = sw / 2f;
+        RectF strokeBounds = new RectF(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset);
+        Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        rim.setStyle(Paint.Style.STROKE);
+        rim.setStrokeWidth(sw);
+        if (config.glassContrast) {
+            rim.setColor(config.accentColor | 0xFF000000);
+        } else {
+            int rimTop = Color.argb(Math.min(248, Math.round(195 * sh)), 255, 255, 255);
+            int rimChromatic = Color.argb(Math.min(140, Math.round(76 * sh)), 186, 230, 253);
+            int rimBot = Color.argb(Math.min(215, Math.round(135 * sh)), 255, 255, 255);
+            rim.setShader(new LinearGradient(strokeBounds.left, strokeBounds.top, strokeBounds.right, strokeBounds.bottom,
+                    new int[]{rimTop, 0x26FFFFFF, 0x12000000, rimChromatic, rimBot},
+                    new float[]{0f, 0.26f, 0.52f, 0.78f, 1f}, Shader.TileMode.CLAMP));
+        }
+        if (radius >= bounds.width() / 2f - 0.5f) {
+            canvas.drawOval(strokeBounds, rim);
+        } else {
+            float innerRad = Math.max(0f, radius - inset);
+            canvas.drawRoundRect(strokeBounds, innerRad, innerRad, rim);
+        }
+    }
+
     private static void renderMaterialEdge(Canvas canvas,RectF bounds,float radius,int size){
         Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);p.setStyle(Paint.Style.STROKE);p.setStrokeWidth(Math.max(1,size*.012f));
         p.setShader(new LinearGradient(0,0,0,size,0x60FFFFFF,0x70000000,Shader.TileMode.CLAMP));
@@ -355,10 +482,6 @@ public final class IconStylingEngine {
     }
 
     private static void renderBorderRim(Canvas canvas, Path shapePath, RectF bounds, float radius, Config config) {
-        if ("glass".equals(config.effects)) {
-            renderLiquidGlassIconEffect(canvas, shapePath, bounds, radius);
-            return;
-        }
         Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         rimPaint.setStyle(Paint.Style.STROKE);
         rimPaint.setStrokeWidth(Math.max(1.2f, bounds.width() / 100f));
@@ -373,56 +496,6 @@ public final class IconStylingEngine {
             canvas.drawOval(strokeBounds, rimPaint);
         } else {
             float innerRad = Math.max(0, radius - inset);
-            canvas.drawRoundRect(strokeBounds, innerRad, innerRad, rimPaint);
-        }
-    }
-
-    private static void renderLiquidGlassIconEffect(Canvas canvas, Path shapePath, RectF bounds, float radius) {
-        float w = bounds.width();
-        float h = bounds.height();
-
-        // 1. Crystal liquid caustics (matching drawLiquidCausticsAndRim from MainActivity)
-        canvas.save();
-        canvas.clipPath(shapePath);
-        Paint caustic = new Paint(Paint.ANTI_ALIAS_FLAG);
-        caustic.setShader(new LinearGradient(
-                bounds.left, bounds.top,
-                bounds.right, bounds.bottom,
-                new int[]{0x22FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x12BAE6FD},
-                new float[]{0f, 0.32f, 0.72f, 1f},
-                Shader.TileMode.CLAMP
-        ));
-        canvas.drawRect(bounds, caustic);
-        canvas.restore();
-
-        // 2. Optical beveled rim: hairline meniscus matching MainActivity's glass surface
-        // Stroke width is a razor-fine hairline (approx 1.2f - 1.5f), NOT a thick white ring.
-        float sw = Math.max(1.0f, Math.min(1.8f, w / 90f));
-        float inset = sw * 0.55f;
-        RectF strokeBounds = new RectF(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset);
-        float innerRad = Math.max(0f, radius - inset);
-
-        Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        rimPaint.setStyle(Paint.Style.STROKE);
-        rimPaint.setStrokeWidth(sw);
-        // Beveled 5-stop diagonal specular rim matching MainActivity:
-        // top apex gleam is subtle translucent (0x58), mid flanks are clean/transparent (0x12/0x08), bottom is faint bounce (0x24)
-        int rimTop = 0x58FFFFFF;
-        int rimMid = 0x12FFFFFF;
-        int rimDim = 0x08000000;
-        int rimChromatic = 0x18BAE6FD;
-        int rimBot = 0x24FFFFFF;
-        rimPaint.setShader(new LinearGradient(
-                strokeBounds.left, strokeBounds.top,
-                strokeBounds.right, strokeBounds.bottom,
-                new int[]{rimTop, rimMid, rimDim, rimChromatic, rimBot},
-                new float[]{0f, 0.28f, 0.52f, 0.78f, 1f},
-                Shader.TileMode.CLAMP
-        ));
-
-        if (radius >= w / 2f - 0.5f) {
-            canvas.drawOval(strokeBounds, rimPaint);
-        } else {
             canvas.drawRoundRect(strokeBounds, innerRad, innerRad, rimPaint);
         }
     }
@@ -1199,7 +1272,7 @@ public final class IconStylingEngine {
             float detail = Math.min(1f, Math.abs(lum - dom) / spread);
             boolean seam = seams != null && seams[i];
 
-            if ("original".equals(config.color)&&!"monochrome".equals(style)) {
+            if (("original".equals(config.color) || "brand".equals(style) || "original".equals(style)) && !"monochrome".equals(style)) {
                 result[i]=c;
             } else if ("monochrome".equals(style)) {
                 // High-contrast perceptual monochrome
