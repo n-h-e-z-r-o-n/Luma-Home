@@ -204,6 +204,7 @@ public final class MainActivity extends Activity {
         images=new ImageLoader(this); recommendations=new RecommendationRepository(this); weatherService=new WeatherService();
         if (state!=null) { imageTarget=state.getString("imageTarget",""); drawer=state.getBoolean("drawer"); }
         refreshApps(); applyIntent(getIntent()); initializeFavorites(); syncSystemSoundMuting();
+        QuickSettingsOverlayService.ensureServiceEnabled(this);
         IntentFilter filter=new IntentFilter();
         filter.addAction(Intent.ACTION_PACKAGE_ADDED); filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
         filter.addAction(Intent.ACTION_PACKAGE_CHANGED); filter.addDataScheme("package");
@@ -345,33 +346,60 @@ public final class MainActivity extends Activity {
         return code == KeyEvent.KEYCODE_SETTINGS
             || code == KeyEvent.KEYCODE_MENU
             || code == 312 // KEYCODE_QUICK_SETTINGS (API 31+)
-            || code == 4077; // TCL Quick Menu
+            || code == 4077; // TCL Quick Menu / Settings key
+    }
+    private boolean launchDefaultSettingsDialog() {
+        if (QuickSettingsOverlayService.showOrToggle(this)) {
+            android.util.Log.i("LumaRemote", "Opened Luma Liquid Glass Quick Settings overlay");
+            return true;
+        }
+        String[] dialogActions = new String[]{
+            "com.tcl.settings.action.QUICKSETTINGS",
+            "android.settings.QUICK_SETTINGS",
+            "android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL",
+            "android.app.action.OPEN_NOTIFICATION_HANDLER_PANEL"
+        };
+        for (String action : dialogActions) {
+            Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if ("com.tcl.settings.action.QUICKSETTINGS".equals(action)) intent.setPackage("com.tcl.settings");
+            if (intent.resolveActivity(getPackageManager()) != null) {
+                try {
+                    startActivity(intent);
+                    android.util.Log.i("LumaRemote", "Opened default settings dialog via: " + action);
+                    return true;
+                } catch (Exception ignored) {}
+            }
+        }
+        return false;
     }
     private boolean handleRemoteSettingsKey(KeyEvent event) {
         int code = event.getKeyCode();
         if (!isSettingsKey(code)) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            dismissIdleClock();
+            closeBlade();
+        }
         if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
             dismissIdleClock();
             closeBlade();
-            String[] actions = new String[]{
-                "android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL",
-                "android.app.action.OPEN_NOTIFICATION_HANDLER_PANEL",
-                "com.tcl.settings.action.QUICKSETTINGS",
-                "android.settings.QUICK_SETTINGS",
-                Settings.ACTION_SETTINGS
-            };
-            for (String action : actions) {
-                Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                if ("com.tcl.settings.action.QUICKSETTINGS".equals(action)) intent.setPackage("com.tcl.settings");
-                if (intent.resolveActivity(getPackageManager()) != null) {
-                    try {
-                        startActivity(intent);
-                        android.util.Log.i("LumaRemote", "Opened settings popup via: " + action);
-                        return true;
-                    } catch (Exception ignored) {}
+            if (code == 4077) {
+                // On TCL Google TV (Amati), TclPhoneWindowManager.startSettingService() already launches
+                // Google TV's DashboardHandler dialog on 4077 when launcherx is enabled. When launcherx
+                // is disabled by Launcher Manager, open Luma Home's global Liquid Glass Quick Settings overlay.
+                if (QuickSettingsOverlayService.isStockDashboardAvailable(this)) {
+                    android.util.Log.i("LumaRemote", "Letting system DashboardHandler dialog stay open for 4077");
+                    return true;
                 }
+                launchDefaultSettingsDialog();
+                return true;
             }
-            openSystemIntent(Settings.ACTION_SETTINGS);
+            if (code == KeyEvent.KEYCODE_SETTINGS) {
+                // TclPhoneWindowManager.startGoogleSetting() launches full-screen com.android.tv.settings/.MainSettings
+                // on ACTION_DOWN of KEYCODE_SETTINGS (176). Open the global Quick Settings overlay on top.
+                handler.postDelayed(this::launchDefaultSettingsDialog, 180);
+                return true;
+            }
+            launchDefaultSettingsDialog();
         }
         return true;
     }
@@ -408,6 +436,18 @@ public final class MainActivity extends Activity {
     }
     private void applyIntent(Intent intent) {
         if (intent==null) return;
+        if (intent.getBooleanExtra(QuickSettingsOverlayService.EXTRA_OPEN_LUMA_SETTINGS, false)) {
+            intent.removeExtra(QuickSettingsOverlayService.EXTRA_OPEN_LUMA_SETTINGS);
+            handler.postDelayed(this::lumaSettingsMenu, 140);
+        }
+        if (intent.getBooleanExtra(QuickSettingsOverlayService.EXTRA_OPEN_SCREENSAVER, false)) {
+            intent.removeExtra(QuickSettingsOverlayService.EXTRA_OPEN_SCREENSAVER);
+            handler.postDelayed(this::showIdleClock, 140);
+        }
+        if (intent.getBooleanExtra(QuickSettingsOverlayService.EXTRA_OPEN_INPUTS, false)) {
+            intent.removeExtra(QuickSettingsOverlayService.EXTRA_OPEN_INPUTS);
+            handler.postDelayed(this::inputMenu, 140);
+        }
         if (intent.hasExtra("open_page")) {
             String p = intent.getStringExtra("open_page");
             if ("all_apps".equals(p) || "drawer".equals(p)) {
@@ -681,7 +721,7 @@ public final class MainActivity extends Activity {
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
-            LiquidGlassRenderer.invalidateBackdropCache();
+            LiquidGlassRenderer.setActiveBackdrop(liquidBackdrop);
             refreshGlassSurfaces();
             if(treatmentBlurLayer!=null && !"photo".equals(store.value("background","app_glow"))) {
                 treatmentBlurLayer.setImageBitmap(frostedBackdrop);
@@ -785,7 +825,7 @@ public final class MainActivity extends Activity {
             frostedShader=new android.graphics.BitmapShader(frostedBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
             frostedBackdropKey=key;
-            LiquidGlassRenderer.invalidateBackdropCache();
+            LiquidGlassRenderer.setActiveBackdrop(liquidBackdrop);
             refreshGlassSurfaces();
         } catch(Exception|OutOfMemoryError ignored) {}
     }
@@ -793,7 +833,12 @@ public final class MainActivity extends Activity {
     private final List<View> iconGlassViews=new ArrayList<>();
 
     private void refreshIconGlassSurfaces() {
-        for(View v:iconGlassViews) if(v!=null) v.invalidate();
+        for(View v:iconGlassViews) {
+            if(v!=null) {
+                if(v.getBackground()!=null) v.getBackground().invalidateSelf();
+                v.invalidate();
+            }
+        }
     }
 
     private void refreshGlassSurfaces() {
@@ -2582,7 +2627,7 @@ public final class MainActivity extends Activity {
         TextView hint=text(moving.isEmpty()?"":"",21,muted());
         hint.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);
         heading.addView(hint,at(px(480),px(5),innerWidth()-px(480),px(44)));
-        LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(42);
+        LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(184);
         homePage.addView(heading,headingParams);
         List<String> favorite=favorites();
         HorizontalScrollView appsScroll=new HorizontalScrollView(this) {
@@ -2617,7 +2662,7 @@ public final class MainActivity extends Activity {
         appsScroll.addView(homeSpringStage.host);
         LinearLayout.LayoutParams appsParams=new LinearLayout.LayoutParams(screenWidth,-2);
         appsParams.leftMargin=-px(96);appsParams.rightMargin=-px(96);
-        appsParams.topMargin=px(48)-rowTopPad;appsParams.bottomMargin=px(56)-rowBotPad;
+        appsParams.topMargin=px(40)-rowTopPad;appsParams.bottomMargin=px(18)-rowBotPad;
         homePage.addView(appsScroll,appsParams);
         if (favorite.isEmpty()) {
             TextView empty=text("Your home, your choices.\nOpen All Apps and hold OK to add an app to Home.",28,muted());
@@ -2626,7 +2671,7 @@ public final class MainActivity extends Activity {
         contentRail=new LinearLayout(this); contentRail.setOrientation(LinearLayout.VERTICAL);
         contentRail.setClipChildren(false);contentRail.setClipToPadding(false);
         LinearLayout.LayoutParams railParams=new LinearLayout.LayoutParams(screenWidth,-2);
-        railParams.leftMargin=-px(96);railParams.rightMargin=-px(96);railParams.topMargin=px(24);
+        railParams.leftMargin=-px(96);railParams.rightMargin=-px(96);railParams.topMargin=px(8);
         homePage.addView(contentRail,railParams);
         root.post(this::updateRecommendationRows);
     }
@@ -3054,12 +3099,14 @@ public final class MainActivity extends Activity {
         headerRow.addView(actions,actionsParams);
         drawerPage.addView(headerRow,new LinearLayout.LayoutParams(-1,-2));
 
-        String initialTitle=apps.isEmpty()?"All Apps":name(apps.get(0).pkg);
+        List<String> recentsForTitle=new ArrayList<>();
+        if(store.flag("recents")) for(String pkg:store.list("recent_apps")) if(byPackage.containsKey(pkg)) recentsForTitle.add(pkg);
+        String initialTitle=!recentsForTitle.isEmpty()?name(recentsForTitle.get(0)):apps.isEmpty()?"All Apps":name(apps.get(0).pkg);
         drawerFocusTitle=text(initialTitle,52,foreground());
         drawerFocusTitle.setTypeface(regular);drawerFocusTitle.setLetterSpacing(-0.02f);
         drawerFocusTitle.setSingleLine(true);drawerFocusTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams titleParams=new LinearLayout.LayoutParams(-1,px(76));
-        titleParams.topMargin=px(28);titleParams.bottomMargin=px(16);
+        titleParams.topMargin=Math.max(px(320),screenHeight-px(600));titleParams.bottomMargin=px(12);
         drawerPage.addView(drawerFocusTitle,titleParams);
 
         FrameLayout grid=new FrameLayout(this);grid.setClipChildren(false);grid.setClipToPadding(false);drawerPage.addView(grid,new LinearLayout.LayoutParams(-1,-2));
@@ -3070,13 +3117,70 @@ public final class MainActivity extends Activity {
         });
         views.put("search",filter);views.put("drawer.home",homeBtn);views.put("drawer.settings",settingsBtn);filter.setNextFocusUpId(filter.getId());populateDrawer(grid,filter);
     }
+    private View buildDrawerRecentDock() {
+        if(!store.flag("recents")) return null;
+        List<String> recent=new ArrayList<>();
+        for(String pkg:store.list("recent_apps")) if(byPackage.containsKey(pkg)) recent.add(pkg);
+        if(recent.isEmpty()) return null;
+
+        if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
+        recentSection=new LinearLayout(this);
+        recentSection.setOrientation(LinearLayout.VERTICAL);
+        recentSection.setClipChildren(false);
+        recentSection.setClipToPadding(false);
+        recentSection.setPadding(px(12),px(12),px(12),px(12));
+        recentSection.setBackground(glassPanelDrawable(recentSection,26f,false));
+        iconGlassViews.add(recentSection);
+
+        int width=Math.max(px(320),drawerWidth()-px(24));
+        int gap=px(24), safeEdge=Math.max(px(24),px(glowRadiusSetting()+8));
+        RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),gap,safeEdge,Math.max(1f,focusZoomScale(true)));
+        LinearLayout row=new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setClipChildren(false);
+        row.setClipToPadding(false);
+        int verticalPad=px(10);
+        row.setPadding(plan.edge,verticalPad,plan.edge,verticalPad);
+
+        List<View> navRow=new ArrayList<>();
+        appRows.add(navRow);
+        for(int i=0;i<plan.widths.length;i++) {
+            int cardWidth=plan.widths[i];
+            int cardHeight=Math.min(px(220),Math.max(1,Math.round(cardWidth*9f/16f)));
+            String pkg=recent.get(i);
+            View tile=appTile(pkg,cardWidth,cardHeight,true,true);
+            LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
+            if(i+1<plan.widths.length) cell.rightMargin=gap;
+            row.addView(tile,cell);
+            appViews.add(tile);
+            navRow.add(tile);
+            views.put("recent."+pkg,tile);
+        }
+        recentSpringStage=new SpringStage(row,false);
+        FrameLayout viewport=new FrameLayout(this);
+        viewport.setClipChildren(false);
+        viewport.setClipToPadding(false);
+        viewport.addView(recentSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
+        recentSection.addView(viewport,new LinearLayout.LayoutParams(-1,-2));
+        return recentSection;
+    }
     private void populateDrawer(FrameLayout grid,EditText searchView) {
         List<String> visible=new ArrayList<>(); String query=search.toLowerCase(Locale.ROOT).trim();
         for (AppCatalog.App app:apps) if (name(app.pkg).toLowerCase(Locale.ROOT).contains(query) || app.originalName.toLowerCase(Locale.ROOT).contains(query)) visible.add(app.pkg);
-        appViews.clear();appRows.clear();grid.removeAllViews();
+        appViews.clear();appRows.clear();iconGlassViews.clear();grid.removeAllViews();
         if(drawerSpringStage!=null){drawerSpringStage.stop();drawerSpringStage=null;}
+        if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
+        recentSection=null;
         LinearLayout groups=new LinearLayout(this);groups.setOrientation(LinearLayout.VERTICAL);
         groups.setClipChildren(false);groups.setClipToPadding(false);
+        if(query.isEmpty()) {
+            View historyDock=buildDrawerRecentDock();
+            if(historyDock!=null) {
+                LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);
+                hp.bottomMargin=px(120);
+                groups.addView(historyDock,hp);
+            }
+        }
         List<String> regular=new ArrayList<>(),utilities=new ArrayList<>();
         for(String pkg:visible) {
             if(store.flag("group_utilities",true)&&utility(pkg))utilities.add(pkg);else regular.add(pkg);
@@ -3089,11 +3193,12 @@ public final class MainActivity extends Activity {
         }
         drawerSpringStage=new SpringStage(groups,false);
         grid.addView(drawerSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
-        for (int i=0;i<Math.min(4,appViews.size());i++) {
+        List<View> firstRow=!appRows.isEmpty()?appRows.get(0):appViews;
+        for (int i=0;i<firstRow.size();i++) {
             View upTarget=searchView;
-            if(i==2&&views.get("drawer.home")!=null) upTarget=views.get("drawer.home");
-            else if(i>=3&&views.get("drawer.settings")!=null) upTarget=views.get("drawer.settings");
-            appViews.get(i).setNextFocusUpId(upTarget.getId());
+            if(i==firstRow.size()-2&&views.get("drawer.home")!=null) upTarget=views.get("drawer.home");
+            else if(i>=firstRow.size()-1&&views.get("drawer.settings")!=null) upTarget=views.get("drawer.settings");
+            firstRow.get(i).setNextFocusUpId(upTarget.getId());
         }
         wireNavigation();
         applyViewSoundPolicy(grid);
@@ -3764,7 +3869,7 @@ public final class MainActivity extends Activity {
                 }
             }
         };
-        if(useLiveBevel) iconGlassViews.add(picture);
+        if(useLiveBevel || allApps) iconGlassViews.add(picture);
         picture.setClipToOutline(true);
         picture.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View view,android.graphics.Outline outline) {
@@ -3775,7 +3880,19 @@ public final class MainActivity extends Activity {
                 } else outline.setRoundRect(0,0,view.getWidth(),view.getHeight(),px(22));
             }
         });
-        ImageView image=new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        final boolean useInnerIconBevel=allApps && !bannerStyle && IconStylingEngine.usesGlassPlate(iconConfig());
+        ImageView image=new ImageView(this) {
+            private final Drawable innerBevel=useInnerIconBevel?iconBevelRefractionDrawable(this):null;
+            @Override protected void onDraw(android.graphics.Canvas canvas) {
+                if(innerBevel!=null) {
+                    innerBevel.setBounds(0,0,getWidth(),getHeight());
+                    innerBevel.draw(canvas);
+                }
+                super.onDraw(canvas);
+            }
+        };
+        if(useInnerIconBevel) iconGlassViews.add(image);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
         picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(picture,!allApps,bannerStyle,false,surfaceTint));
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -3792,7 +3909,7 @@ public final class MainActivity extends Activity {
             int baseRecentIcon=Math.max(1,Math.min(Math.round(width*0.36f),Math.round(height*0.65f)));
             int iconSize=Math.max(1,Math.min(Math.round(height*0.86f),Math.round(baseRecentIcon*iconSizeScale())));
             if(appArt.drawable!=null) {
-                if("original".equals(store.value("icon_style","brand"))) {
+                if("original".equals(store.value("icon_style","brand")) && !IconStylingEngine.usesGlassPlate(iconConfig())) {
                     image.setImageDrawable(appArt.drawable);
                 } else {
                     image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
@@ -3805,7 +3922,7 @@ public final class MainActivity extends Activity {
             int maxAllAppsIcon=Math.max(baseAllAppsIcon,height-px(62));
             int iconSize=Math.max(1,Math.min(maxAllAppsIcon,Math.round(baseAllAppsIcon*iconSizeScale())));
             if(appArt.drawable!=null) {
-                if("original".equals(store.value("icon_style","brand"))) {
+                if("original".equals(store.value("icon_style","brand")) && !IconStylingEngine.usesGlassPlate(iconConfig())) {
                     image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
                 } else {
                     image.setImageDrawable(styledIconDrawable(pkg,appArt.drawable,iconSize,iconSize));
@@ -3897,6 +4014,7 @@ public final class MainActivity extends Activity {
                 updateAmbient(pkg, tile);
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent){lastFocus=pkg;if(drawer)allAppsPageFocus=pkg;else homePageFocus=pkg;}
+                else if(drawer){lastFocus="recent."+pkg;allAppsPageFocus="recent."+pkg;}
                 if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
                 else if(allApps && drawerScroll!=null) {
                     if(drawerScroll.getHeight()>0) centerDrawerChild(tile);
@@ -4451,17 +4569,21 @@ public final class MainActivity extends Activity {
     private void centerDrawerChild(View focused) {
         if(restoringPage || destroyed || !drawer || drawerScroll==null || drawerPage==null || focused==null || !focused.hasFocus()) return;
         if(focused==searchBar || (views.get("drawer.home")!=null&&focused==views.get("drawer.home")) || (views.get("drawer.settings")!=null&&focused==views.get("drawer.settings"))) {
+            if(drawerFocusTitle!=null) drawerFocusTitle.animate().alpha(1f).setDuration(180).start();
             glideDrawerScrollTo(0);
             return;
         }
         if(dockViews.contains(focused)) {
+            if(drawerFocusTitle!=null) drawerFocusTitle.animate().alpha(0f).setDuration(150).start();
             glideDrawerScrollTo(Math.max(0,drawerPage.getHeight()-drawerScroll.getHeight()));
             return;
         }
         if(!appRows.isEmpty() && appRows.get(0).contains(focused)) {
+            if(drawerFocusTitle!=null) drawerFocusTitle.animate().alpha(1f).setDuration(180).start();
             glideDrawerScrollTo(0);
             return;
         }
+        if(drawerFocusTitle!=null) drawerFocusTitle.animate().alpha(0f).setDuration(150).start();
         android.graphics.Rect bounds=new android.graphics.Rect(0,0,focused.getWidth(),focused.getHeight());
         drawerPage.offsetDescendantRectToMyCoords(focused,bounds);
         int viewH=drawerScroll.getHeight()>0?drawerScroll.getHeight():screenHeight;
@@ -4547,7 +4669,7 @@ public final class MainActivity extends Activity {
         };
         section.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->fitRow.run());
         section.post(fitRow);
-        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(72);
+        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(20);
         homePage.addView(recentSection,Math.max(0,homePage.getChildCount()-1),place);
     }
 
@@ -5000,6 +5122,7 @@ public final class MainActivity extends Activity {
                 "Background: "+bgLabel,
                 "Menu theme: "+themeName(),
                 "Glass & surfaces: "+glassSurfacesSummary(),
+                "@sparkles|Quick Settings appearance: "+quickSettingsAppearanceSummary(),
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
@@ -5029,6 +5152,7 @@ public final class MainActivity extends Activity {
                                     updateWorkspaceAndMenuSurfaces();
                                 },this::appearanceMenu),
                         ()->glassSurfacesMenu(this::appearanceMenu),
+                        ()->quickSettingsAppearanceMenu(this::appearanceMenu),
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
@@ -5062,6 +5186,81 @@ public final class MainActivity extends Activity {
                         ()->{store.setFlag("group_utilities",!store.flag("group_utilities",true));syncFavorites();rebuildContentInPlace();appearanceMenu();},
                         null,
                         ()->perspectiveMenu(this::appearanceMenu)),this::lumaSettingsMenu);
+    }
+
+    private String quickSettingsStyleName(String style) {
+        if ("frosted".equals(style)) return "Frosted glass";
+        if ("adaptive".equals(style)) return "Adaptive image tint";
+        if ("solid_dark".equals(style)) return "Solid obsidian";
+        return "Liquid glass";
+    }
+
+    private String quickSettingsAppearanceSummary() {
+        String st = store.value("qs_style", "frosted");
+        int frost = store.number("qs_frost", 0);
+        if ("solid_dark".equals(st)) return quickSettingsStyleName(st);
+        return quickSettingsStyleName(st) + " · " + (frost <= 0 ? "None" : (frost + "%"));
+    }
+
+    private void quickSettingsAppearanceMenu(Runnable back) {
+        String curStyle = store.value("qs_style", "frosted");
+        int curFrost = store.number("qs_frost", 0);
+        boolean curScrim = store.flag("qs_scrim", false);
+        String frostLabel = curFrost <= 0 ? "None · 0% (Default)"
+                : curFrost <= 22 ? "Crystal clear · 20%"
+                : curFrost <= 40 ? "Balanced · 35%"
+                : curFrost <= 60 ? "Deep · 55%"
+                : "Rich · 75%";
+
+        menu("Quick Settings appearance", Arrays.asList(
+                "§PANEL & TILE STYLE",
+                "Surface style: " + quickSettingsStyleName(curStyle),
+                "Frost & tint depth: " + frostLabel,
+                "Ambient backdrop dim: " + onOff(curScrim),
+                "§LIVE PREVIEW",
+                "@sparkles|Preview Quick Settings overlay now"),
+                Arrays.asList(
+                        null,
+                        () -> choice("Quick Settings surface style",
+                                new String[]{
+                                        "Liquid glass · Optical refractive bevel & clear crystal interior",
+                                        "Frosted glass · Soft blurred screen backdrop & satin finish (Default)",
+                                        "Adaptive image tint · Acquires dominant color from the screen or wallpaper",
+                                        "Solid obsidian · Deep high-contrast dark slate"
+                                },
+                                "frosted".equals(curStyle) ? 1
+                                        : "adaptive".equals(curStyle) ? 2
+                                        : "solid_dark".equals(curStyle) ? 3 : 0,
+                                index -> {
+                                    String next = new String[]{"liquid_glass", "frosted", "adaptive", "solid_dark"}[index];
+                                    store.set("qs_style", next);
+                                    toast("Quick Settings set to " + quickSettingsStyleName(next));
+                                },
+                                () -> quickSettingsAppearanceMenu(back)),
+                        () -> choice("Frost & tint depth",
+                                new String[]{
+                                        "None · 0% (Default — pure refractive crystal with zero interior tint)",
+                                        "Crystal clear · 20% (Ultra-transparent glass)",
+                                        "Balanced · 35% (Balanced optical tint)",
+                                        "Deep · 55% (Stronger frost or image color tint)",
+                                        "Rich · 75% (Bold frosted or image-tinted surface)"
+                                },
+                                curFrost <= 0 ? 0 : curFrost <= 22 ? 1 : curFrost <= 40 ? 2 : curFrost <= 60 ? 3 : 4,
+                                index -> {
+                                    int nextFrost = new int[]{0, 20, 35, 55, 75}[index];
+                                    store.setNumber("qs_frost", nextFrost);
+                                },
+                                () -> quickSettingsAppearanceMenu(back)),
+                        () -> {
+                            store.setFlag("qs_scrim", !curScrim);
+                            quickSettingsAppearanceMenu(back);
+                        },
+                        null,
+                        () -> {
+                            closeBlade();
+                            handler.postDelayed(() -> QuickSettingsOverlayService.showOrToggle(this), 180);
+                        }),
+                back);
     }
 
     private float iconSizeScale() {

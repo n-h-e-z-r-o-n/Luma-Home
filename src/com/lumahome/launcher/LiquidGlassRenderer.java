@@ -17,9 +17,152 @@ import android.graphics.RectF;
 final class LiquidGlassRenderer {
     private LiquidGlassRenderer() {}
 
+    private static Bitmap sActiveBackdrop;
+    private static Bitmap sOverlayBackdrop;
+    private static Bitmap sFrostedOverlayBackdrop;
+    private static Bitmap sFrostedSourceRef;
+    private static int sExtractedColor = 0xFF1E3A5F;
+    private static Bitmap sExtractedSourceRef;
     private static Bitmap sCachedBackdrop;
     private static int[] sCachedSrcPixels;
     private static int[] sDstPixels;
+
+    static synchronized void setActiveBackdrop(Bitmap backdrop) {
+        sActiveBackdrop = backdrop;
+        sCachedBackdrop = null;
+    }
+
+    static synchronized Bitmap getActiveBackdrop() {
+        return sActiveBackdrop;
+    }
+
+    static synchronized void setOverlayBackdrop(Bitmap backdrop) {
+        sOverlayBackdrop = backdrop;
+        sFrostedSourceRef = null;
+        sExtractedSourceRef = null;
+        sCachedBackdrop = null;
+    }
+
+    static synchronized Bitmap getOverlayBackdrop() {
+        return sOverlayBackdrop;
+    }
+
+    static synchronized Bitmap getFrostedOverlayBackdrop() {
+        Bitmap src = sOverlayBackdrop != null ? sOverlayBackdrop : sActiveBackdrop;
+        if (src == null) return null;
+        if (sFrostedOverlayBackdrop != null && sFrostedSourceRef == src) {
+            return sFrostedOverlayBackdrop;
+        }
+        int w = src.getWidth(), h = src.getHeight();
+        if (w <= 4 || h <= 4) return src;
+        int[] px = new int[w * h];
+        int[] tmp = new int[w * h];
+        src.getPixels(px, 0, w, 0, 0, w, h);
+        int radius = 14;
+        int div = radius * 2 + 1;
+        for (int pass = 0; pass < 2; pass++) {
+            for (int y = 0; y < h; y++) {
+                int row = y * w, rSum = 0, gSum = 0, bSum = 0;
+                for (int i = -radius; i <= radius; i++) {
+                    int c = px[row + Math.max(0, Math.min(w - 1, i))];
+                    rSum += (c >> 16) & 0xFF;
+                    gSum += (c >> 8) & 0xFF;
+                    bSum += c & 0xFF;
+                }
+                for (int x = 0; x < w; x++) {
+                    tmp[row + x] = 0xFF000000 | ((rSum / div) << 16) | ((gSum / div) << 8) | (bSum / div);
+                    int cOut = px[row + Math.max(0, x - radius)];
+                    int cIn = px[row + Math.min(w - 1, x + radius + 1)];
+                    rSum += ((cIn >> 16) & 0xFF) - ((cOut >> 16) & 0xFF);
+                    gSum += ((cIn >> 8) & 0xFF) - ((cOut >> 8) & 0xFF);
+                    bSum += (cIn & 0xFF) - (cOut & 0xFF);
+                }
+            }
+            for (int x = 0; x < w; x++) {
+                int rSum = 0, gSum = 0, bSum = 0;
+                for (int i = -radius; i <= radius; i++) {
+                    int c = tmp[Math.max(0, Math.min(h - 1, i)) * w + x];
+                    rSum += (c >> 16) & 0xFF;
+                    gSum += (c >> 8) & 0xFF;
+                    bSum += c & 0xFF;
+                }
+                for (int y = 0; y < h; y++) {
+                    px[y * w + x] = 0xFF000000 | ((rSum / div) << 16) | ((gSum / div) << 8) | (bSum / div);
+                    int cOut = tmp[Math.max(0, y - radius) * w + x];
+                    int cIn = tmp[Math.min(h - 1, y + radius + 1) * w + x];
+                    rSum += ((cIn >> 16) & 0xFF) - ((cOut >> 16) & 0xFF);
+                    gSum += ((cIn >> 8) & 0xFF) - ((cOut >> 8) & 0xFF);
+                    bSum += (cIn & 0xFF) - (cOut & 0xFF);
+                }
+            }
+        }
+        if (sFrostedOverlayBackdrop == null
+                || sFrostedOverlayBackdrop.getWidth() != w
+                || sFrostedOverlayBackdrop.getHeight() != h) {
+            sFrostedOverlayBackdrop = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        }
+        sFrostedOverlayBackdrop.setPixels(px, 0, w, 0, 0, w, h);
+        sFrostedSourceRef = src;
+        return sFrostedOverlayBackdrop;
+    }
+
+    static synchronized int getExtractedOverlayColor() {
+        Bitmap src = sOverlayBackdrop != null ? sOverlayBackdrop : sActiveBackdrop;
+        if (src == null) return 0xFF1E3A5F;
+        if (sExtractedSourceRef == src) return sExtractedColor;
+        int w = src.getWidth(), h = src.getHeight();
+        int[] px = getBackdropPixels(src);
+        if (px == null) return 0xFF1E3A5F;
+
+        double rWeighted = 0, gWeighted = 0, bWeighted = 0, totalW = 0;
+        double rAvg = 0, gAvg = 0, bAvg = 0;
+        int count = 0;
+        int xStart = w / 3;
+        for (int y = h / 10; y < h * 9 / 10; y += 6) {
+            int row = y * w;
+            for (int x = xStart; x < w - 8; x += 6) {
+                int c = px[row + x];
+                int r = (c >> 16) & 0xFF;
+                int g = (c >> 8) & 0xFF;
+                int b = c & 0xFF;
+                rAvg += r;
+                gAvg += g;
+                bAvg += b;
+                count++;
+                int max = Math.max(r, Math.max(g, b));
+                int min = Math.min(r, Math.min(g, b));
+                int sat = max - min;
+                double lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0;
+                double weight = (0.15 + (sat / 255.0) * 2.2) * (1.0 - Math.abs(lum - 0.52) * 1.1);
+                if (weight > 0.05) {
+                    rWeighted += r * weight;
+                    gWeighted += g * weight;
+                    bWeighted += b * weight;
+                    totalW += weight;
+                }
+            }
+        }
+        int rf, gf, bf;
+        if (totalW > 1.0) {
+            rf = (int) Math.round(rWeighted / totalW);
+            gf = (int) Math.round(gWeighted / totalW);
+            bf = (int) Math.round(bWeighted / totalW);
+        } else if (count > 0) {
+            rf = (int) Math.round(rAvg / count);
+            gf = (int) Math.round(gAvg / count);
+            bf = (int) Math.round(bAvg / count);
+        } else {
+            rf = 30; gf = 58; bf = 95;
+        }
+        // Boost saturation slightly and clamp brightness for a rich, readable glass tint
+        float[] hsv = new float[3];
+        android.graphics.Color.RGBToHSV(rf, gf, bf, hsv);
+        hsv[1] = Math.min(0.85f, Math.max(0.28f, hsv[1] * 1.30f));
+        hsv[2] = Math.min(0.62f, Math.max(0.24f, hsv[2]));
+        sExtractedColor = android.graphics.Color.HSVToColor(hsv);
+        sExtractedSourceRef = src;
+        return sExtractedColor;
+    }
 
     static synchronized void invalidateBackdropCache() {
         sCachedBackdrop = null;

@@ -1,0 +1,1420 @@
+package com.lumahome.launcher;
+
+import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
+import android.app.Activity;
+import android.app.Dialog;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.graphics.BitmapShader;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.LinearGradient;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
+import android.text.TextUtils;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.OvershootInterpolator;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextClock;
+import android.widget.TextView;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * Global Liquid Glass Quick Settings overlay service.
+ * Intercepts the physical remote Settings key (4077 / KEYCODE_SETTINGS / 312) across ANY running
+ * application when the stock Google TV launcher dashboard (com.google.android.apps.tv.launcherx)
+ * is disabled (e.g. via Launcher Manager), and displays a right-side Liquid Glass Quick Settings
+ * dashboard overlay on top of the active app.
+ */
+public final class QuickSettingsOverlayService extends AccessibilityService {
+    private static final String TAG = "LumaQuickSettings";
+    public static final String EXTRA_OPEN_LUMA_SETTINGS = "luma.extra.OPEN_LUMA_SETTINGS";
+    public static final String EXTRA_OPEN_SCREENSAVER = "luma.extra.OPEN_SCREENSAVER";
+    public static final String EXTRA_OPEN_INPUTS = "luma.extra.OPEN_INPUTS";
+
+    private static volatile QuickSettingsOverlayService sInstance;
+    private static Dialog sFallbackDialog;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService screenshotExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private WindowManager windowManager;
+    private View overlayRoot;
+    private View panelCard;
+    private boolean overlayShowing;
+    private boolean capturingSnapshot;
+    private boolean dismissing;
+    private long lastToggleMs;
+    private String currentForegroundPackage = "com.lumahome.launcher";
+    private String lastSnapshotPackage = "";
+    private UiSoundEngine sfx;
+    private LauncherStore store;
+    private Typeface regularFont = Typeface.create("sans-serif", Typeface.NORMAL);
+    private Typeface mediumFont = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+
+    private final BroadcastReceiver tclKeyReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            if ("tcl.sys.intent.action.USERSTATE_KEYDOWN".equals(intent.getAction())) {
+                int code = intent.getIntExtra("keycode", -1);
+                if (isSettingsKey(code)) {
+                    if (code == 4077 && isStockDashboardAvailable(QuickSettingsOverlayService.this)) {
+                        return;
+                    }
+                    android.util.Log.i(TAG, "Received global TCL key broadcast (code=" + code + ") over pkg=" + currentForegroundPackage);
+                    toggleOverlay();
+                }
+            }
+        }
+    };
+
+    public static QuickSettingsOverlayService getInstance() {
+        return sInstance;
+    }
+
+    public static boolean isSettingsKey(int code) {
+        return code == 4077 // TCL Quick Menu / Settings button
+                || code == KeyEvent.KEYCODE_SETTINGS
+                || code == 312; // KEYCODE_QUICK_SETTINGS
+    }
+
+    public static boolean isStockDashboardAvailable(Context context) {
+        if (context == null) return false;
+        try {
+            PackageManager pm = context.getPackageManager();
+            int state = pm.getApplicationEnabledSetting("com.google.android.apps.tv.launcherx");
+            if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                    || state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER
+                    || state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED_UNTIL_USED) {
+                return false;
+            }
+            Intent dash = new Intent("android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL");
+            dash.setPackage("com.google.android.apps.tv.launcherx");
+            ResolveInfo info = pm.resolveActivity(dash, 0);
+            return info != null && info.activityInfo != null
+                    && info.activityInfo.enabled
+                    && info.activityInfo.applicationInfo != null
+                    && info.activityInfo.applicationInfo.enabled;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void ensureServiceEnabled(Context context) {
+        if (context == null) return;
+        try {
+            String component = new ComponentName(context.getPackageName(),
+                    QuickSettingsOverlayService.class.getName()).flattenToString();
+            String current = Settings.Secure.getString(
+                    context.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (current == null || current.trim().isEmpty()) {
+                Settings.Secure.putString(
+                        context.getContentResolver(),
+                        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                        component);
+            } else if (!current.contains(component)) {
+                Settings.Secure.putString(
+                        context.getContentResolver(),
+                        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                        current + ":" + component);
+            }
+            Settings.Secure.putInt(
+                    context.getContentResolver(),
+                    Settings.Secure.ACCESSIBILITY_ENABLED,
+                    1);
+        } catch (SecurityException ignored) {
+            // Normal if WRITE_SECURE_SETTINGS was not granted via ADB; service can still be enabled in Settings.
+        } catch (Exception ignored) {}
+    }
+
+    public static boolean showOrToggle(Activity fallbackHost) {
+        ensureServiceEnabled(fallbackHost);
+        QuickSettingsOverlayService svc = sInstance;
+        if (svc != null) {
+            svc.handler.post(svc::toggleOverlay);
+            return true;
+        }
+        if (fallbackHost != null && !fallbackHost.isFinishing()) {
+            toggleFallbackDialog(fallbackHost);
+            return true;
+        }
+        return false;
+    }
+
+    private static void toggleFallbackDialog(Activity host) {
+        if (sFallbackDialog != null && sFallbackDialog.isShowing()) {
+            try {
+                sFallbackDialog.dismiss();
+            } catch (Exception ignored) {}
+            sFallbackDialog = null;
+            return;
+        }
+        Dialog dialog = new Dialog(host, android.R.style.Theme_Translucent_NoTitleBar_Fullscreen);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
+        }
+        LauncherStore store = new LauncherStore(host);
+        UiSoundEngine sfx = new UiSoundEngine(host, store);
+        Typeface reg = Typeface.create("sans-serif", Typeface.NORMAL);
+        Typeface med = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                reg = host.getResources().getFont(host.getResources().getIdentifier("outfit_regular", "font", host.getPackageName()));
+                med = host.getResources().getFont(host.getResources().getIdentifier("outfit_medium", "font", host.getPackageName()));
+            } catch (Exception ignored) {}
+        }
+        final Dialog[] ref = new Dialog[]{dialog};
+        Runnable dismissAction = () -> {
+            if (ref[0] != null && ref[0].isShowing()) {
+                try {
+                    ref[0].dismiss();
+                } catch (Exception ignored) {}
+            }
+            sFallbackDialog = null;
+            sfx.close();
+        };
+        View content = buildDashboardView(host, store, sfx, reg, med, dismissAction);
+        dialog.setContentView(content);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_UP && (keyCode == KeyEvent.KEYCODE_BACK || isSettingsKey(keyCode))) {
+                sfx.playBack();
+                dismissAction.run();
+                return true;
+            }
+            return isSettingsKey(keyCode);
+        });
+        sFallbackDialog = dialog;
+        dialog.show();
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        sInstance = this;
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        store = new LauncherStore(this);
+        sfx = new UiSoundEngine(this, store);
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                regularFont = getResources().getFont(getResources().getIdentifier("outfit_regular", "font", getPackageName()));
+                mediumFont = getResources().getFont(getResources().getIdentifier("outfit_medium", "font", getPackageName()));
+            } catch (Exception ignored) {}
+        }
+        try {
+            IntentFilter filter = new IntentFilter("tcl.sys.intent.action.USERSTATE_KEYDOWN");
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(tclKeyReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(tclKeyReceiver, filter);
+            }
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "Failed to register tclKeyReceiver", e);
+        }
+        android.util.Log.i(TAG, "QuickSettingsOverlayService created");
+    }
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        sInstance = this;
+        try {
+            AccessibilityServiceInfo info = getServiceInfo();
+            if (info == null) info = new AccessibilityServiceInfo();
+            info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+                    | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+            setServiceInfo(info);
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "Failed to update service info flags", e);
+        }
+        android.util.Log.i(TAG, "QuickSettingsOverlayService connected and filtering key events");
+    }
+
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            CharSequence pkg = event.getPackageName();
+            if (pkg != null && pkg.length() > 0) {
+                String p = pkg.toString();
+                if (!overlayShowing || !"com.lumahome.launcher".equals(p)) {
+                    currentForegroundPackage = p;
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onInterrupt() {
+        hideOverlay(false);
+    }
+
+    @Override
+    public void onDestroy() {
+        hideOverlay(false);
+        try {
+            unregisterReceiver(tclKeyReceiver);
+        } catch (Exception ignored) {}
+        screenshotExecutor.shutdownNow();
+        if (sfx != null) {
+            sfx.close();
+            sfx = null;
+        }
+        if (sInstance == this) {
+            sInstance = null;
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    protected boolean onKeyEvent(KeyEvent event) {
+        if (event == null) return false;
+        int code = event.getKeyCode();
+        if (!isSettingsKey(code)) {
+            if (overlayShowing && code == KeyEvent.KEYCODE_BACK) {
+                if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                    if (sfx != null) sfx.playBack();
+                    hideOverlay(true);
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // If our overlay is currently visible, pressing the Settings key toggles it closed.
+        if (overlayShowing) {
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                if (sfx != null) sfx.playBack();
+                hideOverlay(true);
+            }
+            return true;
+        }
+
+        // When the stock Google TV launcher is enabled, let the system DashboardHandler handle 4077.
+        if (code == 4077 && isStockDashboardAvailable(this)) {
+            return false;
+        }
+
+        // Stock Google TV launcher is disabled (e.g. Luma Home is set as default in Launcher Manager)
+        // or a dedicated Settings key was pressed: intercept globally over ANY running app.
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+            android.util.Log.i(TAG, "Global Settings key intercepted (code=" + code + "), toggling Liquid Glass Quick Settings");
+            toggleOverlay();
+            return true;
+        }
+        return true;
+    }
+
+    public void toggleOverlay() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastToggleMs < 350L) return;
+        lastToggleMs = now;
+        if (overlayShowing) {
+            if (sfx != null) sfx.playBack();
+            hideOverlay(true);
+        } else {
+            showOverlay();
+        }
+    }
+
+    public void showOverlay() {
+        if (overlayShowing || capturingSnapshot || windowManager == null) return;
+        dismissing = false;
+        if (store == null) store = new LauncherStore(this);
+        if (sfx == null) sfx = new UiSoundEngine(this, store);
+
+        // Clear any stale snapshot from a different app before capturing the live screen
+        if (!currentForegroundPackage.equals(lastSnapshotPackage)) {
+            if ("com.lumahome.launcher".equals(currentForegroundPackage)) {
+                LiquidGlassRenderer.setOverlayBackdrop(LiquidGlassRenderer.getActiveBackdrop());
+            } else {
+                LiquidGlassRenderer.setOverlayBackdrop(null);
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= 30) {
+            capturingSnapshot = true;
+            final boolean[] presented = new boolean[]{false};
+            final Runnable timeoutPresent = () -> {
+                if (!presented[0]) {
+                    presented[0] = true;
+                    capturingSnapshot = false;
+                    presentOverlayWindow();
+                }
+            };
+            handler.postDelayed(timeoutPresent, 160);
+            try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, screenshotExecutor, new TakeScreenshotCallback() {
+                    @Override
+                    public void onSuccess(ScreenshotResult result) {
+                        android.graphics.Bitmap captured = null;
+                        try {
+                            android.hardware.HardwareBuffer hb = result.getHardwareBuffer();
+                            if (hb != null) {
+                                android.graphics.Bitmap hw = android.graphics.Bitmap.wrapHardwareBuffer(hb, result.getColorSpace());
+                                hb.close();
+                                if (hw != null) {
+                                    android.graphics.Bitmap sw = hw.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
+                                    hw.recycle();
+                                    if (sw != null) {
+                                        captured = android.graphics.Bitmap.createScaledBitmap(sw, 960, 540, true);
+                                        if (captured != sw) sw.recycle();
+                                    }
+                                }
+                            }
+                        } catch (Throwable t) {
+                            android.util.Log.w(TAG, "Failed converting screenshot buffer", t);
+                        }
+                        final android.graphics.Bitmap finalCaptured = captured;
+                        handler.post(() -> {
+                            capturingSnapshot = false;
+                            if (finalCaptured != null) {
+                                lastSnapshotPackage = currentForegroundPackage;
+                                LiquidGlassRenderer.setOverlayBackdrop(finalCaptured);
+                                android.util.Log.i(TAG, "Captured live screen snapshot (960x540) for pkg=" + currentForegroundPackage);
+                            }
+                            if (!presented[0]) {
+                                presented[0] = true;
+                                handler.removeCallbacks(timeoutPresent);
+                                presentOverlayWindow();
+                            } else if (overlayShowing && overlayRoot != null) {
+                                invalidateViewTree(overlayRoot);
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onFailure(int errorCode) {
+                        android.util.Log.w(TAG, "takeScreenshot failed with code=" + errorCode + " for pkg=" + currentForegroundPackage);
+                        handler.post(() -> {
+                            capturingSnapshot = false;
+                            if (!presented[0]) {
+                                presented[0] = true;
+                                handler.removeCallbacks(timeoutPresent);
+                                presentOverlayWindow();
+                            }
+                        });
+                    }
+                });
+                return;
+            } catch (Throwable t) {
+                capturingSnapshot = false;
+                handler.removeCallbacks(timeoutPresent);
+            }
+        }
+
+        presentOverlayWindow();
+    }
+
+    private static void invalidateViewTree(View v) {
+        if (v == null) return;
+        v.invalidate();
+        if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                invalidateViewTree(vg.getChildAt(i));
+            }
+        }
+    }
+
+    private void presentOverlayWindow() {
+        if (overlayShowing || windowManager == null) return;
+
+        FrameLayout host = new FrameLayout(this) {
+            @Override
+            public boolean dispatchKeyEvent(KeyEvent event) {
+                if (event != null) {
+                    int code = event.getKeyCode();
+                    if (code == KeyEvent.KEYCODE_BACK || isSettingsKey(code)) {
+                        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                            if (sfx != null) sfx.playBack();
+                            hideOverlay(true);
+                        }
+                        return true;
+                    }
+                    if (code == KeyEvent.KEYCODE_HOME) {
+                        hideOverlay(false);
+                        return false;
+                    }
+                }
+                return super.dispatchKeyEvent(event);
+            }
+        };
+
+        View dashboard = buildDashboardView(this, store, sfx, regularFont, mediumFont, () -> hideOverlay(true));
+        host.addView(dashboard, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        lp.setTitle("LumaQuickSettingsOverlay");
+
+        try {
+            windowManager.addView(host, lp);
+            overlayRoot = host;
+            overlayShowing = true;
+            if (sfx != null) sfx.playBladeOpen();
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to add TYPE_ACCESSIBILITY_OVERLAY view", e);
+        }
+    }
+
+    public void hideOverlay(boolean animate) {
+        if (!overlayShowing || overlayRoot == null || windowManager == null) return;
+        if (dismissing) return;
+        lastToggleMs = android.os.SystemClock.uptimeMillis();
+        final View rootToRemove = overlayRoot;
+        final View card = panelCard;
+        if (!animate || card == null) {
+            overlayShowing = false;
+            dismissing = false;
+            overlayRoot = null;
+            panelCard = null;
+            try {
+                windowManager.removeViewImmediate(rootToRemove);
+            } catch (Exception ignored) {}
+            return;
+        }
+        dismissing = true;
+        float slidePx = dp(this, 64);
+        card.animate().cancel();
+        rootToRemove.animate().cancel();
+        card.animate()
+                .translationX(slidePx)
+                .alpha(0f)
+                .setDuration(170)
+                .setInterpolator(new DecelerateInterpolator(1.5f))
+                .start();
+        rootToRemove.animate()
+                .alpha(0f)
+                .setDuration(180)
+                .withEndAction(() -> {
+                    overlayShowing = false;
+                    dismissing = false;
+                    if (overlayRoot == rootToRemove) {
+                        overlayRoot = null;
+                        panelCard = null;
+                    }
+                    try {
+                        windowManager.removeViewImmediate(rootToRemove);
+                    } catch (Exception ignored) {}
+                })
+                .start();
+    }
+
+    private static View buildDashboardView(
+            Context context,
+            LauncherStore store,
+            UiSoundEngine sfx,
+            Typeface regular,
+            Typeface medium,
+            Runnable closeOverlay) {
+
+        String qsStyle = store != null ? store.value("qs_style", "frosted") : "frosted";
+        int qsFrost = store != null ? store.number("qs_frost", 0) : 0;
+        boolean qsScrim = store != null && store.flag("qs_scrim", false);
+
+        FrameLayout scrim = new FrameLayout(context);
+        scrim.setClickable(true);
+        scrim.setFocusable(false);
+        scrim.setOnClickListener(v -> closeOverlay.run());
+        if (qsScrim) {
+            scrim.setBackground(new Drawable() {
+                private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                @Override
+                public void draw(Canvas canvas) {
+                    int w = getBounds().width();
+                    int h = getBounds().height();
+                    if (w <= 0 || h <= 0) return;
+                    p.setShader(new LinearGradient(0f, 0f, w, 0f,
+                            new int[]{0x00000000, 0x2404070D, 0x7A04070D},
+                            new float[]{0f, 0.45f, 1f},
+                            Shader.TileMode.CLAMP));
+                    canvas.drawRect(0, 0, w, h, p);
+                    p.setShader(null);
+                }
+                @Override public void setAlpha(int alpha) { p.setAlpha(alpha); }
+                @Override public void setColorFilter(ColorFilter cf) { p.setColorFilter(cf); }
+                @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+            });
+        } else {
+            scrim.setBackgroundColor(Color.TRANSPARENT);
+        }
+
+        LinearLayout card = new LinearLayout(context);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
+        card.setClickable(true);
+        int padH = dp(context, 24);
+        int padV = dp(context, 22);
+        card.setPadding(padH, padV, padH, padV);
+        card.setBackground(buildLiquidGlassPanelDrawable(context, card, 28f, qsStyle, qsFrost));
+
+        int panelW = dp(context, 456);
+        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
+                panelW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.CENTER_VERTICAL);
+        cardLp.rightMargin = dp(context, 32);
+        cardLp.topMargin = dp(context, 28);
+        cardLp.bottomMargin = dp(context, 28);
+
+        // Header: Left (Brand badge + Live Clock & Date), Right (Quick System Settings Gear Pill)
+        LinearLayout header = new LinearLayout(context);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout clockCol = new LinearLayout(context);
+        clockCol.setOrientation(LinearLayout.VERTICAL);
+
+        TextView badge = new TextView(context);
+        badge.setText("QUICK SETTINGS");
+        badge.setTypeface(medium);
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 11));
+        badge.setLetterSpacing(0.14f);
+        if ("adaptive".equals(qsStyle)) {
+            int ext = LiquidGlassRenderer.getExtractedOverlayColor();
+            float[] hsv = new float[3];
+            Color.colorToHSV(ext, hsv);
+            hsv[1] = Math.min(0.65f, hsv[1]);
+            hsv[2] = 0.96f;
+            badge.setTextColor(Color.HSVToColor(hsv));
+        } else {
+            badge.setTextColor(0xFF7DD3FC);
+        }
+        clockCol.addView(badge);
+
+        LinearLayout timeRow = new LinearLayout(context);
+        timeRow.setOrientation(LinearLayout.HORIZONTAL);
+        timeRow.setGravity(Gravity.BOTTOM);
+
+        TextClock clock = new TextClock(context);
+        clock.setFormat12Hour("h:mm a");
+        clock.setFormat24Hour("HH:mm");
+        clock.setTypeface(medium);
+        clock.setTextColor(0xFFFFFFFF);
+        clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 30));
+        timeRow.addView(clock);
+
+        TextView dateView = new TextView(context);
+        String dateText = new SimpleDateFormat("  ·  EEE, MMM d", Locale.getDefault()).format(new Date());
+        dateView.setText(dateText);
+        dateView.setTypeface(regular);
+        dateView.setTextColor(0xB8E2E8F0);
+        dateView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14));
+        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dateLp.bottomMargin = dp(context, 3);
+        timeRow.addView(dateView, dateLp);
+
+        LinearLayout.LayoutParams timeRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        timeRowLp.topMargin = dp(context, 2);
+        clockCol.addView(timeRow, timeRowLp);
+
+        header.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        card.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Subtle crystal divider
+        View divider = new View(context);
+        divider.setBackgroundColor(0x24FFFFFF);
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(context, 1)));
+        divLp.topMargin = dp(context, 16);
+        divLp.bottomMargin = dp(context, 16);
+        card.addView(divider, divLp);
+
+        // Build the 8 Quick Settings Tiles in a 2x4 Bento Grid
+        String wifiSubtitle = getWifiStatusSummary(context);
+        List<TileSpec> specs = new ArrayList<>();
+        specs.add(new TileSpec("settings", "All Settings", "System & device", 0xFF38BDF8, () -> {
+            closeOverlay.run();
+            launchSystemSettings(context, Settings.ACTION_SETTINGS);
+        }));
+        specs.add(new TileSpec("sliders", "Picture & Sound", "TV Quick Menu", 0xFFA78BFA, () -> {
+            closeOverlay.run();
+            // Delay 80ms so our overlay detaches cleanly before TCL's ShowWindowService opens
+            new Handler(Looper.getMainLooper()).postDelayed(() -> launchTclQuickMenuOrDisplay(context), 80);
+        }));
+        specs.add(new TileSpec("wifi", "Wi-Fi & Network", wifiSubtitle, 0xFF34D399, () -> {
+            closeOverlay.run();
+            launchSystemSettings(context, Settings.ACTION_WIFI_SETTINGS, Settings.ACTION_WIRELESS_SETTINGS);
+        }));
+        specs.add(new TileSpec("bluetooth", "Bluetooth & Remote", "Accessories", 0xFF60A5FA, () -> {
+            closeOverlay.run();
+            launchSystemSettings(context,
+                    Settings.ACTION_BLUETOOTH_SETTINGS,
+                    "com.google.android.tv.settings.ACCESSORIES",
+                    Settings.ACTION_SETTINGS);
+        }));
+        specs.add(new TileSpec("display", "Display & Audio", "Screen & sound", 0xFFFBBF24, () -> {
+            closeOverlay.run();
+            launchSystemSettings(context,
+                    Settings.ACTION_DISPLAY_SETTINGS,
+                    "android.settings.PICTURE_SETTINGS",
+                    Settings.ACTION_SOUND_SETTINGS,
+                    Settings.ACTION_SETTINGS);
+        }));
+        specs.add(new TileSpec("hdmi", "TV Inputs", "HDMI & sources", 0xFFF472B6, () -> {
+            closeOverlay.run();
+            launchTvInputs(context);
+        }));
+        specs.add(new TileSpec("luma", "Luma Settings", "Themes & glass", 0xFF2DD4BF, () -> {
+            closeOverlay.run();
+            launchLumaAction(context, EXTRA_OPEN_LUMA_SETTINGS);
+        }));
+        specs.add(new TileSpec("moon", "Screensaver", "Ambient clock", 0xFF818CF8, () -> {
+            closeOverlay.run();
+            launchLumaAction(context, EXTRA_OPEN_SCREENSAVER);
+        }));
+
+        int gap = dp(context, 12);
+        List<View> tileViews = new ArrayList<>();
+        for (int row = 0; row < 4; row++) {
+            LinearLayout rowLayout = new LinearLayout(context);
+            rowLayout.setOrientation(LinearLayout.HORIZONTAL);
+            rowLayout.setClipChildren(false);
+            rowLayout.setClipToPadding(false);
+
+            for (int col = 0; col < 2; col++) {
+                int idx = row * 2 + col;
+                TileSpec spec = specs.get(idx);
+                View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost);
+                tile.setId(View.generateViewId());
+                tileViews.add(tile);
+
+                LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
+                        0, dp(context, 84), 1f);
+                if (col == 0) tileLp.rightMargin = gap / 2;
+                else tileLp.leftMargin = gap / 2;
+                rowLayout.addView(tile, tileLp);
+            }
+
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (row > 0) rowLp.topMargin = gap;
+            card.addView(rowLayout, rowLp);
+        }
+
+        // Explicit D-Pad focus graph for crisp 2x4 grid navigation
+        for (int i = 0; i < tileViews.size(); i++) {
+            int r = i / 2;
+            int c = i % 2;
+            View v = tileViews.get(i);
+            v.setNextFocusLeftId(c == 1 ? tileViews.get(i - 1).getId() : v.getId());
+            v.setNextFocusRightId(c == 0 ? tileViews.get(i + 1).getId() : v.getId());
+            v.setNextFocusUpId(r > 0 ? tileViews.get(i - 2).getId() : v.getId());
+            v.setNextFocusDownId(r < 3 ? tileViews.get(i + 2).getId() : v.getId());
+        }
+
+        // Bottom hint bar
+        TextView footer = new TextView(context);
+        footer.setText("Press Settings or Back to close");
+        footer.setTypeface(regular);
+        footer.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 12));
+        footer.setTextColor(0x88CBD5E1);
+        footer.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams footerLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        footerLp.topMargin = dp(context, 16);
+        card.addView(footer, footerLp);
+
+        scrim.addView(card, cardLp);
+
+        QuickSettingsOverlayService svc = sInstance;
+        if (svc != null) {
+            svc.panelCard = card;
+        }
+
+        // Entrance animation
+        card.setTranslationX(dp(context, 56));
+        card.setAlpha(0f);
+        card.animate()
+                .translationX(0f)
+                .alpha(1f)
+                .setDuration(230)
+                .setInterpolator(new OvershootInterpolator(0.85f))
+                .withEndAction(() -> {
+                    card.invalidate();
+                    for (View tv : tileViews) tv.invalidate();
+                })
+                .start();
+
+        if (!tileViews.isEmpty()) {
+            final View firstTile = tileViews.get(0);
+            firstTile.post(firstTile::requestFocus);
+        }
+
+        return scrim;
+    }
+
+    private static View buildTileView(
+            Context context,
+            TileSpec spec,
+            UiSoundEngine sfx,
+            Typeface regular,
+            Typeface medium,
+            String qsStyle,
+            int qsFrost) {
+
+        LinearLayout tile = new LinearLayout(context);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER_VERTICAL);
+        tile.setFocusable(true);
+        tile.setFocusableInTouchMode(true);
+        tile.setClickable(true);
+        int padH = dp(context, 14);
+        int padV = dp(context, 11);
+        tile.setPadding(padH, padV, padH, padV);
+
+        TileGlassDrawable bg = new TileGlassDrawable(context, tile, spec.accentColor, qsStyle, qsFrost);
+        tile.setBackground(bg);
+
+        LinearLayout topRow = new LinearLayout(context);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        View iconView = new View(context) {
+            private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                drawTileVectorIcon(canvas, spec.iconType, getWidth(), getHeight(),
+                        tile.isFocused() ? 0xFFFFFFFF : spec.accentColor, iconPaint);
+            }
+        };
+        int iconSize = dp(context, 22);
+        topRow.addView(iconView, new LinearLayout.LayoutParams(iconSize, iconSize));
+
+        TextView titleView = new TextView(context);
+        titleView.setText(spec.title);
+        titleView.setTypeface(medium);
+        titleView.setSingleLine(true);
+        titleView.setEllipsize(TextUtils.TruncateAt.END);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14.5f));
+        titleView.setTextColor(0xFFF8FAFC);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        titleLp.leftMargin = dp(context, 10);
+        topRow.addView(titleView, titleLp);
+
+        tile.addView(topRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView subView = new TextView(context);
+        subView.setText(spec.subtitle);
+        subView.setTypeface(regular);
+        subView.setSingleLine(true);
+        subView.setEllipsize(TextUtils.TruncateAt.END);
+        subView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 12f));
+        subView.setTextColor(0xA6CBD5E1);
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        subLp.topMargin = dp(context, 5);
+        tile.addView(subView, subLp);
+
+        tile.setOnFocusChangeListener((v, hasFocus) -> {
+            bg.setFocused(hasFocus);
+            iconView.invalidate();
+            titleView.setTextColor(hasFocus ? 0xFFFFFFFF : 0xFFF8FAFC);
+            subView.setTextColor(hasFocus ? 0xE6E2E8F0 : 0xA6CBD5E1);
+            v.animate().cancel();
+            v.animate()
+                    .scaleX(hasFocus ? 1.045f : 1.0f)
+                    .scaleY(hasFocus ? 1.045f : 1.0f)
+                    .setDuration(160)
+                    .setInterpolator(new OvershootInterpolator(1.1f))
+                    .start();
+            if (hasFocus && sfx != null) {
+                int sw = context.getResources().getDisplayMetrics().widthPixels;
+                sfx.playFocus(v, sw, 1);
+            }
+        });
+
+        tile.setOnClickListener(v -> {
+            if (sfx != null) {
+                int sw = context.getResources().getDisplayMetrics().widthPixels;
+                sfx.playSelect(v, sw);
+            }
+            if (spec.action != null) spec.action.run();
+        });
+
+        return tile;
+    }
+
+    private static void drawTileVectorIcon(Canvas c, String type, int w, int h, int color, Paint p) {
+        p.reset();
+        p.setAntiAlias(true);
+        p.setColor(color);
+        p.setStyle(Paint.Style.STROKE);
+        float sw = Math.max(2f, w * 0.095f);
+        p.setStrokeWidth(sw);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeJoin(Paint.Join.ROUND);
+
+        float cx = w * 0.5f;
+        float cy = h * 0.5f;
+        float r = Math.min(w, h) * 0.34f;
+
+        if ("settings".equals(type)) {
+            c.drawCircle(cx, cy, r * 0.52f, p);
+            for (int i = 0; i < 8; i++) {
+                double ang = i * Math.PI / 4.0;
+                float x1 = cx + (float) Math.cos(ang) * (r * 0.72f);
+                float y1 = cy + (float) Math.sin(ang) * (r * 0.72f);
+                float x2 = cx + (float) Math.cos(ang) * (r * 1.05f);
+                float y2 = cy + (float) Math.sin(ang) * (r * 1.05f);
+                c.drawLine(x1, y1, x2, y2, p);
+            }
+        } else if ("sliders".equals(type)) {
+            float y1 = h * 0.28f, y2 = h * 0.50f, y3 = h * 0.72f;
+            float xL = w * 0.16f, xR = w * 0.84f;
+            c.drawLine(xL, y1, xR, y1, p);
+            c.drawLine(xL, y2, xR, y2, p);
+            c.drawLine(xL, y3, xR, y3, p);
+            p.setStyle(Paint.Style.FILL);
+            c.drawCircle(w * 0.38f, y1, sw * 1.15f, p);
+            c.drawCircle(w * 0.66f, y2, sw * 1.15f, p);
+            c.drawCircle(w * 0.46f, y3, sw * 1.15f, p);
+        } else if ("wifi".equals(type)) {
+            RectF arc1 = new RectF(cx - r * 1.05f, cy - r * 0.65f, cx + r * 1.05f, cy + r * 1.45f);
+            RectF arc2 = new RectF(cx - r * 0.68f, cy - r * 0.28f, cx + r * 0.68f, cy + r * 1.08f);
+            c.drawArc(arc1, 220f, 100f, false, p);
+            c.drawArc(arc2, 220f, 100f, false, p);
+            p.setStyle(Paint.Style.FILL);
+            c.drawCircle(cx, cy + r * 0.55f, sw * 0.9f, p);
+        } else if ("bluetooth".equals(type)) {
+            Path path = new Path();
+            path.moveTo(cx - r * 0.45f, cy - r * 0.45f);
+            path.lineTo(cx + r * 0.45f, cy + r * 0.45f);
+            path.lineTo(cx, cy + r * 0.95f);
+            path.lineTo(cx, cy - r * 0.95f);
+            path.lineTo(cx + r * 0.45f, cy - r * 0.45f);
+            path.lineTo(cx - r * 0.45f, cy + r * 0.45f);
+            c.drawPath(path, p);
+        } else if ("display".equals(type)) {
+            RectF rect = new RectF(w * 0.14f, h * 0.20f, w * 0.86f, h * 0.68f);
+            c.drawRoundRect(rect, sw, sw, p);
+            c.drawLine(w * 0.34f, h * 0.82f, w * 0.66f, h * 0.82f, p);
+            c.drawLine(cx, h * 0.68f, cx, h * 0.82f, p);
+        } else if ("hdmi".equals(type)) {
+            Path port = new Path();
+            port.moveTo(w * 0.16f, h * 0.32f);
+            port.lineTo(w * 0.84f, h * 0.32f);
+            port.lineTo(w * 0.84f, h * 0.56f);
+            port.lineTo(w * 0.70f, h * 0.70f);
+            port.lineTo(w * 0.30f, h * 0.70f);
+            port.lineTo(w * 0.16f, h * 0.56f);
+            port.close();
+            c.drawPath(port, p);
+            c.drawLine(w * 0.34f, h * 0.48f, w * 0.66f, h * 0.48f, p);
+        } else if ("luma".equals(type)) {
+            Path star = new Path();
+            star.moveTo(cx, cy - r);
+            star.quadTo(cx, cy, cx + r, cy);
+            star.quadTo(cx, cy, cx, cy + r);
+            star.quadTo(cx, cy, cx - r, cy);
+            star.quadTo(cx, cy, cx, cy - r);
+            star.close();
+            c.drawPath(star, p);
+        } else {
+            // Moon / Screensaver
+            c.drawArc(new RectF(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f),
+                    35f, 270f, false, p);
+        }
+    }
+
+    private static Drawable buildLiquidGlassPanelDrawable(
+            Context context, View anchor, float radiusDp, String qsStyle, int qsFrost) {
+        final float radius = dp(context, radiusDp);
+        final float stroke = Math.max(1.5f, dp(context, 1.45f));
+        final int screenW = context.getResources().getDisplayMetrics().widthPixels;
+        final int screenH = context.getResources().getDisplayMetrics().heightPixels;
+        final String style = qsStyle != null ? qsStyle : "frosted";
+        final float frostScale = qsFrost <= 0 ? 0f : Math.max(0.25f, Math.min(2.2f, qsFrost / 35f));
+        return new Drawable() {
+            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final RectF rect = new RectF();
+            private final int[] loc = new int[2];
+            private final Matrix shaderMatrix = new Matrix();
+            private android.graphics.Bitmap refractedPatch;
+            private android.graphics.Bitmap lastBackdrop;
+            private int lastX = Integer.MIN_VALUE, lastY = Integer.MIN_VALUE, lastW, lastH;
+
+            @Override
+            public void draw(Canvas canvas) {
+                rect.set(getBounds());
+                if (rect.width() <= 0 || rect.height() <= 0) return;
+
+                if (anchor != null) {
+                    anchor.getLocationOnScreen(loc);
+                }
+
+                int adaptiveCol = "adaptive".equals(style)
+                        ? LiquidGlassRenderer.getExtractedOverlayColor()
+                        : 0xFF0E1725;
+
+                // 1A. Frosted mode: draw the blurred screen/wallpaper backdrop inside the rounded panel
+                if ("frosted".equals(style)) {
+                    android.graphics.Bitmap blurred = LiquidGlassRenderer.getFrostedOverlayBackdrop();
+                    if (blurred != null && !blurred.isRecycled() && screenW > 0 && screenH > 0) {
+                        BitmapShader bs = new BitmapShader(blurred, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+                        shaderMatrix.reset();
+                        shaderMatrix.postScale(
+                                (float) screenW / blurred.getWidth(),
+                                (float) screenH / blurred.getHeight());
+                        shaderMatrix.postTranslate(-loc[0], -loc[1]);
+                        bs.setLocalMatrix(shaderMatrix);
+                        p.setStyle(Paint.Style.FILL);
+                        p.setShader(bs);
+                        canvas.drawRoundRect(rect, radius, radius, p);
+                        p.setShader(null);
+                    }
+                }
+
+                // 1B. Outer bevel-ring optical refraction (for liquid_glass, adaptive, and frosted edge polish)
+                if (!"solid_dark".equals(style)) {
+                    android.graphics.Bitmap backdrop = LiquidGlassRenderer.getOverlayBackdrop();
+                    if (backdrop != null && anchor != null && screenW > 0 && screenH > 0) {
+                        int iw = Math.round(rect.width()), ih = Math.round(rect.height());
+                        if (refractedPatch == null || lastBackdrop != backdrop
+                                || Math.abs(loc[0] - lastX) > 2 || Math.abs(loc[1] - lastY) > 2
+                                || iw != lastW || ih != lastH) {
+                            float bevelW = dp(context, "frosted".equals(style) ? 12f : 18f);
+                            float refrH = dp(context, "frosted".equals(style) ? 26f : 42f);
+                            float tintStr = frostScale <= 0f ? 0f : ("adaptive".equals(style) ? 0.42f : 0.24f);
+                            refractedPatch = LiquidGlassRenderer.renderRefractedBevelRing(
+                                    backdrop, screenW, screenH, loc[0], loc[1],
+                                    rect.width(), rect.height(), radius, bevelW, refrH,
+                                    0.16f, 1.65f, 0.52f, adaptiveCol, tintStr, refractedPatch);
+                            lastBackdrop = backdrop;
+                            lastX = loc[0];
+                            lastY = loc[1];
+                            lastW = iw;
+                            lastH = ih;
+                        }
+                        if (refractedPatch != null) {
+                            LiquidGlassRenderer.drawPatch(canvas, refractedPatch, rect, p);
+                        }
+                    }
+                }
+
+                // 2. Interior surface tint based on selected style & frost depth
+                p.setStyle(Paint.Style.FILL);
+                if ("solid_dark".equals(style)) {
+                    p.setShader(new LinearGradient(
+                            0f, rect.top, 0f, rect.bottom,
+                            0xF2101726, 0xF7080C15,
+                            Shader.TileMode.CLAMP));
+                    canvas.drawRoundRect(rect, radius, radius, p);
+                    p.setShader(null);
+                } else if (frostScale > 0f) {
+                    if ("adaptive".equals(style)) {
+                        int aTop = Math.min(235, Math.max(40, Math.round(128 * frostScale)));
+                        int aBot = Math.min(245, Math.max(55, Math.round(168 * frostScale)));
+                        int cTop = (adaptiveCol & 0x00FFFFFF) | (aTop << 24);
+                        int rB = Math.max(0, (int) (Color.red(adaptiveCol) * 0.58f));
+                        int gB = Math.max(0, (int) (Color.green(adaptiveCol) * 0.58f));
+                        int bB = Math.max(0, (int) (Color.blue(adaptiveCol) * 0.65f));
+                        int cBot = Color.argb(aBot, rB, gB, bB);
+                        p.setShader(new LinearGradient(
+                                rect.left, rect.top, rect.right, rect.bottom,
+                                cTop, cBot,
+                                Shader.TileMode.CLAMP));
+                    } else if ("frosted".equals(style)) {
+                        int aTop = Math.min(220, Math.max(36, Math.round(92 * frostScale)));
+                        int aBot = Math.min(235, Math.max(48, Math.round(132 * frostScale)));
+                        p.setShader(new LinearGradient(
+                                0f, rect.top, 0f, rect.bottom,
+                                (aTop << 24) | 0x121B2C,
+                                (aBot << 24) | 0x0A101C,
+                                Shader.TileMode.CLAMP));
+                    } else {
+                        // Default "liquid_glass"
+                        int aTop = Math.min(185, Math.max(20, Math.round(48 * frostScale)));
+                        int aBot = Math.min(205, Math.max(30, Math.round(70 * frostScale)));
+                        p.setShader(new LinearGradient(
+                                0f, rect.top, 0f, rect.bottom,
+                                (aTop << 24) | 0x0E1725,
+                                (aBot << 24) | 0x0A101C,
+                                Shader.TileMode.CLAMP));
+                    }
+                    canvas.drawRoundRect(rect, radius, radius, p);
+                    p.setShader(null);
+                }
+
+                // 3. Subtle diagonal Fresnel & internal caustic bounce
+                int causticColor = "adaptive".equals(style)
+                        ? ((adaptiveCol & 0x00FFFFFF) | 0x38000000)
+                        : 0x24BAE6FD;
+                p.setShader(new LinearGradient(
+                        rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{0x22FFFFFF, 0x00FFFFFF, 0x00FFFFFF, causticColor},
+                        new float[]{0f, 0.26f, 0.74f, 1f},
+                        Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(rect, radius, radius, p);
+                p.setShader(null);
+
+                // 4. Capped top crown catchlight
+                float domeH = Math.min(dp(context, 52), rect.height() * 0.28f);
+                canvas.save();
+                canvas.clipRect(rect.left, rect.top, rect.right, rect.top + domeH);
+                p.setShader(new LinearGradient(
+                        0f, rect.top, 0f, rect.top + domeH,
+                        0x20FFFFFF, 0x00FFFFFF,
+                        Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(rect, radius, radius, p);
+                canvas.restore();
+                p.setShader(null);
+
+                // 5. Beveled 5-stop diagonal specular crystal rim
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(stroke);
+                int rimTint = "adaptive".equals(style)
+                        ? ((adaptiveCol & 0x00FFFFFF) | 0x78000000)
+                        : 0x52BAE6FD;
+                p.setShader(new LinearGradient(
+                        rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{0xB8FFFFFF, 0x22FFFFFF, 0x10000000, rimTint, 0x80FFFFFF},
+                        new float[]{0f, 0.26f, 0.52f, 0.78f, 1f},
+                        Shader.TileMode.CLAMP));
+                RectF strokeRect = new RectF(rect);
+                float inset = stroke * 0.5f;
+                strokeRect.inset(inset, inset);
+                canvas.drawRoundRect(strokeRect, Math.max(0f, radius - inset), Math.max(0f, radius - inset), p);
+                p.setShader(null);
+            }
+
+            @Override public void setAlpha(int alpha) { p.setAlpha(alpha); }
+            @Override public void setColorFilter(ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+        };
+    }
+
+    private static final class TileGlassDrawable extends Drawable {
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+        private final int[] loc = new int[2];
+        private final Context context;
+        private final View anchor;
+        private final float radius;
+        private final float strokeWidth;
+        private final int accentColor;
+        private final String style;
+        private final float frostScale;
+        private final int screenW, screenH;
+        private boolean focused;
+        private android.graphics.Bitmap refractedPatch;
+        private android.graphics.Bitmap lastBackdrop;
+        private int lastX = Integer.MIN_VALUE, lastY = Integer.MIN_VALUE, lastW, lastH;
+
+        TileGlassDrawable(Context context, View anchor, int accentColor, String qsStyle, int qsFrost) {
+            this.context = context;
+            this.anchor = anchor;
+            this.radius = dp(context, 18);
+            this.strokeWidth = Math.max(1.5f, dp(context, 1.5f));
+            this.accentColor = accentColor;
+            this.style = qsStyle != null ? qsStyle : "frosted";
+            this.frostScale = qsFrost <= 0 ? 0f : Math.max(0.25f, Math.min(2.2f, qsFrost / 35f));
+            this.screenW = context.getResources().getDisplayMetrics().widthPixels;
+            this.screenH = context.getResources().getDisplayMetrics().heightPixels;
+        }
+
+        void setFocused(boolean focused) {
+            if (this.focused != focused) {
+                this.focused = focused;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            rect.set(getBounds());
+            if (rect.width() <= 0 || rect.height() <= 0) return;
+
+            int adaptiveCol = "adaptive".equals(style)
+                    ? LiquidGlassRenderer.getExtractedOverlayColor()
+                    : 0xFF0E1725;
+
+            // 1. Outer bevel-ring refraction on each tile (for liquid_glass and adaptive modes)
+            if (!"solid_dark".equals(style) && !"frosted".equals(style)) {
+                android.graphics.Bitmap backdrop = LiquidGlassRenderer.getOverlayBackdrop();
+                if (backdrop != null && anchor != null && screenW > 0 && screenH > 0) {
+                    anchor.getLocationOnScreen(loc);
+                    int iw = Math.round(rect.width()), ih = Math.round(rect.height());
+                    if (refractedPatch == null || lastBackdrop != backdrop
+                            || Math.abs(loc[0] - lastX) > 2 || Math.abs(loc[1] - lastY) > 2
+                            || iw != lastW || ih != lastH) {
+                        float bevelW = dp(context, 10f);
+                        float refrH = dp(context, 24f);
+                        float tintStr = frostScale <= 0f ? 0f : ("adaptive".equals(style) ? 0.36f : 0.20f);
+                        refractedPatch = LiquidGlassRenderer.renderRefractedBevelRing(
+                                backdrop, screenW, screenH, loc[0], loc[1],
+                                rect.width(), rect.height(), radius, bevelW, refrH,
+                                0.16f, 1.65f, 0.55f, adaptiveCol, tintStr, refractedPatch);
+                        lastBackdrop = backdrop;
+                        lastX = loc[0];
+                        lastY = loc[1];
+                        lastW = iw;
+                        lastH = ih;
+                    }
+                    if (refractedPatch != null) {
+                        LiquidGlassRenderer.drawPatch(canvas, refractedPatch, rect, p);
+                    }
+                }
+            }
+
+            // 2. Tile interior fill based on style & focus
+            p.setStyle(Paint.Style.FILL);
+            if (focused) {
+                int topTint = (accentColor & 0x00FFFFFF) | 0x44000000;
+                int botTint = (accentColor & 0x00FFFFFF) | 0x22000000;
+                int midTint = "solid_dark".equals(style)
+                        ? 0xB8182234
+                        : ("adaptive".equals(style)
+                                ? ((adaptiveCol & 0x00FFFFFF) | 0x52000000)
+                                : 0x36141E30);
+                p.setShader(new LinearGradient(
+                        rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{topTint, midTint, botTint},
+                        new float[]{0f, 0.55f, 1f},
+                        Shader.TileMode.CLAMP));
+            } else if ("solid_dark".equals(style)) {
+                p.setShader(new LinearGradient(
+                        0f, rect.top, 0f, rect.bottom,
+                        0xCC1B2436, 0xD8121928,
+                        Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(rect, radius, radius, p);
+                p.setShader(null);
+            } else if (frostScale > 0f) {
+                if ("adaptive".equals(style)) {
+                    int aTop = Math.min(180, Math.max(28, Math.round(68 * frostScale)));
+                    int aBot = Math.min(200, Math.max(36, Math.round(92 * frostScale)));
+                    int cTop = (adaptiveCol & 0x00FFFFFF) | (aTop << 24);
+                    int cBot = (adaptiveCol & 0x00FFFFFF) | (aBot << 24);
+                    p.setShader(new LinearGradient(
+                            0f, rect.top, 0f, rect.bottom,
+                            cTop, cBot,
+                            Shader.TileMode.CLAMP));
+                } else if ("frosted".equals(style)) {
+                    int aTop = Math.min(140, Math.max(22, Math.round(48 * frostScale)));
+                    int aBot = Math.min(165, Math.max(30, Math.round(64 * frostScale)));
+                    p.setShader(new LinearGradient(
+                            0f, rect.top, 0f, rect.bottom,
+                            (aTop << 24) | 0xFFFFFF,
+                            (aBot << 24) | 0x101827,
+                            Shader.TileMode.CLAMP));
+                } else {
+                    // Default "liquid_glass"
+                    int aTop = Math.min(95, Math.max(14, Math.round(28 * frostScale)));
+                    int aBot = Math.min(120, Math.max(18, Math.round(36 * frostScale)));
+                    p.setShader(new LinearGradient(
+                            0f, rect.top, 0f, rect.bottom,
+                            (aTop << 24) | 0xFFFFFF,
+                            (aBot << 24) | 0x0B111E,
+                            Shader.TileMode.CLAMP));
+                }
+                canvas.drawRoundRect(rect, radius, radius, p);
+                p.setShader(null);
+            }
+            if (focused) {
+                canvas.drawRoundRect(rect, radius, radius, p);
+                p.setShader(null);
+            }
+
+            // 3. Top crown catchlight & caustic rim
+            if (focused) {
+                p.setShader(new RadialGradient(
+                        rect.left + rect.width() * 0.25f,
+                        rect.top,
+                        rect.width() * 0.85f,
+                        new int[]{(accentColor & 0x00FFFFFF) | 0x42000000, 0x00000000},
+                        null,
+                        Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(rect, radius, radius, p);
+                p.setShader(null);
+            }
+
+            // 4. Beveled 5-stop specular border
+            p.setStyle(Paint.Style.STROKE);
+            float sw = focused ? strokeWidth * 1.4f : strokeWidth * 0.9f;
+            p.setStrokeWidth(sw);
+            if (focused) {
+                int chrom = (accentColor & 0x00FFFFFF) | 0xB8000000;
+                p.setShader(new LinearGradient(
+                        rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{0xFFFFFFFF, 0x44FFFFFF, chrom, 0xD0FFFFFF},
+                        new float[]{0f, 0.35f, 0.72f, 1f},
+                        Shader.TileMode.CLAMP));
+            } else {
+                int rimTint = "adaptive".equals(style)
+                        ? ((adaptiveCol & 0x00FFFFFF) | 0x58000000)
+                        : 0x34BAE6FD;
+                p.setShader(new LinearGradient(
+                        rect.left, rect.top, rect.right, rect.bottom,
+                        new int[]{0x78FFFFFF, 0x18FFFFFF, 0x10000000, rimTint, 0x48FFFFFF},
+                        new float[]{0f, 0.28f, 0.52f, 0.78f, 1f},
+                        Shader.TileMode.CLAMP));
+            }
+            RectF strokeRect = new RectF(rect);
+            float inset = sw * 0.5f;
+            strokeRect.inset(inset, inset);
+            canvas.drawRoundRect(strokeRect, Math.max(0f, radius - inset), Math.max(0f, radius - inset), p);
+            p.setShader(null);
+        }
+
+        @Override public void setAlpha(int alpha) { p.setAlpha(alpha); }
+        @Override public void setColorFilter(ColorFilter cf) { p.setColorFilter(cf); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    private static final class TileSpec {
+        final String iconType;
+        final String title;
+        final String subtitle;
+        final int accentColor;
+        final Runnable action;
+
+        TileSpec(String iconType, String title, String subtitle, int accentColor, Runnable action) {
+            this.iconType = iconType;
+            this.title = title;
+            this.subtitle = subtitle;
+            this.accentColor = accentColor;
+            this.action = action;
+        }
+    }
+
+    private static String getWifiStatusSummary(Context context) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                NetworkInfo info = cm.getActiveNetworkInfo();
+                if (info != null && info.isConnected()) {
+                    if (info.getType() == ConnectivityManager.TYPE_ETHERNET) return "Ethernet connected";
+                    if (info.getType() == ConnectivityManager.TYPE_WIFI) return "Wi-Fi connected";
+                    return "Connected";
+                }
+            }
+        } catch (Exception ignored) {}
+        return "Network settings";
+    }
+
+    private static void launchSystemSettings(Context context, String... actions) {
+        PackageManager pm = context.getPackageManager();
+        for (String action : actions) {
+            try {
+                Intent intent = new Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (intent.resolveActivity(pm) != null) {
+                    context.startActivity(intent);
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+        try {
+            context.startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception ignored) {}
+    }
+
+    private static void launchTclQuickMenuOrDisplay(Context context) {
+        try {
+            Intent svc = new Intent("com.tcl.settings.SHOW_WINDOW");
+            svc.setClassName("com.tcl.settings", "com.tcl.settings.ShowWindowService");
+            svc.putExtra("flag", 1);
+            svc.putExtra("Type", "Settings");
+            svc.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (context.startService(svc) != null) {
+                return;
+            }
+        } catch (Exception ignored) {}
+        try {
+            Intent act = new Intent("com.tcl.settings.action.QUICKSETTINGS")
+                    .setPackage("com.tcl.settings")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (act.resolveActivity(context.getPackageManager()) != null) {
+                context.startActivity(act);
+                return;
+            }
+        } catch (Exception ignored) {}
+        launchSystemSettings(context, Settings.ACTION_DISPLAY_SETTINGS, "android.settings.PICTURE_SETTINGS", Settings.ACTION_SETTINGS);
+    }
+
+    private static void launchTvInputs(Context context) {
+        String[][] candidates = new String[][]{
+                {"com.tcl.tv", "com.tcl.sourcemenu.sourcemanager.EnableViewInputLauncher"},
+                {"com.tcl.tvinput", "com.tcl.tvinput.TvInputActivity"}
+        };
+        PackageManager pm = context.getPackageManager();
+        for (String[] c : candidates) {
+            try {
+                Intent i = new Intent().setClassName(c[0], c[1]).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (i.resolveActivity(pm) != null) {
+                    context.startActivity(i);
+                    return;
+                }
+            } catch (Exception ignored) {}
+        }
+        launchLumaAction(context, EXTRA_OPEN_INPUTS);
+    }
+
+    private static void launchLumaAction(Context context, String extraKey) {
+        try {
+            Intent intent = new Intent(context, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            intent.putExtra(extraKey, true);
+            context.startActivity(intent);
+        } catch (Exception ignored) {}
+    }
+
+    private static int dp(Context context, float value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
+    }
+}

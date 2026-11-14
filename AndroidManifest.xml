@@ -3,12 +3,29 @@
     package="com.lumahome.launcher" android:versionCode="43" android:versionName="0.5.30">
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA" />
     <uses-permission android:name="com.android.vending.BILLING" />
     <!-- Android 11+ only shows apps a home screen asks to see: TV apps and normal apps. -->
     <queries>
+        <intent><action android:name="android.app.action.TOGGLE_NOTIFICATION_HANDLER_PANEL" /></intent>
+        <intent><action android:name="android.app.action.OPEN_NOTIFICATION_HANDLER_PANEL" /></intent>
         <intent><action android:name="com.tcl.settings.action.QUICKSETTINGS" /></intent>
+        <intent><action android:name="android.settings.QUICK_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.SETTINGS" /></intent>
+        <intent><action android:name="android.settings.WIFI_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.WIRELESS_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.BLUETOOTH_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.DISPLAY_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.PICTURE_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.SOUND_SETTINGS" /></intent>
+        <package android:name="com.google.android.apps.tv.launcherx" />
+        <package android:name="com.tcl.settings" />
+        <package android:name="com.tcl.tv" />
+        <package android:name="com.tcl.tvinput" />
+        <package android:name="com.android.tv.settings" />
         <package android:name="com.tcl.miracast" />
         <provider android:authorities="android.media.tv" />
         <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.HOME" /></intent>
@@ -69,5 +86,18 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".QuickSettingsOverlayService"
+            android:label="Quick Settings"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/quick_settings_accessibility" />
+        </service>
     </application>
 </manifest>
