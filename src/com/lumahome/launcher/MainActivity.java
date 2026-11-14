@@ -790,6 +790,12 @@ public final class MainActivity extends Activity {
         } catch(Exception|OutOfMemoryError ignored) {}
     }
 
+    private final List<View> iconGlassViews=new ArrayList<>();
+
+    private void refreshIconGlassSurfaces() {
+        for(View v:iconGlassViews) if(v!=null) v.invalidate();
+    }
+
     private void refreshGlassSurfaces() {
         runOnUiThread(() -> {
             if(dockBar!=null) dockBar.invalidate();
@@ -797,7 +803,52 @@ public final class MainActivity extends Activity {
             if(searchBar!=null) searchBar.invalidate();
             for(View pill:topPillViews) if(pill!=null) pill.invalidate();
             if(activeBladeBox!=null) activeBladeBox.invalidate();
+            refreshIconGlassSurfaces();
         });
+    }
+
+    private Drawable iconBevelRefractionDrawable(final View anchor) {
+        return new Drawable() {
+            private final android.graphics.Paint p=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final android.graphics.RectF r=new android.graphics.RectF();
+            private final int[] loc=new int[2];
+            private final LiquidPatchState patchState=new LiquidPatchState();
+
+            @Override public void draw(android.graphics.Canvas c) {
+                r.set(getBounds());
+                if(r.width()<=0 || r.height()<=0 || anchor==null || screenWidth<=0 || screenHeight<=0) return;
+                if(!glassRefractionEnabled() || liquidBackdrop==null) return;
+                float rad=iconShapeRadius(r.width(),r.height());
+                anchor.getLocationOnScreen(loc);
+                int iw=Math.round(r.width()), ih=Math.round(r.height());
+                int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
+                float sh=Math.max(0.85f,sheenMultiplier());
+                boolean needRender = patchState.patch==null || !frostedBackdropKey.equals(patchState.key)
+                        || Math.abs(patchState.locX - loc[0]) > 1 || Math.abs(patchState.locY - loc[1]) > 1
+                        || patchState.w!=iw || patchState.h!=ih || Math.abs(patchState.rad-rad)>0.5f
+                        || patchState.frost!=frost || Math.abs(patchState.sheen-sh)>0.01f;
+                if(needRender) {
+                    float bevelW=Math.max(px(10f),Math.min(r.width()*0.26f,px(28f)));
+                    float refrH=Math.max(px(18f),Math.min(r.width()*0.38f,px(54f)));
+                    int tintCol=themed(0xFF171114,0xFF0E1725);
+                    float tintA=Math.min(0.68f,frost/145f);
+                    float spec=Math.min(0.95f,0.42f*sh);
+                    patchState.patch=LiquidGlassRenderer.renderRefractedBevelRing(
+                            liquidBackdrop,screenWidth,screenHeight,loc[0],loc[1],
+                            r.width(),r.height(),rad,bevelW,refrH,
+                            0.16f,1.65f,spec,tintCol,tintA,patchState.patch);
+                    patchState.key=frostedBackdropKey;
+                    patchState.locX=loc[0]; patchState.locY=loc[1]; patchState.w=iw; patchState.h=ih; patchState.rad=rad;
+                    patchState.frost=frost; patchState.sheen=sh;
+                }
+                if(patchState.patch!=null) {
+                    LiquidGlassRenderer.drawPatch(c,patchState.patch,r,p);
+                }
+            }
+            @Override public void setAlpha(int a) { p.setAlpha(a); }
+            @Override public void setColorFilter(android.graphics.ColorFilter cf) { p.setColorFilter(cf); }
+            @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        };
     }
 
     private static final class LiquidPatchState {
@@ -2086,7 +2137,7 @@ public final class MainActivity extends Activity {
         stopHeroVideo();handler.removeCallbacks(heroRotation);heroPanel=null;heroPrimary=null;
         refreshWallpaperPalette();
         final String desiredFocus=lastFocus;
-        serial++; views.clear(); appViews.clear();appRows.clear(); dockViews.clear(); contentViews.clear();contentRows.clear(); topPillViews.clear();
+        serial++; views.clear(); appViews.clear();appRows.clear(); dockViews.clear(); contentViews.clear();contentRows.clear(); topPillViews.clear(); iconGlassViews.clear();
         focusedFavorite=null; if(drawerScrollAnimator!=null){drawerScrollAnimator.cancel();drawerScrollAnimator=null;}drawerScrollTarget=-1;drawerScroll=null;homeScroll=null;homePage=null;drawerPage=null;recentSection=null;
         screenWidth=getResources().getDisplayMetrics().widthPixels;
         screenHeight=getResources().getDisplayMetrics().heightPixels;
@@ -2538,6 +2589,10 @@ public final class MainActivity extends Activity {
             @Override public void playSoundEffect(int soundConstant) {
                 if(muteSystem()) return;
                 super.playSoundEffect(soundConstant);
+            }
+            @Override protected void onScrollChanged(int l,int t,int oldl,int oldt) {
+                super.onScrollChanged(l,t,oldl,oldt);
+                if(l!=oldl && glassRefractionEnabled()) refreshIconGlassSurfaces();
             }
         };
         appsScroll.setSoundEffectsEnabled(!muteSystem());
@@ -3635,6 +3690,7 @@ public final class MainActivity extends Activity {
                 cx+=vx*h; cy+=vy*h;
             }
             applyTranslations();
+            if(this==homeSpringStage && glassRefractionEnabled()) refreshIconGlassSurfaces();
 
             if(colorT<1f && targetColor!=0) {
                 colorT=Math.min(1f,colorT+dt/0.18f);
@@ -3683,9 +3739,19 @@ public final class MainActivity extends Activity {
         glowLp.leftMargin=-spread; glowLp.topMargin=-spread;
         iconSlot.addView(glow,glowLp);
 
+        String artwork=store.value("art."+pkg,"");
+        AppCatalog.Artwork appArt=catalog.artwork(pkg,recent?false:allApps?store.flag("icon."+pkg):!store.flag("home_banner."+pkg));
+        final boolean bannerStyle=!artwork.isEmpty()||appArt.banner;
+        final boolean useLiveBevel=!allApps&&artwork.isEmpty()&&IconStylingEngine.usesGlassPlate(iconConfig());
+
         FrameLayout picture=new FrameLayout(this) {
             private final android.graphics.Paint halo=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            private final Drawable liveBevel=useLiveBevel?iconBevelRefractionDrawable(this):null;
             @Override protected void dispatchDraw(android.graphics.Canvas canvas) {
+                if(liveBevel!=null) {
+                    liveBevel.setBounds(0,0,getWidth(),getHeight());
+                    liveBevel.draw(canvas);
+                }
                 super.dispatchDraw(canvas);
                 if(tile.isFocused() && !springFocusActive()) {
                     float rad=!allApps?iconShapeRadius(getWidth(),getHeight()):px(22);
@@ -3698,6 +3764,7 @@ public final class MainActivity extends Activity {
                 }
             }
         };
+        if(useLiveBevel) iconGlassViews.add(picture);
         picture.setClipToOutline(true);
         picture.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View view,android.graphics.Outline outline) {
@@ -3709,9 +3776,6 @@ public final class MainActivity extends Activity {
             }
         });
         ImageView image=new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        String artwork=store.value("art."+pkg,"");
-        AppCatalog.Artwork appArt=catalog.artwork(pkg,recent?false:allApps?store.flag("icon."+pkg):!store.flag("home_banner."+pkg));
-        final boolean bannerStyle=!artwork.isEmpty()||appArt.banner;
         picture.setBackground(!allApps&&artwork.isEmpty()?new ColorDrawable(Color.TRANSPARENT):glassSurface(picture,!allApps,bannerStyle,false,surfaceTint));
         if(!allApps) {
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);

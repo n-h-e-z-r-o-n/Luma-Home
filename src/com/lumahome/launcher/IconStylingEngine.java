@@ -403,53 +403,53 @@ public final class IconStylingEngine {
     private static void renderDockMatchedLiquidGlass(Canvas canvas, RectF bounds, float radius, Config config) {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         // Always maintain optical liquid glass highlights even if global sheen pref is 0
-        float sh = Math.max(1.0f, config.glassSheen);
+        float sh = Math.max(0.85f, config.glassSheen);
         int baseRgb = config.glassTint & 0x00FFFFFF;
 
-        // 1. Translucent smoked-crystal body (lets live wallpaper show through continuously while scrolling)
-        int eff = Math.min(62, Math.max(24, Math.round(config.glassFrost * 0.62f)));
-        int topA = Math.max(42, Math.min(170, Math.round(eff * 1.15f)));
-        int botA = Math.max(64, Math.min(195, Math.round(eff * 1.50f)));
-        int topRgb = 0x202C3D;
+        // 1. Crystal-clear translucent body matching glassPanelDrawable on the control dock
+        //    (keeps flat center transparent so live wallpaper and outer bevel refraction shine through)
+        int eff = Math.min(54, Math.round(config.glassFrost * 0.58f));
+        int topA = Math.max(14, Math.min(180, Math.round(eff * 1.15f)));
+        int botA = Math.max(22, Math.min(200, Math.round(eff * 1.45f)));
         p.setStyle(Paint.Style.FILL);
         p.setShader(new LinearGradient(0, bounds.top, 0, bounds.bottom,
-                (topA << 24) | topRgb, (botA << 24) | baseRgb, Shader.TileMode.CLAMP));
+                (topA << 24) | baseRgb, (botA << 24) | baseRgb, Shader.TileMode.CLAMP));
         canvas.drawRect(bounds, p);
 
-        // 2. Inverse-power radial bevel meniscus: crystal-clear interior (0..70%), compressed refractive rim glow (70..100%)
+        // 2. Outer bevel ring meniscus sheen (0..76% completely clear center, 76..100% curved rim meniscus)
         float cx = bounds.centerX();
         float cy = bounds.centerY();
         float maxR = Math.max(1f, Math.min(bounds.width(), bounds.height()) * 0.5f);
-        int meniscusEdge = Color.argb(Math.min(96, Math.round(52 * sh)), 220, 242, 255);
-        int meniscusMid = Color.argb(Math.min(48, Math.round(22 * sh)), 186, 230, 253);
+        int meniscusEdge = Color.argb(Math.min(54, Math.round(28 * sh)), 255, 255, 255);
+        int meniscusMid = Color.argb(Math.min(28, Math.round(14 * sh)), 186, 230, 253);
         p.setShader(new RadialGradient(
                 cx, cy, maxR,
                 new int[]{0x00FFFFFF, 0x00FFFFFF, meniscusMid, meniscusEdge},
-                new float[]{0f, 0.68f, 0.88f, 1f},
+                new float[]{0f, 0.76f, 0.90f, 1f},
                 Shader.TileMode.CLAMP
         ));
         canvas.drawRect(bounds, p);
 
-        // 3. Diagonal Fresnel reflection & bottom-right internal cyan caustic bounce
-        int topGlow = Color.argb(Math.min(165, Math.round(62 * sh)), 255, 255, 255);
-        int botCaustic = Color.argb(Math.min(92, Math.round(36 * sh)), 186, 230, 253);
+        // 3. Subtle diagonal Fresnel reflection & bottom-right internal cyan caustic bounce (matching dock)
+        int topGlow = Color.argb(Math.min(48, Math.round(20 * sh)), 255, 255, 255);
+        int botCaustic = Color.argb(Math.min(56, Math.round(18 * sh)), 186, 230, 253);
         p.setShader(new LinearGradient(bounds.left, bounds.top, bounds.right, bounds.bottom,
                 new int[]{topGlow, 0x00FFFFFF, 0x00FFFFFF, botCaustic},
-                new float[]{0f, 0.34f, 0.70f, 1f}, Shader.TileMode.CLAMP));
+                new float[]{0f, 0.26f, 0.74f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawRect(bounds, p);
 
-        // 4. Top specular dome highlight (curved upper crown catchlight)
-        float domeH = bounds.height() * 0.42f;
+        // 4. Subtle top crown catchlight (matching drawLiquidCausticsAndRim on the dock)
+        float domeH = bounds.height() * 0.32f;
         canvas.save();
         canvas.clipRect(bounds.left, bounds.top, bounds.right, bounds.top + domeH);
         p.setShader(new LinearGradient(0, bounds.top, 0, bounds.top + domeH,
-                Color.argb(Math.min(148, Math.round(48 * sh)), 255, 255, 255), 0x00FFFFFF,
+                Color.argb(Math.min(42, Math.round(16 * sh)), 255, 255, 255), 0x00FFFFFF,
                 Shader.TileMode.CLAMP));
         canvas.drawRect(bounds, p);
         canvas.restore();
         p.setShader(null);
 
-        // 5. Single beveled 5-stop diagonal dual-lobe specular rim
+        // 5. Single beveled 5-stop diagonal dual-lobe specular rim (matching dock)
         float sw = Math.max(1.25f, Math.min(2.6f, bounds.width() / 64f));
         float inset = sw / 2f;
         RectF strokeBounds = new RectF(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset);
@@ -459,11 +459,11 @@ public final class IconStylingEngine {
         if (config.glassContrast) {
             rim.setColor(config.accentColor | 0xFF000000);
         } else {
-            int rimTop = Color.argb(Math.min(248, Math.round(195 * sh)), 255, 255, 255);
-            int rimChromatic = Color.argb(Math.min(140, Math.round(76 * sh)), 186, 230, 253);
-            int rimBot = Color.argb(Math.min(215, Math.round(135 * sh)), 255, 255, 255);
+            int rimTop = Color.argb(Math.min(242, Math.round(165 * sh)), 255, 255, 255);
+            int rimChromatic = Color.argb(Math.min(115, Math.round(58 * sh)), 186, 230, 253);
+            int rimBot = Color.argb(Math.min(195, Math.round(110 * sh)), 255, 255, 255);
             rim.setShader(new LinearGradient(strokeBounds.left, strokeBounds.top, strokeBounds.right, strokeBounds.bottom,
-                    new int[]{rimTop, 0x26FFFFFF, 0x12000000, rimChromatic, rimBot},
+                    new int[]{rimTop, 0x1CFFFFFF, 0x10000000, rimChromatic, rimBot},
                     new float[]{0f, 0.26f, 0.52f, 0.78f, 1f}, Shader.TileMode.CLAMP));
         }
         if (radius >= bounds.width() / 2f - 0.5f) {

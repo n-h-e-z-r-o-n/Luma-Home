@@ -43,6 +43,30 @@ final class LiquidGlassRenderer {
         return sDstPixels;
     }
 
+    static Bitmap renderRefractedBevelRing(
+            Bitmap backdrop,
+            int screenW,
+            int screenH,
+            int locX,
+            int locY,
+            float viewW,
+            float viewH,
+            float cornerRadiusPx,
+            float bevelWidthPx,
+            float refractionHeightPx,
+            float dispersionStrength,
+            float satFactor,
+            float specStrength,
+            int tintColor,
+            float tintAlpha,
+            Bitmap reuse) {
+        return renderRefractedInternal(
+                backdrop, screenW, screenH, locX, locY, viewW, viewH,
+                cornerRadiusPx, bevelWidthPx, refractionHeightPx,
+                dispersionStrength, satFactor, specStrength,
+                tintColor, tintAlpha, true, reuse);
+    }
+
     static Bitmap renderRefractedPatch(
             Bitmap backdrop,
             int screenW,
@@ -59,6 +83,31 @@ final class LiquidGlassRenderer {
             float specStrength,
             int tintColor,
             float tintAlpha,
+            Bitmap reuse) {
+        return renderRefractedInternal(
+                backdrop, screenW, screenH, locX, locY, viewW, viewH,
+                cornerRadiusPx, bevelWidthPx, refractionHeightPx,
+                dispersionStrength, satFactor, specStrength,
+                tintColor, tintAlpha, false, reuse);
+    }
+
+    private static Bitmap renderRefractedInternal(
+            Bitmap backdrop,
+            int screenW,
+            int screenH,
+            int locX,
+            int locY,
+            float viewW,
+            float viewH,
+            float cornerRadiusPx,
+            float bevelWidthPx,
+            float refractionHeightPx,
+            float dispersionStrength,
+            float satFactor,
+            float specStrength,
+            int tintColor,
+            float tintAlpha,
+            boolean bevelRingOnly,
             Bitmap reuse) {
         if (backdrop == null || screenW <= 0 || screenH <= 0 || viewW <= 1f || viewH <= 1f) {
             return null;
@@ -116,7 +165,7 @@ final class LiquidGlassRenderer {
 
                 float d = sdRoundedBox(cx, cy, halfW, halfH, r);
                 float cov = clamp01(0.5f - d / 1.5f);
-                if (cov <= 0.004f) {
+                if (cov <= 0.004f || (bevelRingOnly && -d >= bevel)) {
                     dstPixels[rowOffset + px] = 0;
                     continue;
                 }
@@ -144,6 +193,14 @@ final class LiquidGlassRenderer {
 
                     // Inverse-power bevel profile
                     float t = clamp01(-d / bevel);
+                    if (bevelRingOnly) {
+                        float ringFade = 1f - t * t * (3f - 2f * t);
+                        cov *= ringFade;
+                        if (cov <= 0.004f) {
+                            dstPixels[rowOffset + px] = 0;
+                            continue;
+                        }
+                    }
                     float onePlus4t = 1f + 4f * t;
                     float slope = (1f / (onePlus4t * onePlus4t) - gB) * invOneMinusGB;
                     if (slope < 0f) slope = 0f;
