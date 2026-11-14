@@ -26,6 +26,7 @@ import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.os.Build;
@@ -69,11 +70,14 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
 
     private static volatile QuickSettingsOverlayService sInstance;
     private static Dialog sFallbackDialog;
+    private static int sLastNavDir = 1;
+    private static long sLastNavMs = 0L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService screenshotExecutor =
             java.util.concurrent.Executors.newSingleThreadExecutor();
     private WindowManager windowManager;
+    private AudioManager audioManager;
     private View overlayRoot;
     private View panelCard;
     private boolean overlayShowing;
@@ -87,11 +91,48 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
     private Typeface regularFont = Typeface.create("sans-serif", Typeface.NORMAL);
     private Typeface mediumFont = Typeface.create("sans-serif-medium", Typeface.NORMAL);
 
+    private View volumeHudRoot;
+    private View volumeHudPill;
+    private boolean volumeHudShowing;
+    private boolean volumeHudDismissing;
+    private final int[] currentVolPct = new int[1];
+    private final boolean[] currentVolMuted = new boolean[1];
+    private View volumeIconView;
+    private View volumeBarView;
+    private TextView volumeTextView;
+    private final Runnable hideVolumeHudRunnable = () -> hideVolumeHud(true);
+
+    private int volumeRepeatDirection = 0;
+    private long volumeRepeatStartTime = 0L;
+    private final Runnable volumeRepeatRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (volumeRepeatDirection == 0) return;
+            handleVolumeStep(volumeRepeatDirection);
+            long heldMs = android.os.SystemClock.uptimeMillis() - volumeRepeatStartTime;
+            long nextInterval = heldMs > 900 ? 50L : 75L;
+            handler.postDelayed(this, nextInterval);
+        }
+    };
+
+    private void startVolumeRepeat(int direction) {
+        stopVolumeRepeat();
+        volumeRepeatDirection = direction;
+        volumeRepeatStartTime = android.os.SystemClock.uptimeMillis();
+        handler.postDelayed(volumeRepeatRunnable, 320);
+    }
+
+    private void stopVolumeRepeat() {
+        volumeRepeatDirection = 0;
+        handler.removeCallbacks(volumeRepeatRunnable);
+    }
+
     private final BroadcastReceiver tclKeyReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent == null) return;
-            if ("tcl.sys.intent.action.USERSTATE_KEYDOWN".equals(intent.getAction())) {
+            String action = intent.getAction();
+            if ("tcl.sys.intent.action.USERSTATE_KEYDOWN".equals(action)) {
                 int code = intent.getIntExtra("keycode", -1);
                 if (isSettingsKey(code)) {
                     if (code == 4077 && isStockDashboardAvailable(QuickSettingsOverlayService.this)) {
@@ -100,12 +141,40 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                     android.util.Log.i(TAG, "Received global TCL key broadcast (code=" + code + ") over pkg=" + currentForegroundPackage);
                     toggleOverlay();
                 }
+            } else if ("android.media.VOLUME_CHANGED_ACTION".equals(action)
+                    || "luma.intent.action.SHOW_VOLUME_HUD".equals(action)) {
+                android.util.Log.i(TAG, "Received volume broadcast: " + action);
+                if (store == null) store = new LauncherStore(QuickSettingsOverlayService.this);
+                if (intent.hasExtra("orientation")) {
+                    store.set("vol_orientation", intent.getStringExtra("orientation"));
+                }
+                if (intent.hasExtra("pos")) {
+                    store.set("vol_pos", intent.getStringExtra("pos"));
+                }
+                if (store.flag("vol_hud_enabled", true) || "luma.intent.action.SHOW_VOLUME_HUD".equals(action)) {
+                    handler.post(QuickSettingsOverlayService.this::showVolumeHud);
+                }
             }
         }
     };
 
     public static QuickSettingsOverlayService getInstance() {
         return sInstance;
+    }
+
+    public static void showVolumeHudPreview(Context host) {
+        if (host == null) return;
+        ensureServiceEnabled(host);
+        QuickSettingsOverlayService svc = sInstance;
+        if (svc != null) {
+            svc.handler.post(svc::showVolumeHud);
+        } else {
+            try {
+                Intent i = new Intent("luma.intent.action.SHOW_VOLUME_HUD");
+                i.setPackage(host.getPackageName());
+                host.sendBroadcast(i);
+            } catch (Exception ignored) {}
+        }
     }
 
     public static boolean isSettingsKey(int code) {
@@ -212,8 +281,41 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             sfx.close();
         };
         View content = buildDashboardView(host, store, sfx, reg, med, dismissAction);
+        applyViewSoundPolicy(content);
         dialog.setContentView(content);
+        if (dialog.getWindow() != null && dialog.getWindow().getDecorView() != null) {
+            dialog.getWindow().getDecorView().setSoundEffectsEnabled(false);
+        }
         dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    int dir = (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) ? View.FOCUS_LEFT
+                            : (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) ? View.FOCUS_RIGHT
+                            : (keyCode == KeyEvent.KEYCODE_DPAD_UP) ? View.FOCUS_UP : View.FOCUS_DOWN;
+                    sLastNavDir = (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) ? 1 : -1;
+                    sLastNavMs = android.os.SystemClock.uptimeMillis();
+                    View cur = dialog.getCurrentFocus();
+                    if (cur != null) {
+                        View next = cur.focusSearch(dir);
+                        if (next != null && next != cur) {
+                            next.requestFocus(dir);
+                        } else if (sfx != null) {
+                            sfx.playDetent(0.72f, 50);
+                        }
+                    }
+                }
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                    View cur = dialog.getCurrentFocus();
+                    if (cur != null) {
+                        cur.callOnClick();
+                    }
+                }
+                return true;
+            }
             if (event.getAction() == KeyEvent.ACTION_UP && (keyCode == KeyEvent.KEYCODE_BACK || isSettingsKey(keyCode))) {
                 sfx.playBack();
                 dismissAction.run();
@@ -230,6 +332,7 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         super.onCreate();
         sInstance = this;
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         store = new LauncherStore(this);
         sfx = new UiSoundEngine(this, store);
         if (Build.VERSION.SDK_INT >= 26) {
@@ -240,6 +343,8 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         }
         try {
             IntentFilter filter = new IntentFilter("tcl.sys.intent.action.USERSTATE_KEYDOWN");
+            filter.addAction("android.media.VOLUME_CHANGED_ACTION");
+            filter.addAction("luma.intent.action.SHOW_VOLUME_HUD");
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(tclKeyReceiver, filter, Context.RECEIVER_EXPORTED);
             } else {
@@ -288,6 +393,8 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
     @Override
     public void onDestroy() {
         hideOverlay(false);
+        stopVolumeRepeat();
+        hideVolumeHud(false);
         try {
             unregisterReceiver(tclKeyReceiver);
         } catch (Exception ignored) {}
@@ -306,6 +413,33 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
     protected boolean onKeyEvent(KeyEvent event) {
         if (event == null) return false;
         int code = event.getKeyCode();
+
+        boolean isVol = (code == KeyEvent.KEYCODE_VOLUME_UP
+                || code == KeyEvent.KEYCODE_VOLUME_DOWN
+                || code == KeyEvent.KEYCODE_VOLUME_MUTE);
+        if (isVol) {
+            android.util.Log.i(TAG, "onKeyEvent volume: code=" + code + ", action=" + event.getAction() + ", repeat=" + event.getRepeatCount());
+            if (store == null) store = new LauncherStore(this);
+            if (store.flag("vol_hud_enabled", true)) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    if (event.getRepeatCount() == 0) {
+                        if (code == KeyEvent.KEYCODE_VOLUME_UP) {
+                            handleVolumeStep(AudioManager.ADJUST_RAISE);
+                            startVolumeRepeat(AudioManager.ADJUST_RAISE);
+                        } else if (code == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                            handleVolumeStep(AudioManager.ADJUST_LOWER);
+                            startVolumeRepeat(AudioManager.ADJUST_LOWER);
+                        } else {
+                            handleVolumeStep(AudioManager.ADJUST_TOGGLE_MUTE);
+                        }
+                    }
+                } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                    stopVolumeRepeat();
+                }
+                return true;
+            }
+        }
+
         if (!isSettingsKey(code)) {
             if (overlayShowing && code == KeyEvent.KEYCODE_BACK) {
                 if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
@@ -456,10 +590,26 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         }
     }
 
+    private static void applyViewSoundPolicy(View v) {
+        if (v == null) return;
+        v.setSoundEffectsEnabled(false);
+        if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                applyViewSoundPolicy(vg.getChildAt(i));
+            }
+        }
+    }
+
     private void presentOverlayWindow() {
         if (overlayShowing || windowManager == null) return;
 
         FrameLayout host = new FrameLayout(this) {
+            @Override
+            public void playSoundEffect(int soundConstant) {
+                // Suppress Android TV default system sounds so only Luma's sound system plays
+            }
+
             @Override
             public boolean dispatchKeyEvent(KeyEvent event) {
                 if (event != null) {
@@ -475,12 +625,46 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                         hideOverlay(false);
                         return false;
                     }
+                    if (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT
+                            || code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN) {
+                        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                            int dir = (code == KeyEvent.KEYCODE_DPAD_LEFT) ? View.FOCUS_LEFT
+                                    : (code == KeyEvent.KEYCODE_DPAD_RIGHT) ? View.FOCUS_RIGHT
+                                    : (code == KeyEvent.KEYCODE_DPAD_UP) ? View.FOCUS_UP : View.FOCUS_DOWN;
+                            sLastNavDir = (code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_DPAD_DOWN) ? 1 : -1;
+                            sLastNavMs = android.os.SystemClock.uptimeMillis();
+                            View cur = findFocus();
+                            if (cur != null) {
+                                View next = cur.focusSearch(dir);
+                                if (next != null && next != cur) {
+                                    next.requestFocus(dir);
+                                } else if (sfx != null) {
+                                    sfx.playDetent(0.72f, 50);
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                    if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
+                        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
+                            View cur = findFocus();
+                            if (cur != null) {
+                                cur.callOnClick();
+                            }
+                        }
+                        return true;
+                    }
                 }
                 return super.dispatchKeyEvent(event);
             }
         };
+        host.setSoundEffectsEnabled(false);
 
+        if (store == null) store = new LauncherStore(this);
+        if (sfx == null) sfx = new UiSoundEngine(this, store);
         View dashboard = buildDashboardView(this, store, sfx, regularFont, mediumFont, () -> hideOverlay(true));
+        applyViewSoundPolicy(dashboard);
+        applyViewSoundPolicy(host);
         host.addView(dashboard, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -548,6 +732,384 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                 .start();
     }
 
+    private void handleVolumeStep(int direction) {
+        if (audioManager == null) {
+            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        }
+        if (audioManager == null) return;
+        try {
+            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0);
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "Failed to adjust volume: " + e.getMessage());
+        }
+        handler.post(this::showVolumeHud);
+    }
+
+    public void showVolumeHud() {
+        if (audioManager == null) {
+            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        }
+        int cur = 0;
+        int max = 100;
+        int min = 0;
+        boolean isMuted = false;
+        if (audioManager != null) {
+            try {
+                cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    min = audioManager.getStreamMinVolume(AudioManager.STREAM_MUSIC);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    isMuted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (cur <= min) isMuted = true;
+        int range = Math.max(1, max - min);
+        int pct = Math.max(0, Math.min(100, Math.round(((cur - min) * 100f) / range)));
+
+        currentVolPct[0] = pct;
+        currentVolMuted[0] = isMuted;
+        android.util.Log.i(TAG, "showVolumeHud called: pct=" + pct + ", muted=" + isMuted + ", showing=" + volumeHudShowing);
+
+        handler.removeCallbacks(hideVolumeHudRunnable);
+        handler.postDelayed(hideVolumeHudRunnable, 2400);
+
+        if (volumeHudShowing && volumeHudRoot != null && !volumeHudDismissing) {
+            updateVolumeHudViews(cur, max, pct, isMuted);
+            return;
+        }
+
+        presentVolumeHudWindow(cur, max, pct, isMuted);
+    }
+
+    private void updateVolumeHudViews(int cur, int max, int pct, boolean isMuted) {
+        if (volumeIconView != null) volumeIconView.invalidate();
+        if (volumeBarView != null) volumeBarView.invalidate();
+        if (volumeTextView != null) {
+            boolean isVert = store != null && !"horizontal".equals(store.value("vol_orientation", "vertical"));
+            volumeTextView.setText(isMuted ? (isVert ? "MUTE" : "MUTED") : (pct + "%"));
+            volumeTextView.setTextColor(isMuted ? 0xFFFFA07A : 0xFFFFFFFF);
+        }
+    }
+
+    private void presentVolumeHudWindow(int cur, int max, int pct, boolean isMuted) {
+        if (windowManager == null) {
+            windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+        }
+        if (windowManager == null) return;
+
+        if (volumeHudRoot != null) {
+            try {
+                windowManager.removeViewImmediate(volumeHudRoot);
+            } catch (Exception ignored) {}
+            volumeHudRoot = null;
+            volumeHudPill = null;
+        }
+
+        if (store == null) store = new LauncherStore(this);
+        String volStyle = store.value("vol_style", "frosted");
+        int volFrost = store.number("vol_frost", 0);
+        String volPos = store.value("vol_pos", "right_edge");
+        final boolean isVertical = !"horizontal".equals(store.value("vol_orientation", "vertical"));
+
+        int pillW = isVertical ? dp(this, 56) : dp(this, 310);
+        int pillH = isVertical ? dp(this, 240) : dp(this, 54);
+        float radiusDp = isVertical ? 28f : 27f;
+
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                PixelFormat.TRANSLUCENT);
+
+        if ("top_center".equals(volPos)) {
+            lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+            lp.y = dp(this, 32);
+        } else if ("top_right".equals(volPos)) {
+            lp.gravity = Gravity.TOP | Gravity.END;
+            lp.x = dp(this, 36);
+            lp.y = dp(this, 32);
+        } else {
+            // Default: right_edge
+            lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+            lp.x = dp(this, 36);
+        }
+
+        FrameLayout root = new FrameLayout(this);
+        root.setClipChildren(false);
+        root.setClipToPadding(false);
+
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(isVertical ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        pill.setGravity(isVertical ? Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
+        if (isVertical) {
+            pill.setPadding(dp(this, 8), dp(this, 16), dp(this, 8), dp(this, 16));
+        } else {
+            pill.setPadding(dp(this, 16), dp(this, 8), dp(this, 18), dp(this, 8));
+        }
+        pill.setLayoutParams(new FrameLayout.LayoutParams(pillW, pillH));
+        pill.setBackground(buildLiquidGlassPanelDrawable(this, pill, radiusDp, volStyle, volFrost));
+
+        // Speaker Vector Icon View
+        View iconView = new View(this) {
+            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            @Override
+            protected void onDraw(Canvas c) {
+                super.onDraw(c);
+                int w = getWidth();
+                int h = getHeight();
+                if (w <= 0 || h <= 0) return;
+                int iconColor = currentVolMuted[0] ? 0xFFFFA07A : 0xFFFFFFFF;
+                drawVolumeVectorIcon(c, w, h, iconColor, currentVolPct[0], currentVolMuted[0], p);
+            }
+        };
+        volumeIconView = iconView;
+
+        // Custom Progress Bar Track + Fill
+        View barView = new View(this) {
+            private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final RectF trackRect = new RectF();
+            private final RectF fillRect = new RectF();
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                super.onDraw(canvas);
+                int w = getWidth();
+                int h = getHeight();
+                if (w <= 0 || h <= 0) return;
+
+                int pct = currentVolPct[0];
+                boolean muted = currentVolMuted[0];
+
+                if (isVertical) {
+                    float barW = dp(QuickSettingsOverlayService.this, 8f);
+                    float left = (w - barW) / 2f;
+                    float r = barW / 2f;
+
+                    // Track groove
+                    trackRect.set(left, 0, left + barW, h);
+                    trackPaint.setColor(0x33FFFFFF);
+                    canvas.drawRoundRect(trackRect, r, r, trackPaint);
+
+                    // Progress Fill (rising from bottom to top)
+                    float fillH = (h * pct) / 100f;
+                    if (fillH > 0 && !muted) {
+                        fillRect.set(left, h - Math.max(fillH, barW), left + barW, h);
+                        fillPaint.setShader(new LinearGradient(0f, h, 0f, 0f,
+                                new int[]{0xFF4FC3F7, 0xFF64FFDA},
+                                null, Shader.TileMode.CLAMP));
+                        canvas.drawRoundRect(fillRect, r, r, fillPaint);
+                        fillPaint.setShader(null);
+                    } else if (muted) {
+                        fillRect.set(left, h - barW, left + barW, h);
+                        fillPaint.setColor(0x88FFA07A);
+                        canvas.drawRoundRect(fillRect, r, r, fillPaint);
+                    }
+                } else {
+                    float barH = dp(QuickSettingsOverlayService.this, 8f);
+                    float top = (h - barH) / 2f;
+                    float r = barH / 2f;
+
+                    // Track groove
+                    trackRect.set(0, top, w, top + barH);
+                    trackPaint.setColor(0x33FFFFFF);
+                    canvas.drawRoundRect(trackRect, r, r, trackPaint);
+
+                    // Progress Fill (left to right)
+                    float fillW = (w * pct) / 100f;
+                    if (fillW > 0 && !muted) {
+                        fillRect.set(0, top, Math.max(fillW, barH), top + barH);
+                        fillPaint.setShader(new LinearGradient(0f, 0f, w, 0f,
+                                new int[]{0xFF4FC3F7, 0xFF64FFDA},
+                                null, Shader.TileMode.CLAMP));
+                        canvas.drawRoundRect(fillRect, r, r, fillPaint);
+                        fillPaint.setShader(null);
+                    } else if (muted) {
+                        fillRect.set(0, top, barH, top + barH);
+                        fillPaint.setColor(0x88FFA07A);
+                        canvas.drawRoundRect(fillRect, r, r, fillPaint);
+                    }
+                }
+            }
+        };
+        volumeBarView = barView;
+
+        // Percentage Text View
+        TextView tv = new TextView(this);
+        tv.setTypeface(mediumFont != null ? mediumFont : Typeface.DEFAULT_BOLD);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, isVertical ? dp(this, 11) : dp(this, 14));
+        tv.setTextColor(isMuted ? 0xFFFFA07A : 0xFFFFFFFF);
+        tv.setText(isMuted ? (isVertical ? "MUTE" : "MUTED") : (pct + "%"));
+        tv.setIncludeFontPadding(false);
+        tv.setGravity(Gravity.CENTER);
+        volumeTextView = tv;
+
+        if (isVertical) {
+            // Vertical order: Percentage at top, vertical bar in middle, speaker icon at bottom
+            LinearLayout.LayoutParams tvLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            tvLp.bottomMargin = dp(this, 10);
+            pill.addView(tv, tvLp);
+
+            LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                    dp(this, 12), 0, 1f);
+            barLp.bottomMargin = dp(this, 12);
+            pill.addView(barView, barLp);
+
+            LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                    dp(this, 22), dp(this, 22));
+            pill.addView(iconView, iconLp);
+        } else {
+            // Horizontal order: Speaker icon at left, horizontal bar in center, percentage at right
+            LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                    dp(this, 26), dp(this, 26));
+            iconLp.setMarginEnd(dp(this, 14));
+            pill.addView(iconView, iconLp);
+
+            LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+            barLp.setMarginEnd(dp(this, 14));
+            pill.addView(barView, barLp);
+
+            pill.addView(tv, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+
+        root.addView(pill);
+        volumeHudRoot = root;
+        volumeHudPill = pill;
+        volumeHudShowing = true;
+        volumeHudDismissing = false;
+
+        // Intro animation: soft spring scale & alpha
+        pill.setAlpha(0f);
+        pill.setScaleX(0.88f);
+        pill.setScaleY(0.88f);
+        if (isVertical || "right_edge".equals(volPos)) {
+            pill.setTranslationX(dp(this, 30));
+        } else {
+            pill.setTranslationY(-dp(this, 18));
+        }
+
+        try {
+            windowManager.addView(root, lp);
+            android.util.Log.i(TAG, "Added volume HUD window to WindowManager, pos=" + volPos + ", style=" + volStyle + ", frost=" + volFrost);
+            pill.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .translationX(0f)
+                    .translationY(0f)
+                    .setDuration(220)
+                    .setInterpolator(new OvershootInterpolator(1.2f))
+                    .start();
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to present volume HUD: " + e.getMessage());
+            volumeHudShowing = false;
+        }
+    }
+
+    public void hideVolumeHud(boolean animate) {
+        stopVolumeRepeat();
+        if (!volumeHudShowing || volumeHudRoot == null || windowManager == null) {
+            volumeHudShowing = false;
+            return;
+        }
+        if (volumeHudDismissing && animate) return;
+
+        final View rootToRemove = volumeHudRoot;
+        final View pill = volumeHudPill;
+
+        if (!animate || pill == null) {
+            volumeHudShowing = false;
+            volumeHudDismissing = false;
+            volumeHudRoot = null;
+            volumeHudPill = null;
+            try {
+                windowManager.removeViewImmediate(rootToRemove);
+            } catch (Exception ignored) {}
+            return;
+        }
+
+        volumeHudDismissing = true;
+        pill.animate().cancel();
+        pill.animate()
+                .alpha(0f)
+                .scaleX(0.92f)
+                .scaleY(0.92f)
+                .setDuration(160)
+                .setInterpolator(new DecelerateInterpolator(1.4f))
+                .withEndAction(() -> {
+                    volumeHudShowing = false;
+                    volumeHudDismissing = false;
+                    if (volumeHudRoot == rootToRemove) {
+                        volumeHudRoot = null;
+                        volumeHudPill = null;
+                    }
+                    try {
+                        windowManager.removeViewImmediate(rootToRemove);
+                    } catch (Exception ignored) {}
+                })
+                .start();
+    }
+
+    private static void drawVolumeVectorIcon(Canvas c, int w, int h, int color, int pct, boolean isMuted, Paint p) {
+        p.setColor(color);
+        p.setStyle(Paint.Style.FILL);
+
+        float cx = w * 0.38f;
+        float cy = h * 0.5f;
+
+        // Speaker body path
+        Path speaker = new Path();
+        float left = cx - w * 0.24f;
+        float bodyW = w * 0.16f;
+        float coneW = w * 0.22f;
+        float bodyH = h * 0.30f;
+        float coneH = h * 0.60f;
+
+        speaker.moveTo(left, cy - bodyH * 0.5f);
+        speaker.lineTo(left + bodyW, cy - bodyH * 0.5f);
+        speaker.lineTo(left + bodyW + coneW, cy - coneH * 0.5f);
+        speaker.lineTo(left + bodyW + coneW, cy + coneH * 0.5f);
+        speaker.lineTo(left + bodyW, cy + bodyH * 0.5f);
+        speaker.lineTo(left, cy + bodyH * 0.5f);
+        speaker.close();
+        c.drawPath(speaker, p);
+
+        if (isMuted) {
+            // Draw an X beside the speaker
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(2.2f, w * 0.08f));
+            p.setStrokeCap(Paint.Cap.ROUND);
+            float xCenter = cx + w * 0.36f;
+            float xSize = w * 0.13f;
+            c.drawLine(xCenter - xSize, cy - xSize, xCenter + xSize, cy + xSize, p);
+            c.drawLine(xCenter - xSize, cy + xSize, xCenter + xSize, cy - xSize, p);
+        } else {
+            // Sound waves
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(2.2f, w * 0.08f));
+            p.setStrokeCap(Paint.Cap.ROUND);
+
+            if (pct > 0) {
+                RectF wave1 = new RectF(cx - w * 0.02f, cy - h * 0.25f, cx + w * 0.36f, cy + h * 0.25f);
+                c.drawArc(wave1, -45f, 90f, false, p);
+            }
+            if (pct >= 40) {
+                RectF wave2 = new RectF(cx + w * 0.14f, cy - h * 0.42f, cx + w * 0.58f, cy + h * 0.42f);
+                c.drawArc(wave2, -50f, 100f, false, p);
+            }
+        }
+    }
+
     private static View buildDashboardView(
             Context context,
             LauncherStore store,
@@ -560,7 +1122,13 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         int qsFrost = store != null ? store.number("qs_frost", 0) : 0;
         boolean qsScrim = store != null && store.flag("qs_scrim", false);
 
-        FrameLayout scrim = new FrameLayout(context);
+        FrameLayout scrim = new FrameLayout(context) {
+            @Override
+            public void playSoundEffect(int soundConstant) {
+                // Suppress Android default sound effects
+            }
+        };
+        scrim.setSoundEffectsEnabled(false);
         scrim.setClickable(true);
         scrim.setFocusable(false);
         scrim.setOnClickListener(v -> closeOverlay.run());
@@ -587,7 +1155,13 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             scrim.setBackgroundColor(Color.TRANSPARENT);
         }
 
-        LinearLayout card = new LinearLayout(context);
+        LinearLayout card = new LinearLayout(context) {
+            @Override
+            public void playSoundEffect(int soundConstant) {
+                // Suppress Android default sound effects
+            }
+        };
+        card.setSoundEffectsEnabled(false);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setClipChildren(false);
         card.setClipToPadding(false);
@@ -792,6 +1366,7 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             firstTile.post(firstTile::requestFocus);
         }
 
+        applyViewSoundPolicy(scrim);
         return scrim;
     }
 
@@ -804,7 +1379,13 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             String qsStyle,
             int qsFrost) {
 
-        LinearLayout tile = new LinearLayout(context);
+        LinearLayout tile = new LinearLayout(context) {
+            @Override
+            public void playSoundEffect(int soundConstant) {
+                // Suppress Android default system sounds
+            }
+        };
+        tile.setSoundEffectsEnabled(false);
         tile.setOrientation(LinearLayout.VERTICAL);
         tile.setGravity(Gravity.CENTER_VERTICAL);
         tile.setFocusable(true);
@@ -873,8 +1454,10 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                     .setInterpolator(new OvershootInterpolator(1.1f))
                     .start();
             if (hasFocus && sfx != null) {
-                int sw = context.getResources().getDisplayMetrics().widthPixels;
-                sfx.playFocus(v, sw, 1);
+                if (android.os.SystemClock.uptimeMillis() - sLastNavMs < 350L) {
+                    int sw = context.getResources().getDisplayMetrics().widthPixels;
+                    sfx.playFocus(v, sw, sLastNavDir);
+                }
             }
         });
 

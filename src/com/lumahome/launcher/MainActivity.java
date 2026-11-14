@@ -205,6 +205,9 @@ public final class MainActivity extends Activity {
         if (state!=null) { imageTarget=state.getString("imageTarget",""); drawer=state.getBoolean("drawer"); }
         refreshApps(); applyIntent(getIntent()); initializeFavorites(); syncSystemSoundMuting();
         QuickSettingsOverlayService.ensureServiceEnabled(this);
+        if (store.flag("override_system_screensaver", true)) {
+            applySystemScreensaverOverride(this, true);
+        }
         IntentFilter filter=new IntentFilter();
         filter.addAction(Intent.ACTION_PACKAGE_ADDED); filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
         filter.addAction(Intent.ACTION_PACKAGE_CHANGED); filter.addDataScheme("package");
@@ -447,6 +450,10 @@ public final class MainActivity extends Activity {
         if (intent.getBooleanExtra(QuickSettingsOverlayService.EXTRA_OPEN_INPUTS, false)) {
             intent.removeExtra(QuickSettingsOverlayService.EXTRA_OPEN_INPUTS);
             handler.postDelayed(this::inputMenu, 140);
+        }
+        if (intent.getBooleanExtra("luma.extra.TOGGLE_QUICK_SETTINGS", false)) {
+            intent.removeExtra("luma.extra.TOGGLE_QUICK_SETTINGS");
+            handler.postDelayed(() -> QuickSettingsOverlayService.showOrToggle(this), 140);
         }
         if (intent.hasExtra("open_page")) {
             String p = intent.getStringExtra("open_page");
@@ -5123,6 +5130,7 @@ public final class MainActivity extends Activity {
                 "Menu theme: "+themeName(),
                 "Glass & surfaces: "+glassSurfacesSummary(),
                 "@sparkles|Quick Settings appearance: "+quickSettingsAppearanceSummary(),
+                "@sparkles|Volume HUD appearance: "+volumeHudAppearanceSummary(),
                 "Wallpaper tint: "+colorIntensity()+"%",
                 "Focus glow: "+glowSummary(),
                 "Focus motion: "+focusMotionSummary(),
@@ -5153,6 +5161,7 @@ public final class MainActivity extends Activity {
                                 },this::appearanceMenu),
                         ()->glassSurfacesMenu(this::appearanceMenu),
                         ()->quickSettingsAppearanceMenu(this::appearanceMenu),
+                        ()->volumeHudAppearanceMenu(this::appearanceMenu),
                         this::colorIntensityDialog,
                         ()->focusGlowMenu(this::appearanceMenu),
                         ()->focusMotionMenu(this::appearanceMenu),
@@ -5259,6 +5268,116 @@ public final class MainActivity extends Activity {
                         () -> {
                             closeBlade();
                             handler.postDelayed(() -> QuickSettingsOverlayService.showOrToggle(this), 180);
+                        }),
+                back);
+    }
+
+    private String volumeHudStyleName(String style) {
+        if ("frosted".equals(style)) return "Frosted glass";
+        if ("adaptive".equals(style)) return "Adaptive image tint";
+        if ("solid_dark".equals(style)) return "Solid obsidian";
+        return "Liquid glass";
+    }
+
+    private String volumeHudAppearanceSummary() {
+        if (!store.flag("vol_hud_enabled", true)) return "Off (System default)";
+        String st = store.value("vol_style", "frosted");
+        int frost = store.number("vol_frost", 0);
+        String orient = store.value("vol_orientation", "vertical");
+        String orientSuffix = "horizontal".equals(orient) ? " · Horizontal" : "";
+        if ("solid_dark".equals(st)) return volumeHudStyleName(st) + orientSuffix;
+        return volumeHudStyleName(st) + " · " + (frost <= 0 ? "None" : (frost + "%")) + orientSuffix;
+    }
+
+    private void volumeHudAppearanceMenu(Runnable back) {
+        boolean enabled = store.flag("vol_hud_enabled", true);
+        String curStyle = store.value("vol_style", "frosted");
+        int curFrost = store.number("vol_frost", 0);
+        String curPos = store.value("vol_pos", "right_edge");
+        String curOrient = store.value("vol_orientation", "vertical");
+        String frostLabel = curFrost <= 0 ? "None · 0% (Default)"
+                : curFrost <= 22 ? "Crystal clear · 20%"
+                : curFrost <= 40 ? "Balanced · 35%"
+                : curFrost <= 60 ? "Deep · 55%"
+                : "Rich · 75%";
+        String posLabel = "top_center".equals(curPos) ? "Top center"
+                : "top_right".equals(curPos) ? "Top right"
+                : "Right edge (Default)";
+        String orientLabel = "horizontal".equals(curOrient) ? "Horizontal (Landscape pill)"
+                : "Vertical (Tall slender slider · Default)";
+
+        menu("Volume HUD appearance", Arrays.asList(
+                "§VOLUME HUD OVERLAY",
+                "Custom Volume HUD: " + onOff(enabled),
+                "Orientation: " + orientLabel,
+                "Surface style: " + volumeHudStyleName(curStyle),
+                "Frost & tint depth: " + frostLabel,
+                "Screen position: " + posLabel,
+                "§LIVE PREVIEW",
+                "@sparkles|Preview Volume HUD now"),
+                Arrays.asList(
+                        null,
+                        () -> {
+                            store.setFlag("vol_hud_enabled", !enabled);
+                            volumeHudAppearanceMenu(back);
+                        },
+                        () -> choice("Volume HUD orientation",
+                                new String[]{
+                                        "Vertical · Tall slender portrait slider with rising volume level (Default)",
+                                        "Horizontal · Landscape floating pill with horizontal progress track"
+                                },
+                                "horizontal".equals(curOrient) ? 1 : 0,
+                                index -> {
+                                    String nextOrient = index == 0 ? "vertical" : "horizontal";
+                                    store.set("vol_orientation", nextOrient);
+                                    toast("Volume HUD orientation set to " + (index == 0 ? "Vertical" : "Horizontal"));
+                                },
+                                () -> volumeHudAppearanceMenu(back)),
+                        () -> choice("Volume HUD surface style",
+                                new String[]{
+                                        "Liquid glass · Optical refractive bevel & clear crystal interior",
+                                        "Frosted glass · Soft blurred screen backdrop & satin finish (Default)",
+                                        "Adaptive image tint · Acquires dominant color from the screen or wallpaper",
+                                        "Solid obsidian · Deep high-contrast dark slate"
+                                },
+                                "frosted".equals(curStyle) ? 1
+                                        : "adaptive".equals(curStyle) ? 2
+                                        : "solid_dark".equals(curStyle) ? 3 : 0,
+                                index -> {
+                                    String next = new String[]{"liquid_glass", "frosted", "adaptive", "solid_dark"}[index];
+                                    store.set("vol_style", next);
+                                    toast("Volume HUD set to " + volumeHudStyleName(next));
+                                },
+                                () -> volumeHudAppearanceMenu(back)),
+                        () -> choice("Frost & tint depth",
+                                new String[]{
+                                        "None · 0% (Default — pure refractive crystal with zero interior tint)",
+                                        "Crystal clear · 20% (Ultra-transparent glass)",
+                                        "Balanced · 35% (Balanced optical tint)",
+                                        "Deep · 55% (Stronger frost or image color tint)",
+                                        "Rich · 75% (Bold frosted or image-tinted surface)"
+                                },
+                                curFrost <= 0 ? 0 : curFrost <= 22 ? 1 : curFrost <= 40 ? 2 : curFrost <= 60 ? 3 : 4,
+                                index -> {
+                                    int nextFrost = new int[]{0, 20, 35, 55, 75}[index];
+                                    store.setNumber("vol_frost", nextFrost);
+                                },
+                                () -> volumeHudAppearanceMenu(back)),
+                        () -> choice("Screen position",
+                                new String[]{
+                                        "Right edge (Default right-side crystal slider)",
+                                        "Top right (Floating pill)",
+                                        "Top center (Centered ambient pill)"
+                                },
+                                "top_right".equals(curPos) ? 1 : "top_center".equals(curPos) ? 2 : 0,
+                                index -> {
+                                    String nextPos = new String[]{"right_edge", "top_right", "top_center"}[index];
+                                    store.set("vol_pos", nextPos);
+                                },
+                                () -> volumeHudAppearanceMenu(back)),
+                        null,
+                        () -> {
+                            QuickSettingsOverlayService.showVolumeHudPreview(this);
                         }),
                 back);
     }
@@ -7505,11 +7624,19 @@ public final class MainActivity extends Activity {
         int photoCount=PhoneDropServer.listSavedFiles(this,store).size();
         boolean shuffle=store.flag("screensaver_shuffle",true);
         boolean keepAwake=store.flag("screensaver_keep_awake",true);
+        boolean overrideSystem=store.flag("override_system_screensaver",true);
 
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         add(labels,actions,"§PREVIEW",null);
         add(labels,actions,"@display|Preview screensaver now",()->{ closeBlade(); showIdleClock(); });
         add(labels,actions,"§BEHAVIOR",null);
+        add(labels,actions,"Override system screensaver: "+onOff(overrideSystem),()->{
+            boolean next=!overrideSystem;
+            store.setFlag("override_system_screensaver",next);
+            applySystemScreensaverOverride(this,next);
+            toast(next?"Luma set as default system screensaver":"Default system screensaver restored");
+            screensaverMenu(back);
+        });
         add(labels,actions,"Start after: "+(idleMin<=0?"Off":idleMin+" min"),()->{
             int[] mins={0,2,5,10,15,30};
             String[] opts={"Off","2 minutes","5 minutes","10 minutes","15 minutes","30 minutes"};
@@ -7592,11 +7719,33 @@ public final class MainActivity extends Activity {
             store.setFlag("screensaver_shuffle",true);
             store.set("screensaver_clock_pos","bottom_left");
             store.setNumber("screensaver_dimming",15);
+            store.setFlag("override_system_screensaver",true);
+            applySystemScreensaverOverride(this, true);
             resetIdleTimer();
             toast("Screensaver restored to defaults");
             screensaverMenu(back);
         });
         menu("Idle screensaver",labels,actions,back);
+    }
+
+    public static void applySystemScreensaverOverride(Context context, boolean enable) {
+        if (context == null) return;
+        try {
+            if (enable) {
+                Settings.Secure.putString(context.getContentResolver(),
+                        "screensaver_components", "com.lumahome.launcher/.LumaScreensaverDreamService");
+                Settings.Secure.putInt(context.getContentResolver(), "screensaver_enabled", 1);
+                Settings.Secure.putInt(context.getContentResolver(), "screensaver_activate_on_sleep", 1);
+                Settings.Secure.putInt(context.getContentResolver(), "screensaver_activate_on_dock", 1);
+                android.util.Log.i("LumaScreensaver", "Applied LumaScreensaverDreamService as system screensaver");
+            } else {
+                Settings.Secure.putString(context.getContentResolver(),
+                        "screensaver_components", "com.google.android.backdrop/com.google.android.backdrop.Backdrop");
+                android.util.Log.i("LumaScreensaver", "Restored stock system screensaver backdrop");
+            }
+        } catch (Exception e) {
+            android.util.Log.w("LumaScreensaver", "Failed to apply system screensaver override: " + e.getMessage());
+        }
     }
     private void screensaverDimmingDialog(Runnable back) {
         LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
