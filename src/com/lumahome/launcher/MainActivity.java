@@ -508,10 +508,10 @@ public final class MainActivity extends Activity {
         return store.flag("utility."+pkg,app!=null&&app.utility);
     }
     private int foreground() { return Color.WHITE; }
-    private boolean wallpaperTheme(){return "wallpaper".equals(store.value("theme","warm"))&&wallpaperSeed!=0;}
+    private boolean wallpaperTheme(){return "wallpaper".equals(store.value("theme","wallpaper"))&&wallpaperSeed!=0;}
     private int colorIntensity(){return Math.max(0,Math.min(100,store.number("color_intensity",45)));}
-    private int themed(int warm,int cool) { return wallpaperTheme()?ThemePalette.tint(wallpaperSeed,warm,colorIntensity()):"cool".equals(store.value("theme","warm"))?cool:warm; }
-    private String themeName(){String theme=store.value("theme","warm");return "wallpaper".equals(theme)?"Extract from wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
+    private int themed(int warm,int cool) { return wallpaperTheme()?ThemePalette.tint(wallpaperSeed,warm,colorIntensity()):"cool".equals(store.value("theme","wallpaper"))?cool:warm; }
+    private String themeName(){String theme=store.value("theme","wallpaper");return "wallpaper".equals(theme)?"Extract from wallpaper":"cool".equals(theme)?"Cool slate":"Warm glass";}
     private String paletteKey(){return "v1:"+store.value("background","app_glow")+":"+store.value("background_image","");}
     private int resolveAppGlowSeed() {
         if(ambientColor!=0 && ambientColor!=0xFF604844 && (ambientColor&0x00FFFFFF)!=0) {
@@ -623,7 +623,7 @@ public final class MainActivity extends Activity {
                 photoAmbientPrimary = extracted;
                 photoAmbientSecondary = extractedBot;
                 updateStageAmbientColors(true);
-                if("wallpaper".equals(store.value("theme","warm"))) {
+                if("wallpaper".equals(store.value("theme","wallpaper"))) {
                     updateWorkspaceAndMenuSurfaces();
                     refreshGlassSurfaces();
                 }
@@ -651,9 +651,15 @@ public final class MainActivity extends Activity {
     private boolean glassRefractionEnabled() { return "glass".equals(uiSurfaceStyle()) || store.flag("glass_refraction",true); }
     private int glassFrostDepth() { return Math.max(0,Math.min(100,store.number("glass_frost",0))); }
     private String glassFrostName(int v) { return v==0?"Clear":v<45?"Crystal":v<=72?"Balanced":"Smoked"; }
-    private int glassSheenMode() { return Math.max(0,Math.min(3,store.number("glass_sheen",1))); }
+    private int glassSheenMode() { return Math.max(0,Math.min(3,store.number("glass_sheen",0))); }
     private String glassSheenName() { int m=glassSheenMode(); return m==0?"None":m==1?"Subtle":m==3?"Bright":"Balanced"; }
     private float sheenMultiplier() { int m=glassSheenMode(); return m==0?0.0f:m==1?0.55f:m==3?1.48f:1.0f; }
+    private boolean hasWallpaperPhoto() {
+        return "photo".equals(store.value("background","app_glow"))
+                && !store.value("background_image","").isEmpty()
+                && wallpaperImageView != null;
+    }
+    private boolean liveGlassTransition() { return store.flag("live_glass_transition", false); }
     private String glassSurfacesSummary() {
         if("solid".equals(uiSurfaceStyle())) return "Solid dark";
         return uiSurfaceStyleName()+" · "+glassFrostDepth()+"%";
@@ -700,6 +706,52 @@ public final class MainActivity extends Activity {
         bmp.setPixels(src,0,w,0,0,w,h);
     }
 
+    private void drawAmbientGlowToCanvas(android.graphics.Canvas c, int w, int h, int primary, int secondary, float focalX) {
+        if (w <= 0 || h <= 0) return;
+        int pRgb = (primary != 0 ? primary : 0xFF1E3A5F) & 0x00FFFFFF;
+        int sRgb = (secondary != 0 ? secondary : 0xFF2563EB) & 0x00FFFFFF;
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        paint.setStyle(android.graphics.Paint.Style.FILL);
+
+        // 1. Base dark stage canvas
+        c.drawColor(0xFF090D15);
+
+        // 2. Atmospheric ambient aura bloom
+        float cx = w * focalX;
+        float cy = h * 0.44f;
+        float radius = Math.max(w, h) * 0.65f;
+        int[] bloomColors = new int[]{
+            0x6A000000 | pRgb,
+            0x44000000 | sRgb,
+            0x22000000 | pRgb,
+            0x08000000 | sRgb,
+            0x00000000
+        };
+        float[] bloomStops = new float[]{0.0f, 0.26f, 0.54f, 0.78f, 1.0f};
+        paint.setShader(new android.graphics.RadialGradient(cx, cy, radius, bloomColors, bloomStops, android.graphics.Shader.TileMode.CLAMP));
+        c.drawRect(0, 0, w, h, paint);
+        paint.setShader(null);
+
+        // 3. Dock floor ambient reflection pool
+        float underCx = w * focalX;
+        float underCy = h * 0.94f;
+        float underRadius = h * 0.52f;
+        int[] floorColors = new int[]{
+            0x95000000 | sRgb,
+            0x68000000 | pRgb,
+            0x3A000000 | sRgb,
+            0x14000000 | pRgb,
+            0x00000000
+        };
+        float[] floorStops = new float[]{0.0f, 0.22f, 0.48f, 0.74f, 1.0f};
+        c.save();
+        c.scale(2.20f, 0.50f, underCx, underCy);
+        paint.setShader(new android.graphics.RadialGradient(underCx, underCy, underRadius, floorColors, floorStops, android.graphics.Shader.TileMode.CLAMP));
+        c.drawCircle(underCx, underCy, underRadius, paint);
+        c.restore();
+        paint.setShader(null);
+    }
+
     private void updateFrostedFromDrawable(Drawable bg,int dimAlpha,String key) {
         if(bg==null || (key.equals(frostedBackdropKey) && frostedShader!=null)) return;
         try {
@@ -708,19 +760,30 @@ public final class MainActivity extends Activity {
                 frostedBackdrop=android.graphics.Bitmap.createBitmap(bw,bh,android.graphics.Bitmap.Config.ARGB_8888);
             }
             android.graphics.Canvas cv=new android.graphics.Canvas(frostedBackdrop);
-            cv.drawColor(0xFF0B101A);
-            android.graphics.Rect saved=new android.graphics.Rect(bg.getBounds());
-            try { bg.setBounds(0,0,bw,bh); bg.draw(cv); } finally { bg.setBounds(saved); }
-            if(dimAlpha>0) cv.drawColor(Color.argb(dimAlpha,0,0,0));
             int lw=960, lh=540;
             if(liquidBackdrop==null || liquidBackdrop.getWidth()!=lw || liquidBackdrop.getHeight()!=lh) {
                 liquidBackdrop=android.graphics.Bitmap.createBitmap(lw,lh,android.graphics.Bitmap.Config.ARGB_8888);
             }
             android.graphics.Canvas lcv=new android.graphics.Canvas(liquidBackdrop);
-            lcv.drawColor(0xFF0B101A);
-            android.graphics.Rect savedL=new android.graphics.Rect(bg.getBounds());
-            try { bg.setBounds(0,0,lw,lh); bg.draw(lcv); } finally { bg.setBounds(savedL); }
-            if(dimAlpha>0) lcv.drawColor(Color.argb(dimAlpha,0,0,0));
+
+            if("app_glow".equals(store.value("background","app_glow"))) {
+                int pColor = ambientColor != 0 ? ambientColor : 0xFF1E3A5F;
+                int sColor = currentAuraSecondary != 0 ? currentAuraSecondary : 0xFF2563EB;
+                float fx = currentAuraFocalX > 0f ? currentAuraFocalX : 0.45f;
+                drawAmbientGlowToCanvas(cv, bw, bh, pColor, sColor, fx);
+                drawAmbientGlowToCanvas(lcv, lw, lh, pColor, sColor, fx);
+            } else {
+                cv.drawColor(0xFF0B101A);
+                android.graphics.Rect saved=new android.graphics.Rect(bg.getBounds());
+                try { bg.setBounds(0,0,bw,bh); bg.draw(cv); } finally { bg.setBounds(saved); }
+                lcv.drawColor(0xFF0B101A);
+                android.graphics.Rect savedL=new android.graphics.Rect(bg.getBounds());
+                try { bg.setBounds(0,0,lw,lh); bg.draw(lcv); } finally { bg.setBounds(savedL); }
+            }
+            if(dimAlpha>0) {
+                cv.drawColor(Color.argb(dimAlpha,0,0,0));
+                lcv.drawColor(Color.argb(dimAlpha,0,0,0));
+            }
             liquidShader=new android.graphics.BitmapShader(liquidBackdrop,
                     android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
 
@@ -734,6 +797,33 @@ public final class MainActivity extends Activity {
                 treatmentBlurLayer.setImageBitmap(frostedBackdrop);
                 syncTreatmentLayers();
             }
+        } catch(Exception|OutOfMemoryError ignored) {}
+    }
+
+    private long lastAmbientLiveUpdate = 0L;
+    private void refreshAmbientBackdropLive() {
+        if(liquidBackdrop == null || frostedBackdrop == null) return;
+        long now = android.os.SystemClock.uptimeMillis();
+        int bw = frostedBackdrop.getWidth(), bh = frostedBackdrop.getHeight();
+        int lw = liquidBackdrop.getWidth(), lh = liquidBackdrop.getHeight();
+        try {
+            android.graphics.Canvas cv = new android.graphics.Canvas(frostedBackdrop);
+            android.graphics.Canvas lcv = new android.graphics.Canvas(liquidBackdrop);
+            int pColor = ambientColor != 0 ? ambientColor : 0xFF1E3A5F;
+            int sColor = currentAuraSecondary != 0 ? currentAuraSecondary : 0xFF2563EB;
+            float fx = currentAuraFocalX > 0f ? currentAuraFocalX : 0.45f;
+            drawAmbientGlowToCanvas(cv, bw, bh, pColor, sColor, fx);
+            drawAmbientGlowToCanvas(lcv, lw, lh, pColor, sColor, fx);
+            int dim = store.flag("contrast") ? Math.max(55, store.number("dimming", 0)) : store.number("dimming", 0);
+            int dimAlpha = Math.round(dim * 2.55f);
+            if(dimAlpha > 0) {
+                cv.drawColor(Color.argb(dimAlpha, 0, 0, 0));
+                lcv.drawColor(Color.argb(dimAlpha, 0, 0, 0));
+            }
+            blurBitmapInPlace(frostedBackdrop, 6);
+            frostedBackdropKey = "app_glow:live=" + now;
+            LiquidGlassRenderer.setActiveBackdrop(liquidBackdrop);
+            refreshGlassSurfaces();
         } catch(Exception|OutOfMemoryError ignored) {}
     }
 
@@ -853,8 +943,11 @@ public final class MainActivity extends Activity {
             if(dockBar!=null) dockBar.invalidate();
             if(recentSection!=null) recentSection.invalidate();
             if(searchBar!=null) searchBar.invalidate();
+            if(glanceWidget!=null) glanceWidget.invalidate();
             for(View pill:topPillViews) if(pill!=null) pill.invalidate();
             if(activeBladeBox!=null) activeBladeBox.invalidate();
+            for(View v:dockViews) if(v!=null) v.invalidate();
+            for(View v:appViews) if(v!=null) v.invalidate();
             refreshIconGlassSurfaces();
         });
     }
@@ -913,11 +1006,12 @@ public final class MainActivity extends Activity {
     private void drawRefractedBackdrop(android.graphics.Canvas c,android.graphics.RectF r,float rad,
             boolean isBlade,boolean isGlass,View anchor,android.graphics.Paint p,android.graphics.Matrix mat,int[] loc,LiquidPatchState state) {
         if(anchor==null || screenWidth<=0 || screenHeight<=0) return;
+        boolean hasPhoto = hasWallpaperPhoto();
         if(isGlass && liquidBackdrop!=null && state!=null) {
             anchor.getLocationOnScreen(loc);
             int iw=Math.round(r.width()), ih=Math.round(r.height());
             int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
-            float sh=Math.max(0.75f,sheenMultiplier());
+            float sh=sheenMultiplier();
             boolean needRender = state.patch==null || !frostedBackdropKey.equals(state.key)
                     || Math.abs(state.locX - loc[0]) > 1 || Math.abs(state.locY - loc[1]) > 1
                     || state.w!=iw || state.h!=ih || Math.abs(state.rad-rad)>0.5f
@@ -929,10 +1023,17 @@ public final class MainActivity extends Activity {
                 int tintCol=themed(0xFF171114,0xFF0E1725);
                 float tintA=Math.min(0.68f,frost/145f);
                 float spec=Math.min(0.95f,0.42f*sh);
-                state.patch=LiquidGlassRenderer.renderRefractedPatch(
-                        liquidBackdrop,screenWidth,screenHeight,loc[0],loc[1],
-                        r.width(),r.height(),effRad,bevelW,refrH,
-                        0.14f,1.65f,spec,tintCol,tintA,state.patch);
+                if(hasPhoto) {
+                    state.patch=LiquidGlassRenderer.renderRefractedPatch(
+                            liquidBackdrop,screenWidth,screenHeight,loc[0],loc[1],
+                            r.width(),r.height(),effRad,bevelW,refrH,
+                            0.14f,1.65f,spec,tintCol,tintA,state.patch);
+                } else {
+                    state.patch=LiquidGlassRenderer.renderRefractedBevelRing(
+                            liquidBackdrop,screenWidth,screenHeight,loc[0],loc[1],
+                            r.width(),r.height(),effRad,bevelW,refrH,
+                            0.14f,1.65f,spec,tintCol,tintA,state.patch);
+                }
                 state.key=frostedBackdropKey;
                 state.locX=loc[0]; state.locY=loc[1]; state.w=iw; state.h=ih; state.rad=rad;
                 state.frost=frost; state.sheen=sh;
@@ -955,7 +1056,7 @@ public final class MainActivity extends Activity {
 
     private void drawLiquidCausticsAndRim(android.graphics.Canvas c,android.graphics.RectF r,float rad,
             boolean isBlade,boolean focused,int tintCol,float rawSh,android.graphics.Paint p) {
-        float sh=Math.max(0.85f,rawSh);
+        float sh=rawSh;
         if(isBlade) {
             if(sh > 0.001f) {
                 float gleamH=Math.min(r.height(),px(280));
@@ -2398,8 +2499,18 @@ public final class MainActivity extends Activity {
                 outgoingWallpaperImage=previous;
                 syncTreatmentLayers();
                 float targetAlpha=getAlpha();setAlpha(0f);
-                animate().alpha(targetAlpha).setDuration(650).setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
-                        .withEndAction(()->{
+                android.view.ViewPropertyAnimator vpa=animate().alpha(targetAlpha).setDuration(650).setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+                if(liveGlassTransition()) {
+                    vpa.setUpdateListener(anim->{
+                        long now=android.os.SystemClock.uptimeMillis();
+                        if(now-lastAmbientLiveUpdate>=60) {
+                            lastAmbientLiveUpdate=now;
+                            int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
+                            updateFrostedFromPhoto(bitmap,Math.round(dim*2.55f),colorKey+":live="+now);
+                        }
+                    });
+                }
+                vpa.withEndAction(()->{
                             if(generation!=wallpaperLoadGeneration || stage!=backgroundStage)return;
                             stage.removeView(previous);pendingWallpaperImage=null;outgoingWallpaperImage=null;
                             int dim=store.flag("contrast")?Math.max(55,store.number("dimming",0)):store.number("dimming",0);
@@ -2603,16 +2714,30 @@ public final class MainActivity extends Activity {
             if(isBladeActive) {
                 updateStageAmbientColors(false);
             }
-            if("wallpaper".equals(store.value("theme","warm"))) {
+            if("wallpaper".equals(store.value("theme","wallpaper"))) {
                 wallpaperSeed=ambientColor;
                 if(dockBar!=null) dockBar.invalidate();
                 if(activeBladeBox!=null) activeBladeBox.invalidate();
                 if(activeBladeAdapter!=null) activeBladeAdapter.notifyDataSetChanged();
                 if(activeBladeList!=null) activeBladeList.invalidateViews();
             }
+            if(liveGlassTransition()) {
+                long now=android.os.SystemClock.uptimeMillis();
+                if(now-lastAmbientLiveUpdate>=45) {
+                    lastAmbientLiveUpdate=now;
+                    refreshAmbientBackdropLive();
+                }
+            }
+        });
+        ambientAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if(!liveGlassTransition()) {
+                    refreshAmbientBackdropLive();
+                }
+            }
         });
         ambientAnimator.start();
-        if("wallpaper".equals(store.value("theme","warm"))) {
+        if("wallpaper".equals(store.value("theme","wallpaper"))) {
             wallpaperSeed=color;
             if(dockBar!=null) dockBar.invalidate();
             if(activeBladeBox!=null) activeBladeBox.invalidate();
@@ -3107,7 +3232,7 @@ public final class MainActivity extends Activity {
         drawerPage.addView(headerRow,new LinearLayout.LayoutParams(-1,-2));
 
         List<String> recentsForTitle=new ArrayList<>();
-        if(store.flag("recents")) for(String pkg:store.list("recent_apps")) if(byPackage.containsKey(pkg)) recentsForTitle.add(pkg);
+        if(store.flag("recents", true)) for(String pkg:store.list("recent_apps")) if(byPackage.containsKey(pkg)) recentsForTitle.add(pkg);
         String initialTitle=!recentsForTitle.isEmpty()?name(recentsForTitle.get(0)):apps.isEmpty()?"All Apps":name(apps.get(0).pkg);
         drawerFocusTitle=text(initialTitle,52,foreground());
         drawerFocusTitle.setTypeface(regular);drawerFocusTitle.setLetterSpacing(-0.02f);
@@ -3125,7 +3250,7 @@ public final class MainActivity extends Activity {
         views.put("search",filter);views.put("drawer.home",homeBtn);views.put("drawer.settings",settingsBtn);filter.setNextFocusUpId(filter.getId());populateDrawer(grid,filter);
     }
     private View buildDrawerRecentDock() {
-        if(!store.flag("recents")) return null;
+        if(!store.flag("recents", true)) return null;
         List<String> recent=new ArrayList<>();
         for(String pkg:store.list("recent_apps")) if(byPackage.containsKey(pkg)) recent.add(pkg);
         if(recent.isEmpty()) return null;
@@ -3141,9 +3266,12 @@ public final class MainActivity extends Activity {
 
         int width=Math.max(px(320),drawerWidth()-px(24));
         int gap=px(24), safeEdge=Math.max(px(24),px(glowRadiusSetting()+8));
-        RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),gap,safeEdge,Math.max(1f,focusZoomScale(true)));
+        int maxCardHeight=px(220);
+        int maxCardWidth=Math.round(maxCardHeight*16f/9f);
+        RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),maxCardWidth,gap,safeEdge,Math.max(1f,focusZoomScale(true)));
         LinearLayout row=new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
         row.setClipChildren(false);
         row.setClipToPadding(false);
         int verticalPad=px(10);
@@ -3153,7 +3281,7 @@ public final class MainActivity extends Activity {
         appRows.add(navRow);
         for(int i=0;i<plan.widths.length;i++) {
             int cardWidth=plan.widths[i];
-            int cardHeight=Math.min(px(220),Math.max(1,Math.round(cardWidth*9f/16f)));
+            int cardHeight=Math.min(maxCardHeight,Math.max(1,Math.round(cardWidth*9f/16f)));
             String pkg=recent.get(i);
             View tile=appTile(pkg,cardWidth,cardHeight,true,true);
             LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
@@ -4611,7 +4739,7 @@ public final class MainActivity extends Activity {
     }
     private List<String> lastRecentAppsLoaded=new ArrayList<>();
     private void showRecentRow() {
-        if(homePage==null || drawer || !store.flag("recents")) {
+        if(homePage==null || drawer || !store.flag("recents", true)) {
             if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
             if(recentSection!=null && recentSection.getParent()==homePage)homePage.removeView(recentSection);
             recentSection=null;
@@ -4652,14 +4780,17 @@ public final class MainActivity extends Activity {
             if(recentSpringStage!=null)recentSpringStage.stop();
             viewport.removeAllViews();rowViews.clear();
             int gap=px(24),safeEdge=Math.max(px(24),px(glowRadiusSetting()+8));
-            RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),gap,safeEdge,Math.max(1f,focusZoomScale(true)));
+            int maxCardHeight=px(220);
+            int maxCardWidth=Math.round(maxCardHeight*16f/9f);
+            RecentShortcutLayout.Plan plan=RecentShortcutLayout.fit(width,recent.size(),px(280),maxCardWidth,gap,safeEdge,Math.max(1f,focusZoomScale(true)));
             LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
             row.setClipChildren(false);row.setClipToPadding(false);
             int verticalPad=px(10);
             row.setPadding(plan.edge,verticalPad,plan.edge,verticalPad);
             for(int i=0;i<plan.widths.length;i++){
                 int cardWidth=plan.widths[i];
-                int cardHeight=Math.min(px(220),Math.max(1,Math.round(cardWidth*9f/16f)));
+                int cardHeight=Math.min(maxCardHeight,Math.max(1,Math.round(cardWidth*9f/16f)));
                 View tile=appTile(recent.get(i),cardWidth,cardHeight,true,true);
                 LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
                 if(i+1<plan.widths.length)cell.rightMargin=gap;
@@ -4821,8 +4952,8 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@clock|Idle screensaver\n"+screensaverSummary(),()->screensaverMenu(this::lumaSettingsMenu));
         add(labels,actions,"@banner|Featured banner\n"+bannerState,this::bannerMenu);
         add(labels,actions,"@sparkles|Recommendations\n"+recState,this::recommendationMenu);
-        add(labels,actions,"@clock|Recent shortcuts: "+onOff(store.flag("recents")),()->{
-            store.setFlag("recents",!store.flag("recents"));render();lumaSettingsMenu();
+        add(labels,actions,"@clock|Recent shortcuts: "+onOff(store.flag("recents", true)),()->{
+            store.setFlag("recents",!store.flag("recents", true));render();lumaSettingsMenu();
         });
         if (!store.list("recent_apps").isEmpty()) {
             add(labels,actions,"Clear recent history",()->{
@@ -5153,7 +5284,7 @@ public final class MainActivity extends Activity {
                         null,
                         this::backgroundMenu,
                         ()->choice("Menu theme",new String[]{"Warm glass · Translucent warm dark tint","Cool slate · Crisp deep blue-grey","Extract from wallpaper · Dynamically adapts to your background or photo"},
-                                "wallpaper".equals(store.value("theme","warm"))?2:"cool".equals(store.value("theme","warm"))?1:0,
+                                "wallpaper".equals(store.value("theme","wallpaper"))?2:"cool".equals(store.value("theme","wallpaper"))?1:0,
                                 index->{
                                     store.set("theme",new String[]{"warm","cool","wallpaper"}[index]);
                                     refreshWallpaperPalette();
@@ -5754,12 +5885,15 @@ public final class MainActivity extends Activity {
         String st=uiSurfaceStyle();
         int frost=glassFrostDepth();
         int sheenIdx=glassSheenMode();
+        boolean liveTrans=liveGlassTransition();
         menu("Glass & surfaces",Arrays.asList(
                 "§GLASS MATERIAL",
                 "Surface style: "+uiSurfaceStyleName(),
                 "Optical lens refraction: "+onOff(glassRefractionEnabled()),
                 "Glass frost: "+frost+"% · "+glassFrostName(frost),
                 "Specular sheen: "+glassSheenName(),
+                "§TRANSITIONS & PERFORMANCE",
+                "Background transition glass: "+(liveTrans?"Live transition (Dynamic)":"Static snapshot (Performant)"),
                 "§WIDGET LENS",
                 "Dock spring lens: "+onOff(store.flag("dock_spring_lens",true)),
                 "§RESET",
@@ -5792,6 +5926,16 @@ public final class MainActivity extends Activity {
                                     updateWorkspaceAndMenuSurfaces();
                                 },()->glassSurfacesMenu(back)),
                         null,
+                        ()->choice("Background transition glass",new String[]{
+                                "Static snapshot · Captures still backdrop for smooth 60fps on all TVs (Performant)",
+                                "Live transition · Real-time dynamic refraction during background transitions (High-end TVs)"},
+                                liveTrans?1:0,
+                                idx->{
+                                    store.setFlag("live_glass_transition",idx==1);
+                                    updateWorkspaceAndMenuSurfaces();
+                                    glassSurfacesMenu(back);
+                                },()->glassSurfacesMenu(back)),
+                        null,
                         ()->{
                             store.setFlag("dock_spring_lens",!store.flag("dock_spring_lens",true));
                             glassSurfacesMenu(back);
@@ -5801,7 +5945,8 @@ public final class MainActivity extends Activity {
                             store.set("ui_surface_style","glass");
                             store.setFlag("glass_refraction",true);
                             store.setNumber("glass_frost",0);
-                            store.setNumber("glass_sheen",1);
+                            store.setNumber("glass_sheen",0);
+                            store.setFlag("live_glass_transition",false);
                             store.setFlag("dock_spring_lens",true);
                             updateWorkspaceAndMenuSurfaces();
                             toast("Glass surfaces restored to defaults");
@@ -6349,7 +6494,7 @@ public final class MainActivity extends Activity {
         sb.append("\"sceneLabel\":\"").append(jsonEscape(sceneSummary())).append("\",");
         sb.append("\"autoDayNight\":").append(store.flag("scene_auto_day_night",false)).append(',');
         sb.append("\"background\":\"").append(jsonEscape(store.value("background","app_glow"))).append("\",");
-        sb.append("\"theme\":\"").append(jsonEscape(store.value("theme","warm"))).append("\",");
+        sb.append("\"theme\":\"").append(jsonEscape(store.value("theme","wallpaper"))).append("\",");
         sb.append("\"glassFrost\":").append(glassFrostDepth()).append(',');
         sb.append("\"colorIntensity\":").append(colorIntensity()).append(',');
         sb.append("\"iconStyle\":\"").append(jsonEscape(store.value("icon_style","brand"))).append("\",");
@@ -7395,6 +7540,9 @@ public final class MainActivity extends Activity {
     private interface Choice {void pick(int index);}
     private void choice(String title,String[] labels,int selected,Choice action,Runnable back) {
         final int[] currentSelected=new int[]{selected};
+        if(!menuScrollHistory.containsKey(title) && selected>=0 && selected<labels.length) {
+            menuScrollHistory.put(title,new int[]{selected,0});
+        }
         final Runnable[] self=new Runnable[1];
         self[0]=()->{
             List<String> names=new ArrayList<>();
@@ -8231,8 +8379,8 @@ public final class MainActivity extends Activity {
 
                 int frost=overrideFrostPct>=0?overrideFrostPct:glassFrostDepth();
                 int baseRgb=themed(0xFF131A26,0xFF0A0F17)&0x00FFFFFF;
-                int topAlpha=isSolid?250:isGlass?Math.max(148,Math.min(235,Math.round(148+frost*0.85f))):238;
-                int botAlpha=isSolid?254:isGlass?Math.max(176,Math.min(244,Math.round(176+frost*0.68f))):246;
+                int topAlpha=isSolid?250:isGlass?Math.max(78,Math.min(235,Math.round(78+frost*1.45f))):238;
+                int botAlpha=isSolid?254:isGlass?Math.max(110,Math.min(244,Math.round(110+frost*1.25f))):246;
                 p.setStyle(android.graphics.Paint.Style.FILL);
                 p.setShader(new android.graphics.LinearGradient(0,r.top,0,r.bottom,
                         (topAlpha<<24)|baseRgb,(botAlpha<<24)|baseRgb,android.graphics.Shader.TileMode.CLAMP));

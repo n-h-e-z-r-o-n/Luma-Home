@@ -1638,7 +1638,7 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                             Shader.TileMode.CLAMP));
                     canvas.drawRoundRect(rect, radius, radius, p);
                     p.setShader(null);
-                } else if (frostScale > 0f) {
+                } else {
                     if ("adaptive".equals(style)) {
                         int aTop = Math.min(235, Math.max(40, Math.round(128 * frostScale)));
                         int aBot = Math.min(245, Math.max(55, Math.round(168 * frostScale)));
@@ -1661,8 +1661,8 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                                 Shader.TileMode.CLAMP));
                     } else {
                         // Default "liquid_glass"
-                        int aTop = Math.min(185, Math.max(20, Math.round(48 * frostScale)));
-                        int aBot = Math.min(205, Math.max(30, Math.round(70 * frostScale)));
+                        int aTop = Math.min(185, Math.max(18, Math.round(48 * Math.max(0.28f, frostScale))));
+                        int aBot = Math.min(205, Math.max(26, Math.round(70 * Math.max(0.28f, frostScale))));
                         p.setShader(new LinearGradient(
                                 0f, rect.top, 0f, rect.bottom,
                                 (aTop << 24) | 0x0E1725,

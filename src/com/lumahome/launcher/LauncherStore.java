@@ -22,7 +22,7 @@ final class LauncherStore {
     }
     void list(String key, List<String> values) { set(key, android.text.TextUtils.join(",", values)); }
     void recent(String pkg) {
-        if (!flag("recents")) return;
+        if (!flag("recents", true)) return;
         List<String> list = list("recent_apps"); list.remove(pkg); list.add(0, pkg);
         while (list.size() > 12) list.remove(list.size() - 1);
         list("recent_apps", list);

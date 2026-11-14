@@ -368,6 +368,12 @@ final class LiquidGlassRenderer {
                     fg = sampleChannel(srcPixels, srcW, srcH, gX, gY, 8);
                     fb = sampleChannel(srcPixels, srcW, srcH, bX, bY, 0);
 
+                    // Optical glass meniscus rim (subtle internal reflection so bevel never renders dark ink)
+                    float meniscus = slope * (specStrength > 0.001f ? (0.16f * specStrength) : 0.06f);
+                    fr = clamp01(fr + meniscus);
+                    fg = clamp01(fg + meniscus * 1.05f);
+                    fb = clamp01(fb + meniscus * 1.16f);
+
                     // Normal-driven dual-lobe specular rim
                     if (specStrength > 0.001f) {
                         float facing = nx * negLx + ny * negLy;
