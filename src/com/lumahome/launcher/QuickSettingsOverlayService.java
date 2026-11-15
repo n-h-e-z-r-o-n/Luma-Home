@@ -162,6 +162,36 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         return sInstance;
     }
 
+    public static boolean isAccessibilityServiceEnabled(Context context) {
+        if (sInstance != null) return true;
+        if (context == null) return false;
+        try {
+            String component = new ComponentName(context.getPackageName(),
+                    QuickSettingsOverlayService.class.getName()).flattenToString();
+            String enabledServices = Settings.Secure.getString(
+                    context.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (enabledServices != null && enabledServices.contains(component)) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    public static void openAccessibilitySettings(Context context) {
+        if (context == null) return;
+        try {
+            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (Exception e) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_SETTINGS);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(fallback);
+            } catch (Exception ignored) {}
+        }
+    }
+
     public static void showVolumeHudPreview(Context host) {
         if (host == null) return;
         ensureServiceEnabled(host);

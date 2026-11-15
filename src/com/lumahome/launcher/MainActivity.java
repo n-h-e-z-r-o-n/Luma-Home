@@ -225,6 +225,9 @@ public final class MainActivity extends Activity {
         resetIdleTimer();
         resetWallpaperSlideshowTimer();
         syncSystemSoundMuting();
+        if (!store.flag("accessibility_disclosure_seen", false) && !QuickSettingsOverlayService.isAccessibilityServiceEnabled(this)) {
+            handler.postDelayed(() -> showAccessibilityDisclosureBlade(this::closeBlade), 1200);
+        }
     }
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
@@ -471,6 +474,8 @@ public final class MainActivity extends Activity {
                 handler.postDelayed(() -> iconBackgroundChoice(this::closeBlade), 350);
             } else if ("app_icons".equals(b)) {
                 handler.postDelayed(() -> appIconsMenu(this::closeBlade), 350);
+            } else if ("accessibility".equals(b)) {
+                handler.postDelayed(() -> showAccessibilityDisclosureBlade(this::closeBlade), 350);
             }
         }
         if (!intent.hasExtra("apps")) return;
@@ -4970,6 +4975,10 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@hdmi|HDMI inputs: "+hdmiInputs().size()+" shown",this::inputMenu);
         add(labels,actions,"@display|Screen mirroring",this::screenMirroringMenu);
         add(labels,actions,"@home|Default launcher: "+(isDefaultHome()?"Active":"Preview"),this::defaultLauncherMenu);
+        String a11ySummary = QuickSettingsOverlayService.isAccessibilityServiceEnabled(this)
+                ? "Active · TV remote overlay enabled"
+                : "Prominent disclosure & setup";
+        add(labels,actions,"@settings|Remote overlay & accessibility\n"+a11ySummary,()->showAccessibilityDisclosureBlade(this::lumaSettingsMenu));
         add(labels,actions,"§SYSTEM",null);
         add(labels,actions,"@display|Picture & display ↗",()->openSystemIntent(Settings.ACTION_DISPLAY_SETTINGS,"android.settings.PICTURE_SETTINGS"));
         add(labels,actions,"@sound|Sound & audio ↗",()->openSystemIntent(Settings.ACTION_SOUND_SETTINGS));
@@ -6495,8 +6504,14 @@ public final class MainActivity extends Activity {
         sb.append("\"autoDayNight\":").append(store.flag("scene_auto_day_night",false)).append(',');
         sb.append("\"background\":\"").append(jsonEscape(store.value("background","app_glow"))).append("\",");
         sb.append("\"theme\":\"").append(jsonEscape(store.value("theme","wallpaper"))).append("\",");
+        sb.append("\"uiSurfaceStyle\":\"").append(jsonEscape(uiSurfaceStyle())).append("\",");
         sb.append("\"glassFrost\":").append(glassFrostDepth()).append(',');
+        sb.append("\"glassSheen\":").append(glassSheenMode()).append(',');
+        sb.append("\"liveGlassTransition\":").append(liveGlassTransition()).append(',');
         sb.append("\"colorIntensity\":").append(colorIntensity()).append(',');
+        sb.append("\"recents\":").append(store.flag("recents",true)).append(',');
+        sb.append("\"dockSpringLens\":").append(store.flag("dock_spring_lens",true)).append(',');
+        sb.append("\"contrast\":").append(store.flag("contrast",false)).append(',');
         sb.append("\"iconStyle\":\"").append(jsonEscape(store.value("icon_style","brand"))).append("\",");
         sb.append("\"iconShape\":\"").append(jsonEscape(store.value("icon_shape","circle"))).append("\",");
         sb.append("\"iconSize\":").append(store.number("icon_size_pct",100)).append(',');
@@ -6552,6 +6567,7 @@ public final class MainActivity extends Activity {
                     if(sfx!=null) sfx.preview(v,UiSoundEngine.roleSelect(),-1);
                 }
                 resetWallpaperSlideshowTimer();
+                refreshGlassSurfaces();
                 refreshWallpaperPalette();
                 updateBackgroundInPlace();
                 rebuildContentInPlace();
@@ -6573,10 +6589,11 @@ public final class MainActivity extends Activity {
         } else if("toggle".equals(op)) {
             String k=params.getOrDefault("key","");
             if(!k.isEmpty()) {
-                boolean def="show_dock".equals(k);
+                boolean def="show_dock".equals(k)||"recents".equals(k)||"dock_spring_lens".equals(k);
                 boolean next=!store.flag(k,def);
                 store.setFlag(k,next);
                 if("scene_auto_day_night".equals(k) && next) checkCircadianScene();
+                refreshGlassSurfaces();
                 refreshWallpaperPalette();
                 updateBackgroundInPlace();
                 rebuildContentInPlace();
@@ -7323,6 +7340,92 @@ public final class MainActivity extends Activity {
                         null,
                         this::otherHome,
                         ()->info("Recovery","Device settings remain available in Luma Settings.\n\nYou can open another enabled launcher here at any time. Restoring an app previously disabled through ADB requires the approved computer-side undo commands. Luma Home cannot silently re-enable protected system apps.",this::defaultLauncherMenu)),this::lumaSettingsMenu);
+    }
+    private void showAccessibilityDisclosureBlade(Runnable back) {
+        LinearLayout box=new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(px(4),px(4),px(4),px(4));
+
+        TextView badge=text("PROMINENT DISCLOSURE",12,accent());
+        badge.setTypeface(medium);
+        badge.setLetterSpacing(0.09f);
+        badge.setPadding(px(4),0,px(4),px(10));
+        box.addView(badge);
+
+        LinearLayout purposeCard=new LinearLayout(this);
+        purposeCard.setOrientation(LinearLayout.VERTICAL);
+        purposeCard.setPadding(px(14),px(14),px(14),px(14));
+        purposeCard.setBackground(shapeRadius(themed(0x18FFFFFF,0x221C2B3E),0x28FFFFFF,1,14));
+
+        TextView purposeHeading=text("AccessibilityService API Usage",18,0xFFFFFFFF);
+        purposeHeading.setTypeface(medium);
+        purposeCard.addView(purposeHeading);
+
+        TextView purposeBody=text(
+                "Luma Home requires the Android AccessibilityService API to detect and filter hardware TV remote shortcut keys (such as Settings or Menu buttons).\n\n"
+                +"When enabled, this allows Luma Home to display the Quick Settings overlay, TV input switcher, and volume HUD over other running applications without altering system firmware.",
+                14,0xDEFFFFFF);
+        purposeBody.setLineSpacing(px(3),1f);
+        LinearLayout.LayoutParams pbp=new LinearLayout.LayoutParams(-1,-2);
+        pbp.topMargin=px(8);
+        purposeCard.addView(purposeBody,pbp);
+        box.addView(purposeCard);
+
+        LinearLayout privacyCard=new LinearLayout(this);
+        privacyCard.setOrientation(LinearLayout.VERTICAL);
+        privacyCard.setPadding(px(14),px(14),px(14),px(14));
+        privacyCard.setBackground(shapeRadius(themed(0x1810B981,0x180E382B),0x3334D399,1,14));
+        LinearLayout.LayoutParams pcp=new LinearLayout.LayoutParams(-1,-2);
+        pcp.topMargin=px(12);
+        box.addView(privacyCard,pcp);
+
+        TextView privacyHeading=text("Privacy & Data Safety Commitment",17,0xFFA7F3D0);
+        privacyHeading.setTypeface(medium);
+        privacyCard.addView(privacyHeading);
+
+        TextView privacyBody=text(
+                "• Luma Home does NOT collect, store, or transmit any personal or sensitive user data.\n"
+                +"• No keystrokes, passwords, or typed text are logged or monitored.\n"
+                +"• Only designated remote shortcut keys (Settings/Menu) are filtered to trigger the overlay.\n"
+                +"• 100% ad-free with zero user tracking or data sharing.",
+                13,0xFFD1FAE5);
+        privacyBody.setLineSpacing(px(3),1f);
+        LinearLayout.LayoutParams prp=new LinearLayout.LayoutParams(-1,-2);
+        prp.topMargin=px(6);
+        privacyCard.addView(privacyBody,prp);
+
+        boolean isEnabled=QuickSettingsOverlayService.isAccessibilityServiceEnabled(this);
+        LinearLayout statusRow=new LinearLayout(this);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        statusRow.setPadding(px(12),px(10),px(12),px(10));
+        statusRow.setBackground(shapeRadius(isEnabled?0x2210B981:0x22F59E0B,isEnabled?0x4434D399:0x44FBBF24,1,12));
+        LinearLayout.LayoutParams srp=new LinearLayout.LayoutParams(-1,-2);
+        srp.topMargin=px(12);
+
+        View dot=new View(this);
+        dot.setBackground(shapeRadius(isEnabled?0xFF34D399:0xFFFBBF24,0,0,5));
+        LinearLayout.LayoutParams dp=new LinearLayout.LayoutParams(px(10),px(10));
+        dp.rightMargin=px(10);
+        statusRow.addView(dot,dp);
+
+        TextView statusTxt=text(isEnabled?"Status: Accessibility Service Active":"Status: Not enabled in TV Settings",14,isEnabled?0xFFA7F3D0:0xFFFDE68A);
+        statusTxt.setTypeface(medium);
+        statusRow.addView(statusTxt,new LinearLayout.LayoutParams(-1,-2));
+        box.addView(statusRow,srp);
+
+        String positiveLabel=isEnabled?"Done":"Agree & Enable";
+        showBladePanel("Accessibility Disclosure",box,positiveLabel,()->{
+            store.setFlag("accessibility_disclosure_seen",true);
+            if(!isEnabled){
+                QuickSettingsOverlayService.openAccessibilitySettings(this);
+                toast("Enable 'Quick Settings' in TV Accessibility settings");
+            }
+            if(back!=null)back.run();
+        },()->{
+            store.setFlag("accessibility_disclosure_seen",true);
+            if(back!=null)back.run();
+        },null);
     }
     private void finishLauncherSetup(){
         menu("Use Luma Home",Arrays.asList("Disable other launchers","Done"),
@@ -8495,7 +8598,9 @@ public final class MainActivity extends Activity {
         LinearLayout box=new LinearLayout(this);
         activeBladeBox=box;
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(px(24),px(28),px(24),px(22));
+        box.setClipChildren(false);
+        box.setClipToPadding(false);
+        box.setPadding(px(24),px(28),px(24),px(26));
         box.setBackground(floatingPanelDrawable(box,24f));
         box.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View v, android.graphics.Outline o) {
@@ -8883,17 +8988,21 @@ public final class MainActivity extends Activity {
 
         LinearLayout footer=new LinearLayout(this);
         footer.setOrientation(LinearLayout.HORIZONTAL);
-        footer.setPadding(px(4),px(12),px(4),0);
+        footer.setClipChildren(false);
+        footer.setClipToPadding(false);
+        footer.setPadding(px(4),px(14),px(4),px(6));
         Button save=button(positiveLabel,()->{
             int before=bladeGeneration;
             if(onPositive!=null)onPositive.run();
             if(bladeGeneration==before)closeBlade();
         });
-        footer.addView(save,new LinearLayout.LayoutParams(0,px(52),1f));
+        LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(0,px(48),1f);
+        sp.setMargins(px(4),px(4),px(4),px(4));
+        footer.addView(save,sp);
         if(back!=null && onPositive!=null && !"Done".equals(positiveLabel)) {
             Button cancel=button("Cancel",back);
-            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,px(52),1f);
-            cp.leftMargin=px(10);
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,px(48),1f);
+            cp.setMargins(px(6),px(4),px(4),px(4));
             footer.addView(cancel,cp);
         }
         box.addView(footer,new LinearLayout.LayoutParams(-1,-2));
@@ -8966,12 +9075,12 @@ public final class MainActivity extends Activity {
         Button button=new Button(this);
         button.setSoundEffectsEnabled(!muteSystem());
         button.setTypeface(medium);button.setText(label);button.setAllCaps(false);button.setTextColor(foreground());
-        button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(23));button.setPadding(px(12),0,px(12),0);
+        button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,px(22));button.setPadding(px(14),0,px(14),0);
         button.setBackground(glassControlDrawable(button,false,16f,accent(),false,false));button.setId(View.generateViewId());
         button.setFocusableInTouchMode(true);
         button.setOnFocusChangeListener((v,has)->{
             button.setBackground(glassControlDrawable(button,has,16f,accent(),false,false));
-            button.animate().scaleX(has&&!instantFocus()?1.03f:1f).scaleY(has&&!instantFocus()?1.03f:1f).setDuration(focusDuration(130)).start();
+            button.animate().scaleX(has&&!instantFocus()?1.025f:1f).scaleY(has&&!instantFocus()?1.025f:1f).setDuration(focusDuration(130)).start();
         });
         button.setOnClickListener(v->{
             boolean auditionPad="Focus Tap".equals(label)||"Select Bloom".equals(label)||"Menu Glide".equals(label)||"Back Settle".equals(label);

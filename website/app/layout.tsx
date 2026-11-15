@@ -28,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     {children}
     <footer className="site-footer wrap">
       <div><Link className="brand" href="/"><img src="/luma-icon.png" width="32" height="32" alt="" /><span>Luma Home</span></Link><p>A little more you. A lot less noise.</p></div>
-      <div className="footer-links"><Link href="/privacy">Privacy policy</Link><Link href="/support">Support</Link><a href={site.companyUrl}>A {site.publisher} project <span aria-hidden="true">↗</span></a><small>© 2026 {site.publisher}</small></div>
+      <div className="footer-links"><Link href="/privacy">Privacy policy</Link><Link href="/terms">Terms of service</Link><Link href="/support">Support</Link><a href={site.companyUrl}>A {site.publisher} project <span aria-hidden="true">↗</span></a><small>© 2026 {site.publisher}</small></div>
     </footer>
   </body></html>;
 }
