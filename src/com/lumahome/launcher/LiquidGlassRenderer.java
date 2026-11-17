@@ -55,10 +55,26 @@ final class LiquidGlassRenderer {
         }
         int w = src.getWidth(), h = src.getHeight();
         if (w <= 4 || h <= 4) return src;
+
+        // Downscale before blur for 16x speedup and minimal memory churn on TV hardware
+        int targetW = Math.min(480, w);
+        int targetH = Math.max(16, Math.round(h * ((float) targetW / w)));
+        Bitmap workBitmap = src;
+        boolean needsRecycle = false;
+        if (w > targetW || h > targetH) {
+            workBitmap = Bitmap.createScaledBitmap(src, targetW, targetH, true);
+            needsRecycle = (workBitmap != src);
+            w = workBitmap.getWidth();
+            h = workBitmap.getHeight();
+        }
+
         int[] px = new int[w * h];
         int[] tmp = new int[w * h];
-        src.getPixels(px, 0, w, 0, 0, w, h);
-        int radius = 14;
+        workBitmap.getPixels(px, 0, w, 0, 0, w, h);
+        if (needsRecycle) {
+            workBitmap.recycle();
+        }
+        int radius = 10;
         int div = radius * 2 + 1;
         for (int pass = 0; pass < 2; pass++) {
             for (int y = 0; y < h; y++) {
@@ -306,7 +322,15 @@ final class LiquidGlassRenderer {
             for (int px = 0; px < bw; px++) {
                 float cx = (px + 0.5f) - halfW;
 
-                float d = sdRoundedBox(cx, cy, halfW, halfH, r);
+                float absX = Math.abs(cx);
+                float absY = Math.abs(cy);
+                float qx = absX - halfW + r;
+                float qy = absY - halfH + r;
+                float ax = qx > 0f ? qx : 0f;
+                float ay = qy > 0f ? qy : 0f;
+                float cornerDist = (ax > 0f && ay > 0f) ? (float) Math.sqrt(ax * ax + ay * ay) : 0f;
+                float d = cornerDist + Math.min(Math.max(qx, qy), 0f) - r;
+
                 float cov = clamp01(0.5f - d / 1.5f);
                 if (cov <= 0.004f || (bevelRingOnly && -d >= bevel)) {
                     dstPixels[rowOffset + px] = 0;
@@ -325,14 +349,20 @@ final class LiquidGlassRenderer {
                     fg = sampleRgb[1];
                     fb = sampleRgb[2];
                 } else {
-                    // Curved refractive bevel rim: numerical SDF gradient -> outward normal
-                    float gx = sdRoundedBox(cx + 1f, cy, halfW, halfH, r)
-                             - sdRoundedBox(cx - 1f, cy, halfW, halfH, r);
-                    float gy = sdRoundedBox(cx, cy + 1f, halfW, halfH, r)
-                             - sdRoundedBox(cx, cy - 1f, halfW, halfH, r);
-                    float nLen = (float) Math.sqrt(gx * gx + gy * gy);
-                    float nx = nLen > 1e-4f ? gx / nLen : 0f;
-                    float ny = nLen > 1e-4f ? gy / nLen : -1f;
+                    // Analytical SDF gradient -> outward normal without 4x numerical finite differences
+                    float nx, ny;
+                    float signX = cx >= 0f ? 1f : -1f;
+                    float signY = cy >= 0f ? 1f : -1f;
+                    if (qx > 0f && qy > 0f && cornerDist > 1e-4f) {
+                        nx = signX * (ax / cornerDist);
+                        ny = signY * (ay / cornerDist);
+                    } else if (qx >= qy) {
+                        nx = signX;
+                        ny = 0f;
+                    } else {
+                        nx = 0f;
+                        ny = signY;
+                    }
 
                     // Inverse-power bevel profile
                     float t = clamp01(-d / bevel);
@@ -357,16 +387,25 @@ final class LiquidGlassRenderer {
                     float baseX = px + 0.5f;
                     float baseY = py + 0.5f;
 
-                    float rX = (locX + (baseX + ox * (1f - dispScale)) * invScale) * mapScaleX;
-                    float rY = (locY + (baseY + oy * (1f - dispScale)) * invScale) * mapScaleY;
-                    float gX = (locX + (baseX + ox) * invScale) * mapScaleX;
-                    float gY = (locY + (baseY + oy) * invScale) * mapScaleY;
-                    float bX = (locX + (baseX + ox * (1f + dispScale)) * invScale) * mapScaleX;
-                    float bY = (locY + (baseY + oy * (1f + dispScale)) * invScale) * mapScaleY;
+                    if (dispScale > 0.002f) {
+                        float rX = (locX + (baseX + ox * (1f - dispScale)) * invScale) * mapScaleX;
+                        float rY = (locY + (baseY + oy * (1f - dispScale)) * invScale) * mapScaleY;
+                        float gX = (locX + (baseX + ox) * invScale) * mapScaleX;
+                        float gY = (locY + (baseY + oy) * invScale) * mapScaleY;
+                        float bX = (locX + (baseX + ox * (1f + dispScale)) * invScale) * mapScaleX;
+                        float bY = (locY + (baseY + oy * (1f + dispScale)) * invScale) * mapScaleY;
 
-                    fr = sampleChannel(srcPixels, srcW, srcH, rX, rY, 16);
-                    fg = sampleChannel(srcPixels, srcW, srcH, gX, gY, 8);
-                    fb = sampleChannel(srcPixels, srcW, srcH, bX, bY, 0);
+                        fr = sampleChannel(srcPixels, srcW, srcH, rX, rY, 16);
+                        fg = sampleChannel(srcPixels, srcW, srcH, gX, gY, 8);
+                        fb = sampleChannel(srcPixels, srcW, srcH, bX, bY, 0);
+                    } else {
+                        float gX = (locX + (baseX + ox) * invScale) * mapScaleX;
+                        float gY = (locY + (baseY + oy) * invScale) * mapScaleY;
+                        samplePixelRgb(srcPixels, srcW, srcH, gX, gY, sampleRgb);
+                        fr = sampleRgb[0];
+                        fg = sampleRgb[1];
+                        fb = sampleRgb[2];
+                    }
 
                     // Optical glass meniscus rim (subtle internal reflection so bevel never renders dark ink)
                     float meniscus = slope * (specStrength > 0.001f ? (0.16f * specStrength) : 0.06f);

@@ -50,7 +50,7 @@ public class LumaScreensaverDreamService extends DreamService {
     private LauncherStore store;
     private Typeface mediumFont = Typeface.create("sans-serif-medium", Typeface.NORMAL);
     private Runnable autoTickRunnable;
-    private Runnable clockDriftRunnable;
+    private android.animation.ValueAnimator driftXAnim, driftYAnim;
     private final ImageView[] photoLayers = new ImageView[2];
 
     @Override
@@ -76,7 +76,8 @@ public class LumaScreensaverDreamService extends DreamService {
     @Override
     public void onDreamingStopped() {
         if (autoTickRunnable != null) handler.removeCallbacks(autoTickRunnable);
-        if (clockDriftRunnable != null) handler.removeCallbacks(clockDriftRunnable);
+        if (driftXAnim != null) { driftXAnim.cancel(); driftXAnim = null; }
+        if (driftYAnim != null) { driftYAnim.cancel(); driftYAnim = null; }
         for (ImageView iv : photoLayers) {
             if (iv != null) iv.animate().cancel();
         }
@@ -147,16 +148,31 @@ public class LumaScreensaverDreamService extends DreamService {
 
             stage.addView(box, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
-            clockDriftRunnable = new Runnable() {
-                @Override
-                public void run() {
-                    float dx = (float) (Math.sin(System.currentTimeMillis() / 18000.0) * dp(45));
-                    float dy = (float) (Math.cos(System.currentTimeMillis() / 23000.0) * dp(30));
-                    box.animate().translationX(dx).translationY(dy).setDuration(4000).start();
-                    handler.postDelayed(this, 4000);
-                }
-            };
-            handler.postDelayed(clockDriftRunnable, 2000);
+            final float rangeX = dp(45), rangeY = dp(28);
+            driftXAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            driftXAnim.setDuration(29000L);
+            driftXAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+            driftXAnim.setRepeatMode(android.animation.ValueAnimator.RESTART);
+            driftXAnim.setInterpolator(new android.view.animation.LinearInterpolator());
+            driftXAnim.addUpdateListener(a -> {
+                float f = a.getAnimatedFraction();
+                box.setTranslationX((float) (Math.sin(f * (2.0 * Math.PI)) * rangeX));
+            });
+
+            driftYAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            driftYAnim.setDuration(37000L);
+            driftYAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+            driftYAnim.setRepeatMode(android.animation.ValueAnimator.RESTART);
+            driftYAnim.setInterpolator(new android.view.animation.LinearInterpolator());
+            driftYAnim.addUpdateListener(a -> {
+                float f = a.getAnimatedFraction();
+                box.setTranslationY((float) (Math.sin(f * (2.0 * Math.PI)) * rangeY));
+            });
+
+            box.postDelayed(() -> {
+                if (driftXAnim != null) driftXAnim.start();
+                if (driftYAnim != null) driftYAnim.start();
+            }, 600);
 
             setContentView(stage);
             return;
@@ -233,7 +249,19 @@ public class LumaScreensaverDreamService extends DreamService {
         int padV = dp(centerClock ? 24 : 18);
         glassCard.setPadding(padH, padV, padH, padV);
 
-        // Glass background drawable
+        final String rawClockStyle = store != null ? store.value("screensaver_clock_surface_style", "glass") : "glass";
+        final String surfaceStyle = "system".equals(rawClockStyle)
+                ? (store != null ? store.value("ui_surface_style", "glass") : "glass")
+                : rawClockStyle;
+        final boolean isGlass = "glass".equals(surfaceStyle);
+        final boolean isSolid = "solid".equals(surfaceStyle);
+        final int frost = store != null ? Math.max(0, Math.min(100, store.number("glass_frost", 0))) : 0;
+        final int sheenMode = store != null ? Math.max(0, Math.min(3, store.number("glass_sheen", 0))) : 0;
+        final float rawSh = sheenMode == 0 ? 0.0f : sheenMode == 1 ? 0.55f : sheenMode == 3 ? 1.48f : 1.0f;
+        final float clockSh = isGlass ? Math.max(1.15f, rawSh) : rawSh;
+        final boolean contrast = store != null && store.flag("contrast", false);
+
+        // Glass background drawable adhering to screensaver_clock_surface_style (liquid glass, frosted, solid dark)
         glassCard.setBackground(new Drawable() {
             private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final RectF r = new RectF();
@@ -243,31 +271,87 @@ public class LumaScreensaverDreamService extends DreamService {
                 r.set(getBounds());
                 if (r.width() <= 0 || r.height() <= 0) return;
                 float rad = dp(24);
-                // Glass base tint
+
+                // Base surface tint (neutral obsidian base matching dockBar)
+                int baseRgb = 0x0E1725;
+                int topAlpha, botAlpha;
+                if (isSolid) {
+                    topAlpha = 250; botAlpha = 255;
+                } else if (isGlass) {
+                    // Crystal-clear low opacity optical glass
+                    topAlpha = 28; botAlpha = 48;
+                } else {
+                    // Balanced dark obsidian base underneath the frosted diffusion veil
+                    topAlpha = 75; botAlpha = 115;
+                }
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(0xC00C111B);
+                p.setShader(new LinearGradient(0, r.top, 0, r.bottom,
+                        (topAlpha << 24) | baseRgb, (botAlpha << 24) | baseRgb, Shader.TileMode.CLAMP));
                 c.drawRoundRect(r, rad, rad, p);
-
-                // Subtle top gloss sheen
-                c.save();
-                c.clipRect(r.left, r.top, r.right, r.top + r.height() * 0.45f);
-                p.setShader(new LinearGradient(0, r.top, 0, r.top + r.height() * 0.45f,
-                        0x40FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
-                c.drawRoundRect(r, rad, rad, p);
-                c.restore();
                 p.setShader(null);
 
-                // Crystal edge stroke
-                float sw = Math.max(1.5f, dp(1.2f));
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(sw);
-                p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
-                        new int[]{0xAAFFFFFF, 0x22FFFFFF, 0x444FC3F7},
-                        new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
-                float inset = sw / 2f;
-                r.inset(inset, inset);
-                c.drawRoundRect(r, rad - inset, rad - inset, p);
-                p.setShader(null);
+                // Frosted Glass Luminous Diffusion Veil (milky translucent light scattering)
+                if (!isGlass && !isSolid) {
+                    p.setStyle(Paint.Style.FILL);
+                    p.setShader(new LinearGradient(0, r.top, 0, r.bottom,
+                            0x48FFFFFF, 0x22CBD5E1, Shader.TileMode.CLAMP));
+                    c.drawRoundRect(r, rad, rad, p);
+                    p.setShader(null);
+                }
+
+                // Specular top catchlight (Liquid Glass only)
+                if (isGlass) {
+                    c.save();
+                    c.clipRect(r.left, r.top, r.right, r.top + r.height() * 0.45f);
+                    int topGleam = Color.argb(Math.min(140, Math.round(52 * clockSh)), 255, 255, 255);
+                    p.setShader(new LinearGradient(0, r.top, 0, r.top + r.height() * 0.45f,
+                            topGleam, 0x00FFFFFF, Shader.TileMode.CLAMP));
+                    c.drawRoundRect(r, rad, rad, p);
+                    c.restore();
+                    p.setShader(null);
+                }
+
+                // Edge stroke
+                if (contrast) {
+                    float sw = Math.max(1f, dp(2.0f));
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    p.setColor(0xFF4FC3F7);
+                    float inset = sw / 2f;
+                    r.inset(inset, inset);
+                    c.drawRoundRect(r, Math.max(0f, rad - inset), Math.max(0f, rad - inset), p);
+                    p.setShader(null);
+                } else if (isGlass) {
+                    float sw = Math.max(1f, dp(1.45f));
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    int rimTop = Color.argb(Math.min(240, Math.round(180 * clockSh)), 255, 255, 255);
+                    int rimBot = Color.argb(Math.min(200, Math.round(120 * clockSh)), 255, 255, 255);
+                    p.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom,
+                            new int[]{rimTop, 0x22FFFFFF, 0x10000000, 0x55BEE6FD, rimBot},
+                            new float[]{0f, 0.25f, 0.52f, 0.78f, 1f}, Shader.TileMode.CLAMP));
+                    float inset = sw / 2f;
+                    r.inset(inset, inset);
+                    c.drawRoundRect(r, Math.max(0f, rad - inset), Math.max(0f, rad - inset), p);
+                    p.setShader(null);
+                } else if (isSolid) {
+                    float sw = Math.max(1f, dp(1.2f));
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    p.setColor(0x28FFFFFF);
+                    float inset = sw / 2f;
+                    r.inset(inset, inset);
+                    c.drawRoundRect(r, Math.max(0f, rad - inset), Math.max(0f, rad - inset), p);
+                } else {
+                    // Soft matte etched border
+                    float sw = Math.max(1f, dp(1.4f));
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeWidth(sw);
+                    p.setColor(0x60FFFFFF);
+                    float inset = sw / 2f;
+                    r.inset(inset, inset);
+                    c.drawRoundRect(r, Math.max(0f, rad - inset), Math.max(0f, rad - inset), p);
+                }
             }
 
             @Override public void setAlpha(int a) {}
@@ -281,15 +365,17 @@ public class LumaScreensaverDreamService extends DreamService {
         eyebrow.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(14));
         eyebrow.setTextColor(ssAccent[0]);
         eyebrow.setLetterSpacing(0.16f);
+        eyebrow.setShadowLayer(dp(3), 0, dp(1), 0x90000000);
         glassCard.addView(eyebrow, new LinearLayout.LayoutParams(-2, -2));
 
         TextClock time = new TextClock(this);
         time.setFormat12Hour("h:mm");
         time.setFormat24Hour("H:mm");
         time.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(centerClock ? 80 : 56));
-        time.setTextColor(0xF6FFFFFF);
+        time.setTextColor(0xF8FFFFFF);
         time.setTypeface(mediumFont);
         time.setIncludeFontPadding(false);
+        time.setShadowLayer(dp(5), 0, dp(2), 0xB0000000);
         glassCard.addView(time, new LinearLayout.LayoutParams(-2, -2));
 
         TextClock date = new TextClock(this);
@@ -298,6 +384,7 @@ public class LumaScreensaverDreamService extends DreamService {
         date.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(centerClock ? 18 : 15));
         date.setTextColor(0xCCFFFFFF);
         date.setTypeface(mediumFont);
+        date.setShadowLayer(dp(3), 0, dp(1), 0x90000000);
         glassCard.addView(date, new LinearLayout.LayoutParams(-2, -2));
 
         if (!"hidden".equals(clockPos)) {
@@ -386,18 +473,33 @@ public class LumaScreensaverDreamService extends DreamService {
         autoTickRunnable = advanceSlide;
         advanceSlide.run();
 
-        // Subtle clock micro-drift
-        clockDriftRunnable = new Runnable() {
-            @Override
-            public void run() {
-                float range = centerClock ? dp(24) : dp(8);
-                float dx = (float) (Math.sin(System.currentTimeMillis() / 19000.0) * range);
-                float dy = (float) (Math.cos(System.currentTimeMillis() / 24000.0) * (range * 0.7f));
-                glassCard.animate().translationX(dx).translationY(dy).setDuration(4200).start();
-                handler.postDelayed(this, 4200);
-            }
-        };
-        handler.postDelayed(clockDriftRunnable, 2500);
+        // Subtle continuous clock micro-drift (hardware-accelerated continuous Lissajous glide)
+        final float rangeX = dp(centerClock ? 24 : 8);
+        final float rangeY = dp(centerClock ? 15 : 6);
+        driftXAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        driftXAnim.setDuration(29000L);
+        driftXAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        driftXAnim.setRepeatMode(android.animation.ValueAnimator.RESTART);
+        driftXAnim.setInterpolator(new android.view.animation.LinearInterpolator());
+        driftXAnim.addUpdateListener(a -> {
+            float f = a.getAnimatedFraction();
+            glassCard.setTranslationX((float) (Math.sin(f * (2.0 * Math.PI)) * rangeX));
+        });
+
+        driftYAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        driftYAnim.setDuration(37000L);
+        driftYAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        driftYAnim.setRepeatMode(android.animation.ValueAnimator.RESTART);
+        driftYAnim.setInterpolator(new android.view.animation.LinearInterpolator());
+        driftYAnim.addUpdateListener(a -> {
+            float f = a.getAnimatedFraction();
+            glassCard.setTranslationY((float) (Math.sin(f * (2.0 * Math.PI)) * rangeY));
+        });
+
+        glassCard.postDelayed(() -> {
+            if (driftXAnim != null) driftXAnim.start();
+            if (driftYAnim != null) driftYAnim.start();
+        }, 600);
 
         setContentView(stage);
     }

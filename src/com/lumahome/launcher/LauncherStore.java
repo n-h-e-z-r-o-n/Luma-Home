@@ -14,6 +14,7 @@ final class LauncherStore {
     void setFlag(String key, boolean value) { prefs.edit().putBoolean(key, value).apply(); }
     String value(String key, String fallback) { return prefs.getString(key, fallback); }
     void set(String key, String value) { prefs.edit().putString(key, value).apply(); }
+    void remove(String key) { prefs.edit().remove(key).apply(); }
     int number(String key, int fallback) { return prefs.getInt(key, fallback); }
     void setNumber(String key, int value) { prefs.edit().putInt(key, value).apply(); }
     List<String> list(String key) {

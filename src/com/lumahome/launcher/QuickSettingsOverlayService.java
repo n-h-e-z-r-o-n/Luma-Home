@@ -17,10 +17,12 @@ import android.graphics.Color;
 import android.graphics.ColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Matrix;
+import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.RadialGradient;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -39,6 +41,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
@@ -46,6 +49,7 @@ import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextClock;
 import android.widget.TextView;
 
@@ -327,7 +331,21 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                     sLastNavMs = android.os.SystemClock.uptimeMillis();
                     View cur = dialog.getCurrentFocus();
                     if (cur != null) {
-                        View next = cur.focusSearch(dir);
+                        View next = null;
+                        int nextId = (dir == View.FOCUS_DOWN) ? cur.getNextFocusDownId()
+                                : (dir == View.FOCUS_UP) ? cur.getNextFocusUpId()
+                                : (dir == View.FOCUS_LEFT) ? cur.getNextFocusLeftId()
+                                : (dir == View.FOCUS_RIGHT) ? cur.getNextFocusRightId()
+                                : View.NO_ID;
+                        if (nextId != View.NO_ID && nextId != cur.getId()) {
+                            View root = dialog.getWindow() != null ? dialog.getWindow().getDecorView() : cur.getRootView();
+                            if (root != null) {
+                                next = root.findViewById(nextId);
+                            }
+                        }
+                        if (next == null) {
+                            next = cur.focusSearch(dir);
+                        }
                         if (next != null && next != cur) {
                             next.requestFocus(dir);
                         } else if (sfx != null) {
@@ -417,7 +435,7 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
-        hideOverlay(false);
+        // Feedback interruption requested by framework; keep user overlay intact.
     }
 
     @Override
@@ -665,7 +683,21 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                             sLastNavMs = android.os.SystemClock.uptimeMillis();
                             View cur = findFocus();
                             if (cur != null) {
-                                View next = cur.focusSearch(dir);
+                                View next = null;
+                                int nextId = (dir == View.FOCUS_DOWN) ? cur.getNextFocusDownId()
+                                        : (dir == View.FOCUS_UP) ? cur.getNextFocusUpId()
+                                        : (dir == View.FOCUS_LEFT) ? cur.getNextFocusLeftId()
+                                        : (dir == View.FOCUS_RIGHT) ? cur.getNextFocusRightId()
+                                        : View.NO_ID;
+                                if (nextId != View.NO_ID && nextId != cur.getId()) {
+                                    View root = getRootView();
+                                    if (root != null) {
+                                        next = root.findViewById(nextId);
+                                    }
+                                }
+                                if (next == null) {
+                                    next = cur.focusSearch(dir);
+                                }
                                 if (next != null && next != cur) {
                                     next.requestFocus(dir);
                                 } else if (sfx != null) {
@@ -706,7 +738,8 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        boolean isLeftOverlay = store != null && "left".equals(store.value("qs_position", "right"));
+        lp.gravity = (isLeftOverlay ? Gravity.START : Gravity.END) | Gravity.CENTER_VERTICAL;
         lp.setTitle("LumaQuickSettingsOverlay");
 
         try {
@@ -736,7 +769,9 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             return;
         }
         dismissing = true;
-        float slidePx = dp(this, 64);
+        if (store == null) store = new LauncherStore(this);
+        boolean isLeftOverlay = "left".equals(store.value("qs_position", "right"));
+        float slidePx = isLeftOverlay ? -dp(this, 64) : dp(this, 64);
         card.animate().cancel();
         rootToRemove.animate().cancel();
         card.animate()
@@ -1140,17 +1175,34 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
         }
     }
 
-    private static View buildDashboardView(
+    public static View buildDashboardView(
             Context context,
             LauncherStore store,
             UiSoundEngine sfx,
             Typeface regular,
             Typeface medium,
             Runnable closeOverlay) {
+        return buildDashboardWidget(context, store, sfx, regular, medium, false, closeOverlay);
+    }
+
+    public static View buildDashboardWidget(
+            Context context,
+            LauncherStore store,
+            UiSoundEngine sfx,
+            Typeface regular,
+            Typeface medium,
+            boolean previewMode,
+            Runnable closeOverlay) {
 
         String qsStyle = store != null ? store.value("qs_style", "frosted") : "frosted";
         int qsFrost = store != null ? store.number("qs_frost", 0) : 0;
         boolean qsScrim = store != null && store.flag("qs_scrim", false);
+        String qsLayout = store != null ? store.value("qs_layout", "bento") : "bento";
+        boolean isCompact = "compact".equals(qsLayout);
+        boolean isExpanded = "expanded".equals(qsLayout);
+        boolean isBlade = "blade".equals(qsLayout);
+        String qsPosition = store != null ? store.value("qs_position", "right") : "right";
+        boolean isLeft = "left".equals(qsPosition);
 
         FrameLayout scrim = new FrameLayout(context) {
             @Override
@@ -1159,9 +1211,17 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             }
         };
         scrim.setSoundEffectsEnabled(false);
-        scrim.setClickable(true);
-        scrim.setFocusable(false);
-        scrim.setOnClickListener(v -> closeOverlay.run());
+        if (previewMode) {
+            scrim.setClickable(false);
+            scrim.setFocusable(false);
+            scrim.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+        } else {
+            scrim.setClickable(true);
+            scrim.setFocusable(false);
+            scrim.setOnClickListener(v -> {
+                if (closeOverlay != null) closeOverlay.run();
+            });
+        }
         if (qsScrim) {
             scrim.setBackground(new Drawable() {
                 private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1170,10 +1230,17 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                     int w = getBounds().width();
                     int h = getBounds().height();
                     if (w <= 0 || h <= 0) return;
-                    p.setShader(new LinearGradient(0f, 0f, w, 0f,
-                            new int[]{0x00000000, 0x2404070D, 0x7A04070D},
-                            new float[]{0f, 0.45f, 1f},
-                            Shader.TileMode.CLAMP));
+                    if (isLeft) {
+                        p.setShader(new LinearGradient(0f, 0f, w, 0f,
+                                new int[]{0x7A04070D, 0x2404070D, 0x00000000},
+                                new float[]{0f, 0.55f, 1f},
+                                Shader.TileMode.CLAMP));
+                    } else {
+                        p.setShader(new LinearGradient(0f, 0f, w, 0f,
+                                new int[]{0x00000000, 0x2404070D, 0x7A04070D},
+                                new float[]{0f, 0.45f, 1f},
+                                Shader.TileMode.CLAMP));
+                    }
                     canvas.drawRect(0, 0, w, h, p);
                     p.setShader(null);
                 }
@@ -1190,116 +1257,274 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             public void playSoundEffect(int soundConstant) {
                 // Suppress Android default sound effects
             }
+
+            @Override
+            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                int screenH = getResources().getDisplayMetrics().heightPixels;
+                int maxH = (isBlade && !previewMode) ? screenH : (screenH - dp(getContext(), 48));
+                int mode = MeasureSpec.getMode(heightMeasureSpec);
+                int size = MeasureSpec.getSize(heightMeasureSpec);
+                if (mode == MeasureSpec.UNSPECIFIED || size > maxH) {
+                    heightMeasureSpec = MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST);
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            }
         };
         card.setSoundEffectsEnabled(false);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setClipChildren(false);
         card.setClipToPadding(false);
-        card.setClickable(true);
-        int padH = dp(context, 24);
-        int padV = dp(context, 22);
-        card.setPadding(padH, padV, padH, padV);
-        card.setBackground(buildLiquidGlassPanelDrawable(context, card, 28f, qsStyle, qsFrost));
-
-        int panelW = dp(context, 456);
-        FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(
-                panelW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.CENTER_VERTICAL);
-        cardLp.rightMargin = dp(context, 32);
-        cardLp.topMargin = dp(context, 28);
-        cardLp.bottomMargin = dp(context, 28);
-
-        // Header: Left (Brand badge + Live Clock & Date), Right (Quick System Settings Gear Pill)
-        LinearLayout header = new LinearLayout(context);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-
-        LinearLayout clockCol = new LinearLayout(context);
-        clockCol.setOrientation(LinearLayout.VERTICAL);
-
-        TextView badge = new TextView(context);
-        badge.setText("QUICK SETTINGS");
-        badge.setTypeface(medium);
-        badge.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 11));
-        badge.setLetterSpacing(0.14f);
-        if ("adaptive".equals(qsStyle)) {
-            int ext = LiquidGlassRenderer.getExtractedOverlayColor();
-            float[] hsv = new float[3];
-            Color.colorToHSV(ext, hsv);
-            hsv[1] = Math.min(0.65f, hsv[1]);
-            hsv[2] = 0.96f;
-            badge.setTextColor(Color.HSVToColor(hsv));
+        if (previewMode) {
+            card.setClickable(false);
+            card.setFocusable(false);
+            card.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         } else {
-            badge.setTextColor(0xFF7DD3FC);
+            card.setClickable(true);
         }
-        clockCol.addView(badge);
 
-        LinearLayout timeRow = new LinearLayout(context);
-        timeRow.setOrientation(LinearLayout.HORIZONTAL);
-        timeRow.setGravity(Gravity.BOTTOM);
+        final float cardCornerRad = dp(context, isBlade ? (previewMode ? 24 : 0) : 28);
+        if (cardCornerRad > 0f) {
+            card.setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cardCornerRad);
+                }
+            });
+            card.setClipToOutline(true);
+        }
 
-        TextClock clock = new TextClock(context);
-        clock.setFormat12Hour("h:mm a");
-        clock.setFormat24Hour("HH:mm");
-        clock.setTypeface(medium);
-        clock.setTextColor(0xFFFFFFFF);
-        clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 30));
-        timeRow.addView(clock);
+        int panelW = isExpanded ? dp(context, 580)
+                : isCompact ? dp(context, 324)
+                : isBlade ? dp(context, 395)
+                : dp(context, 456);
 
-        TextView dateView = new TextView(context);
-        String dateText = new SimpleDateFormat("  ·  EEE, MMM d", Locale.getDefault()).format(new Date());
-        dateView.setText(dateText);
-        dateView.setTypeface(regular);
-        dateView.setTextColor(0xB8E2E8F0);
-        dateView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14));
-        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        dateLp.bottomMargin = dp(context, 3);
-        timeRow.addView(dateView, dateLp);
+        FrameLayout.LayoutParams cardLp;
+        if (previewMode) {
+            int screenW = context.getResources().getDisplayMetrics().widthPixels;
+            int bladePanelW = Math.min(Math.round(screenW * 0.27f), dp(context, 395));
+            int stageWidth = screenW - (bladePanelW + dp(context, 28));
+            int leftMargin = isLeft
+                    ? dp(context, 28)
+                    : Math.max(dp(context, 28), stageWidth - panelW - dp(context, 20));
+            if (isBlade) {
+                cardLp = new FrameLayout.LayoutParams(
+                        panelW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START | Gravity.CENTER_VERTICAL);
+                cardLp.leftMargin = leftMargin;
+                cardLp.topMargin = dp(context, 24);
+                cardLp.bottomMargin = dp(context, 24);
+                card.setBackground(buildLiquidGlassPanelDrawable(context, card, 24f, qsStyle, qsFrost));
+                card.setPadding(dp(context, 16), dp(context, 14), dp(context, 16), dp(context, 14));
+            } else {
+                cardLp = new FrameLayout.LayoutParams(
+                        panelW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.START | Gravity.CENTER_VERTICAL);
+                cardLp.leftMargin = leftMargin;
+                card.setBackground(buildLiquidGlassPanelDrawable(context, card, 28f, qsStyle, qsFrost));
+                card.setPadding(dp(context, 18), dp(context, 14), dp(context, 18), dp(context, 14));
+            }
+        } else {
+            if (isBlade) {
+                cardLp = new FrameLayout.LayoutParams(
+                        panelW, ViewGroup.LayoutParams.MATCH_PARENT,
+                        isLeft ? Gravity.START : Gravity.END);
+                cardLp.leftMargin = 0;
+                cardLp.rightMargin = 0;
+                cardLp.topMargin = 0;
+                cardLp.bottomMargin = 0;
+                card.setBackground(buildLiquidGlassPanelDrawable(context, card, 0f, qsStyle, qsFrost));
+                card.setPadding(dp(context, 16), dp(context, 14), dp(context, 16), dp(context, 14));
+            } else {
+                cardLp = new FrameLayout.LayoutParams(
+                        panelW, ViewGroup.LayoutParams.WRAP_CONTENT,
+                        (isLeft ? Gravity.START : Gravity.END) | Gravity.CENTER_VERTICAL);
+                if (isLeft) {
+                    cardLp.leftMargin = dp(context, isCompact ? 28 : 32);
+                    cardLp.rightMargin = 0;
+                } else {
+                    cardLp.rightMargin = dp(context, isCompact ? 28 : 32);
+                    cardLp.leftMargin = 0;
+                }
+                cardLp.topMargin = dp(context, 24);
+                cardLp.bottomMargin = dp(context, 24);
+                card.setBackground(buildLiquidGlassPanelDrawable(context, card, 28f, qsStyle, qsFrost));
+                card.setPadding(dp(context, 18), dp(context, 14), dp(context, 18), dp(context, 14));
+            }
+        }
 
-        LinearLayout.LayoutParams timeRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        timeRowLp.topMargin = dp(context, 2);
-        clockCol.addView(timeRow, timeRowLp);
+        // Header
+        LinearLayout header = new LinearLayout(context);
+        header.setOrientation(LinearLayout.VERTICAL);
 
-        header.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final int crumbId = View.generateViewId();
+        if (isBlade) {
+            TextView crumb = new TextView(context);
+            crumb.setId(crumbId);
+            crumb.setText("‹  Quick Settings");
+            crumb.setTypeface(medium);
+            crumb.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 19));
+            crumb.setTextColor(0xFFF8FAFC);
+            crumb.setPadding(dp(context, 4), dp(context, 2), dp(context, 4), dp(context, 12));
+            if (previewMode) {
+                crumb.setFocusable(false);
+                crumb.setClickable(false);
+            } else {
+                crumb.setFocusable(true);
+                crumb.setNextFocusLeftId(crumbId);
+                crumb.setNextFocusRightId(crumbId);
+                crumb.setNextFocusUpId(crumbId);
+                crumb.setOnClickListener(v -> {
+                    if (closeOverlay != null) closeOverlay.run();
+                });
+                crumb.setOnFocusChangeListener((v, hasFocus) -> {
+                    crumb.setTextColor(hasFocus ? 0xFFFFFFFF : 0xFFF8FAFC);
+                    v.setTranslationZ(hasFocus ? dp(context, 4) : 0f);
+                    v.animate().cancel();
+                    v.animate()
+                            .scaleX(hasFocus ? 1.02f : 1.0f)
+                            .scaleY(hasFocus ? 1.02f : 1.0f)
+                            .setDuration(160)
+                            .start();
+                    if (hasFocus && sfx != null) {
+                        int sw = context.getResources().getDisplayMetrics().widthPixels;
+                        sfx.playFocus(v, sw, sLastNavDir);
+                    }
+                });
+            }
+            header.addView(crumb);
 
-        card.addView(header, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            LinearLayout timeRow = new LinearLayout(context);
+            timeRow.setOrientation(LinearLayout.HORIZONTAL);
+            timeRow.setGravity(Gravity.CENTER_VERTICAL);
+            timeRow.setPadding(dp(context, 4), 0, dp(context, 4), dp(context, 4));
+
+            TextClock clock = new TextClock(context);
+            clock.setFormat12Hour("h:mm a");
+            clock.setFormat24Hour("HH:mm");
+            clock.setTypeface(medium);
+            clock.setTextColor(0xFFFFFFFF);
+            clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 26));
+            timeRow.addView(clock);
+
+            TextView dateView = new TextView(context);
+            String dateText = new SimpleDateFormat("  ·  EEE, MMM d", Locale.getDefault()).format(new Date());
+            dateView.setText(dateText);
+            dateView.setTypeface(regular);
+            dateView.setTextColor(0xB8E2E8F0);
+            dateView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 13));
+            timeRow.addView(dateView);
+
+            header.addView(timeRow);
+        } else if (isCompact) {
+            LinearLayout compHeader = new LinearLayout(context);
+            compHeader.setOrientation(LinearLayout.HORIZONTAL);
+            compHeader.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView badge = new TextView(context);
+            badge.setText("QUICK SETTINGS");
+            badge.setTypeface(medium);
+            badge.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 11));
+            badge.setLetterSpacing(0.14f);
+            badge.setTextColor("adaptive".equals(qsStyle) ? 0xFF93C5FD : 0xFF7DD3FC);
+            compHeader.addView(badge, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            TextClock clock = new TextClock(context);
+            clock.setFormat12Hour("h:mm a");
+            clock.setFormat24Hour("HH:mm");
+            clock.setTypeface(medium);
+            clock.setTextColor(0xFFFFFFFF);
+            clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 18));
+            compHeader.addView(clock);
+
+            header.addView(compHeader);
+        } else {
+            LinearLayout stdHeader = new LinearLayout(context);
+            stdHeader.setOrientation(LinearLayout.HORIZONTAL);
+            stdHeader.setGravity(Gravity.CENTER_VERTICAL);
+
+            LinearLayout clockCol = new LinearLayout(context);
+            clockCol.setOrientation(LinearLayout.VERTICAL);
+
+            TextView badge = new TextView(context);
+            badge.setText(isExpanded ? "QUICK SETTINGS · CONTROL CENTER" : "QUICK SETTINGS");
+            badge.setTypeface(medium);
+            badge.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 11));
+            badge.setLetterSpacing(0.14f);
+            if ("adaptive".equals(qsStyle)) {
+                int ext = LiquidGlassRenderer.getExtractedOverlayColor();
+                float[] hsv = new float[3];
+                Color.colorToHSV(ext, hsv);
+                hsv[1] = Math.min(0.65f, hsv[1]);
+                hsv[2] = 0.96f;
+                badge.setTextColor(Color.HSVToColor(hsv));
+            } else {
+                badge.setTextColor(0xFF7DD3FC);
+            }
+            clockCol.addView(badge);
+
+            LinearLayout timeRow = new LinearLayout(context);
+            timeRow.setOrientation(LinearLayout.HORIZONTAL);
+            timeRow.setGravity(Gravity.BOTTOM);
+
+            TextClock clock = new TextClock(context);
+            clock.setFormat12Hour("h:mm a");
+            clock.setFormat24Hour("HH:mm");
+            clock.setTypeface(medium);
+            clock.setTextColor(0xFFFFFFFF);
+            clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 30));
+            timeRow.addView(clock);
+
+            TextView dateView = new TextView(context);
+            String dateText = new SimpleDateFormat("  ·  EEE, MMM d", Locale.getDefault()).format(new Date());
+            dateView.setText(dateText);
+            dateView.setTypeface(regular);
+            dateView.setTextColor(0xB8E2E8F0);
+            dateView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14));
+            LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            dateLp.bottomMargin = dp(context, 3);
+            timeRow.addView(dateView, dateLp);
+
+            LinearLayout.LayoutParams timeRowLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            timeRowLp.topMargin = dp(context, 2);
+            clockCol.addView(timeRow, timeRowLp);
+
+            stdHeader.addView(clockCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            header.addView(stdHeader);
+        }
 
         // Subtle crystal divider
         View divider = new View(context);
-        divider.setBackgroundColor(0x24FFFFFF);
+        divider.setBackgroundColor(0x33FFFFFF);
         LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(context, 1)));
-        divLp.topMargin = dp(context, 16);
-        divLp.bottomMargin = dp(context, 16);
-        card.addView(divider, divLp);
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(2, dp(context, 1)));
+        divLp.topMargin = dp(context, isCompact ? 10 : 12);
+        divLp.bottomMargin = dp(context, isCompact ? 8 : 10);
 
-        // Build the 8 Quick Settings Tiles in a 2x4 Bento Grid
+        // Build the Quick Settings Tiles
+        final Runnable safeClose = closeOverlay != null ? closeOverlay : () -> {};
         String wifiSubtitle = getWifiStatusSummary(context);
         List<TileSpec> specs = new ArrayList<>();
         specs.add(new TileSpec("settings", "All Settings", "System & device", 0xFF38BDF8, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchSystemSettings(context, Settings.ACTION_SETTINGS);
         }));
         specs.add(new TileSpec("sliders", "Picture & Sound", "TV Quick Menu", 0xFFA78BFA, () -> {
-            closeOverlay.run();
-            // Delay 80ms so our overlay detaches cleanly before TCL's ShowWindowService opens
+            safeClose.run();
             new Handler(Looper.getMainLooper()).postDelayed(() -> launchTclQuickMenuOrDisplay(context), 80);
         }));
         specs.add(new TileSpec("wifi", "Wi-Fi & Network", wifiSubtitle, 0xFF34D399, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchSystemSettings(context, Settings.ACTION_WIFI_SETTINGS, Settings.ACTION_WIRELESS_SETTINGS);
         }));
         specs.add(new TileSpec("bluetooth", "Bluetooth & Remote", "Accessories", 0xFF60A5FA, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchSystemSettings(context,
                     Settings.ACTION_BLUETOOTH_SETTINGS,
                     "com.google.android.tv.settings.ACCESSORIES",
                     Settings.ACTION_SETTINGS);
         }));
         specs.add(new TileSpec("display", "Display & Audio", "Screen & sound", 0xFFFBBF24, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchSystemSettings(context,
                     Settings.ACTION_DISPLAY_SETTINGS,
                     "android.settings.PICTURE_SETTINGS",
@@ -1307,93 +1532,236 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                     Settings.ACTION_SETTINGS);
         }));
         specs.add(new TileSpec("hdmi", "TV Inputs", "HDMI & sources", 0xFFF472B6, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchTvInputs(context);
         }));
         specs.add(new TileSpec("luma", "Luma Settings", "Themes & glass", 0xFF2DD4BF, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchLumaAction(context, EXTRA_OPEN_LUMA_SETTINGS);
         }));
         specs.add(new TileSpec("moon", "Screensaver", "Ambient clock", 0xFF818CF8, () -> {
-            closeOverlay.run();
+            safeClose.run();
             launchLumaAction(context, EXTRA_OPEN_SCREENSAVER);
         }));
+        if (isExpanded) {
+            specs.add(new TileSpec("power", "Sleep & Power", "TV standby & timer", 0xFFF87171, () -> {
+                safeClose.run();
+                launchSystemSettings(context, "android.settings.DATE_SETTINGS", Settings.ACTION_SETTINGS);
+            }));
+        }
 
-        int gap = dp(context, 12);
+        final boolean isCompactLayout = isCompact;
+        ScrollView scroll = new ScrollView(context) {
+            @Override
+            public void playSoundEffect(int soundConstant) {
+                // Suppress Android default sound effects
+            }
+
+            @Override
+            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                int mode = MeasureSpec.getMode(heightMeasureSpec);
+                if (mode != MeasureSpec.EXACTLY) {
+                    int screenH = getResources().getDisplayMetrics().heightPixels;
+                    int maxAllowedH = (isBlade && !previewMode) ? screenH : (screenH - dp(getContext(), 48));
+                    int reserved = dp(getContext(), isCompactLayout ? 135 : 155);
+                    int maxScrollH = Math.max(dp(getContext(), 180), maxAllowedH - reserved);
+                    int size = MeasureSpec.getSize(heightMeasureSpec);
+                    if (mode == MeasureSpec.UNSPECIFIED || size > maxScrollH) {
+                        heightMeasureSpec = MeasureSpec.makeMeasureSpec(maxScrollH, MeasureSpec.AT_MOST);
+                    }
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            }
+
+            @Override
+            protected int computeScrollDeltaToGetChildRectOnScreen(Rect rect) {
+                if (getChildCount() == 0 || rect == null) return 0;
+                int padding = dp(getContext(), 16);
+                Rect padded = new Rect(rect);
+                padded.top = Math.max(0, padded.top - padding);
+                padded.bottom = Math.min(getChildAt(0).getHeight(), padded.bottom + padding);
+                return super.computeScrollDeltaToGetChildRectOnScreen(padded);
+            }
+        };
+        scroll.setSoundEffectsEnabled(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setFillViewport(true);
+        scroll.setClipChildren(false);
+        scroll.setClipToPadding(false);
+
+        LinearLayout contentBox = new LinearLayout(context);
+        contentBox.setOrientation(LinearLayout.VERTICAL);
+        contentBox.setClipChildren(false);
+        contentBox.setClipToPadding(false);
+        contentBox.setPadding(dp(context, 4), dp(context, 2), dp(context, 4), dp(context, 16));
+
+        // Unpinned header and divider inside contentBox so the entire view scrolls naturally
+        contentBox.addView(header, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        contentBox.addView(divider, divLp);
+
         List<View> tileViews = new ArrayList<>();
-        for (int row = 0; row < 4; row++) {
-            LinearLayout rowLayout = new LinearLayout(context);
-            rowLayout.setOrientation(LinearLayout.HORIZONTAL);
-            rowLayout.setClipChildren(false);
-            rowLayout.setClipToPadding(false);
 
-            for (int col = 0; col < 2; col++) {
-                int idx = row * 2 + col;
-                TileSpec spec = specs.get(idx);
-                View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost);
+        if (isCompact) {
+            int[] compactIndices = {0, 1, 2, 5, 6, 7};
+            for (int i = 0; i < compactIndices.length; i++) {
+                TileSpec spec = specs.get(compactIndices[i]);
+                View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost, true, previewMode);
                 tile.setId(View.generateViewId());
                 tileViews.add(tile);
 
                 LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
-                        0, dp(context, 84), 1f);
-                if (col == 0) tileLp.rightMargin = gap / 2;
-                else tileLp.leftMargin = gap / 2;
-                rowLayout.addView(tile, tileLp);
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52));
+                if (i > 0) tileLp.topMargin = dp(context, 7);
+                contentBox.addView(tile, tileLp);
             }
+            for (int i = 0; i < tileViews.size(); i++) {
+                View v = tileViews.get(i);
+                v.setNextFocusLeftId(v.getId());
+                v.setNextFocusRightId(v.getId());
+                v.setNextFocusUpId(i > 0 ? tileViews.get(i - 1).getId() : v.getId());
+                v.setNextFocusDownId(i < tileViews.size() - 1 ? tileViews.get(i + 1).getId() : v.getId());
+            }
+        } else if (isBlade) {
+            for (int i = 0; i < specs.size() && i < 8; i++) {
+                TileSpec spec = specs.get(i);
+                View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost, true, previewMode);
+                tile.setId(View.generateViewId());
+                tileViews.add(tile);
 
-            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52));
+                if (i > 0) tileLp.topMargin = dp(context, 7);
+                contentBox.addView(tile, tileLp);
+            }
+            for (int i = 0; i < tileViews.size(); i++) {
+                View v = tileViews.get(i);
+                v.setNextFocusLeftId(v.getId());
+                v.setNextFocusRightId(v.getId());
+                v.setNextFocusUpId(i > 0 ? tileViews.get(i - 1).getId() : (previewMode ? v.getId() : crumbId));
+                v.setNextFocusDownId(i < tileViews.size() - 1 ? tileViews.get(i + 1).getId() : v.getId());
+            }
+            if (!tileViews.isEmpty() && !previewMode) {
+                View crumb = header.findViewById(crumbId);
+                if (crumb != null) {
+                    crumb.setNextFocusDownId(tileViews.get(0).getId());
+                }
+            }
+        } else if (isExpanded) {
+            int gap = dp(context, 10);
+            for (int row = 0; row < 3; row++) {
+                LinearLayout rowLayout = new LinearLayout(context);
+                rowLayout.setOrientation(LinearLayout.HORIZONTAL);
+                rowLayout.setClipChildren(false);
+                rowLayout.setClipToPadding(false);
+
+                for (int col = 0; col < 3; col++) {
+                    int idx = row * 3 + col;
+                    TileSpec spec = specs.get(idx);
+                    View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost, false, previewMode);
+                    tile.setId(View.generateViewId());
+                    tileViews.add(tile);
+
+                    LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
+                            0, dp(context, 80), 1f);
+                    if (col == 0) tileLp.rightMargin = gap / 2;
+                    else if (col == 1) { tileLp.leftMargin = gap / 2; tileLp.rightMargin = gap / 2; }
+                    else tileLp.leftMargin = gap / 2;
+                    rowLayout.addView(tile, tileLp);
+                }
+
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                if (row > 0) rowLp.topMargin = gap;
+                contentBox.addView(rowLayout, rowLp);
+            }
+            for (int i = 0; i < tileViews.size(); i++) {
+                int r = i / 3;
+                int c = i % 3;
+                View v = tileViews.get(i);
+                v.setNextFocusLeftId(c > 0 ? tileViews.get(i - 1).getId() : v.getId());
+                v.setNextFocusRightId(c < 2 ? tileViews.get(i + 1).getId() : v.getId());
+                v.setNextFocusUpId(r > 0 ? tileViews.get(i - 3).getId() : v.getId());
+                v.setNextFocusDownId(r < 2 ? tileViews.get(i + 3).getId() : v.getId());
+            }
+        } else {
+            int gap = dp(context, 12);
+            for (int row = 0; row < 4; row++) {
+                LinearLayout rowLayout = new LinearLayout(context);
+                rowLayout.setOrientation(LinearLayout.HORIZONTAL);
+                rowLayout.setClipChildren(false);
+                rowLayout.setClipToPadding(false);
+
+                for (int col = 0; col < 2; col++) {
+                    int idx = row * 2 + col;
+                    TileSpec spec = specs.get(idx);
+                    View tile = buildTileView(context, spec, sfx, regular, medium, qsStyle, qsFrost, false, previewMode);
+                    tile.setId(View.generateViewId());
+                    tileViews.add(tile);
+
+                    LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(
+                            0, dp(context, 84), 1f);
+                    if (col == 0) tileLp.rightMargin = gap / 2;
+                    else tileLp.leftMargin = gap / 2;
+                    rowLayout.addView(tile, tileLp);
+                }
+
+                LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                if (row > 0) rowLp.topMargin = gap;
+                contentBox.addView(rowLayout, rowLp);
+            }
+            for (int i = 0; i < tileViews.size(); i++) {
+                int r = i / 2;
+                int c = i % 2;
+                View v = tileViews.get(i);
+                v.setNextFocusLeftId(c == 1 ? tileViews.get(i - 1).getId() : v.getId());
+                v.setNextFocusRightId(c == 0 ? tileViews.get(i + 1).getId() : v.getId());
+                v.setNextFocusUpId(r > 0 ? tileViews.get(i - 2).getId() : v.getId());
+                v.setNextFocusDownId(r < 3 ? tileViews.get(i + 2).getId() : v.getId());
+            }
+        }
+
+        scroll.addView(contentBox, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout.LayoutParams scrollLp;
+        if (isBlade) {
+            scrollLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        } else {
+            scrollLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            if (row > 0) rowLp.topMargin = gap;
-            card.addView(rowLayout, rowLp);
         }
-
-        // Explicit D-Pad focus graph for crisp 2x4 grid navigation
-        for (int i = 0; i < tileViews.size(); i++) {
-            int r = i / 2;
-            int c = i % 2;
-            View v = tileViews.get(i);
-            v.setNextFocusLeftId(c == 1 ? tileViews.get(i - 1).getId() : v.getId());
-            v.setNextFocusRightId(c == 0 ? tileViews.get(i + 1).getId() : v.getId());
-            v.setNextFocusUpId(r > 0 ? tileViews.get(i - 2).getId() : v.getId());
-            v.setNextFocusDownId(r < 3 ? tileViews.get(i + 2).getId() : v.getId());
-        }
-
-        // Bottom hint bar
-        TextView footer = new TextView(context);
-        footer.setText("Press Settings or Back to close");
-        footer.setTypeface(regular);
-        footer.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 12));
-        footer.setTextColor(0x88CBD5E1);
-        footer.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams footerLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        footerLp.topMargin = dp(context, 16);
-        card.addView(footer, footerLp);
+        card.addView(scroll, scrollLp);
 
         scrim.addView(card, cardLp);
 
         QuickSettingsOverlayService svc = sInstance;
-        if (svc != null) {
+        if (svc != null && !previewMode) {
             svc.panelCard = card;
         }
 
-        // Entrance animation
-        card.setTranslationX(dp(context, 56));
-        card.setAlpha(0f);
-        card.animate()
-                .translationX(0f)
-                .alpha(1f)
-                .setDuration(230)
-                .setInterpolator(new OvershootInterpolator(0.85f))
-                .withEndAction(() -> {
-                    card.invalidate();
-                    for (View tv : tileViews) tv.invalidate();
-                })
-                .start();
+        if (!previewMode) {
+            // Entrance animation
+            float slideDist = isLeft ? -dp(context, 56) : dp(context, 56);
+            card.setTranslationX(slideDist);
+            card.setAlpha(0f);
+            card.animate()
+                    .translationX(0f)
+                    .alpha(1f)
+                    .setDuration(230)
+                    .setInterpolator(new OvershootInterpolator(0.85f))
+                    .withEndAction(() -> {
+                        card.invalidate();
+                        for (View tv : tileViews) tv.invalidate();
+                    })
+                    .start();
 
-        if (!tileViews.isEmpty()) {
-            final View firstTile = tileViews.get(0);
-            firstTile.post(firstTile::requestFocus);
+            if (!tileViews.isEmpty()) {
+                final View firstTile = tileViews.get(0);
+                firstTile.post(firstTile::requestFocus);
+            }
         }
 
         applyViewSoundPolicy(scrim);
@@ -1407,7 +1775,9 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             Typeface regular,
             Typeface medium,
             String qsStyle,
-            int qsFrost) {
+            int qsFrost,
+            boolean horizontal,
+            boolean previewMode) {
 
         LinearLayout tile = new LinearLayout(context) {
             @Override
@@ -1416,21 +1786,18 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             }
         };
         tile.setSoundEffectsEnabled(false);
-        tile.setOrientation(LinearLayout.VERTICAL);
-        tile.setGravity(Gravity.CENTER_VERTICAL);
-        tile.setFocusable(true);
-        tile.setFocusableInTouchMode(true);
-        tile.setClickable(true);
-        int padH = dp(context, 14);
-        int padV = dp(context, 11);
-        tile.setPadding(padH, padV, padH, padV);
+        if (previewMode) {
+            tile.setFocusable(false);
+            tile.setFocusableInTouchMode(false);
+            tile.setClickable(false);
+        } else {
+            tile.setFocusable(true);
+            tile.setFocusableInTouchMode(true);
+            tile.setClickable(true);
+        }
 
         TileGlassDrawable bg = new TileGlassDrawable(context, tile, spec.accentColor, qsStyle, qsFrost);
         tile.setBackground(bg);
-
-        LinearLayout topRow = new LinearLayout(context);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER_VERTICAL);
 
         View iconView = new View(context) {
             private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1441,63 +1808,136 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
                         tile.isFocused() ? 0xFFFFFFFF : spec.accentColor, iconPaint);
             }
         };
-        int iconSize = dp(context, 22);
-        topRow.addView(iconView, new LinearLayout.LayoutParams(iconSize, iconSize));
 
         TextView titleView = new TextView(context);
         titleView.setText(spec.title);
         titleView.setTypeface(medium);
         titleView.setSingleLine(true);
         titleView.setEllipsize(TextUtils.TruncateAt.END);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14.5f));
         titleView.setTextColor(0xFFF8FAFC);
-        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        titleLp.leftMargin = dp(context, 10);
-        topRow.addView(titleView, titleLp);
-
-        tile.addView(topRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView subView = new TextView(context);
         subView.setText(spec.subtitle);
         subView.setTypeface(regular);
         subView.setSingleLine(true);
         subView.setEllipsize(TextUtils.TruncateAt.END);
-        subView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 12f));
         subView.setTextColor(0xA6CBD5E1);
-        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subLp.topMargin = dp(context, 5);
-        tile.addView(subView, subLp);
 
-        tile.setOnFocusChangeListener((v, hasFocus) -> {
-            bg.setFocused(hasFocus);
-            iconView.invalidate();
-            titleView.setTextColor(hasFocus ? 0xFFFFFFFF : 0xFFF8FAFC);
-            subView.setTextColor(hasFocus ? 0xE6E2E8F0 : 0xA6CBD5E1);
-            v.animate().cancel();
-            v.animate()
-                    .scaleX(hasFocus ? 1.045f : 1.0f)
-                    .scaleY(hasFocus ? 1.045f : 1.0f)
-                    .setDuration(160)
-                    .setInterpolator(new OvershootInterpolator(1.1f))
-                    .start();
-            if (hasFocus && sfx != null) {
-                if (android.os.SystemClock.uptimeMillis() - sLastNavMs < 350L) {
-                    int sw = context.getResources().getDisplayMetrics().widthPixels;
-                    sfx.playFocus(v, sw, sLastNavDir);
+        if (horizontal) {
+            tile.setOrientation(LinearLayout.HORIZONTAL);
+            tile.setGravity(Gravity.CENTER_VERTICAL);
+            int padH = dp(context, 14);
+            int padV = dp(context, 10);
+            tile.setPadding(padH, padV, padH, padV);
+
+            int iconBoxSize = dp(context, 34);
+            int innerIconSize = dp(context, 20);
+            FrameLayout iconBox = new FrameLayout(context);
+            iconBox.setBackground(new Drawable() {
+                private final Paint boxP = new Paint(Paint.ANTI_ALIAS_FLAG);
+                @Override
+                public void draw(Canvas c) {
+                    boxP.setColor(tile.isFocused() ? 0x33FFFFFF : 0x16FFFFFF);
+                    float r = dp(context, 10);
+                    c.drawRoundRect(new RectF(0, 0, getBounds().width(), getBounds().height()), r, r, boxP);
+                    boxP.setColor(tile.isFocused() ? (spec.accentColor & 0x66FFFFFF) : 0x22FFFFFF);
+                    boxP.setStyle(Paint.Style.STROKE);
+                    boxP.setStrokeWidth(dp(context, 1));
+                    c.drawRoundRect(new RectF(0, 0, getBounds().width(), getBounds().height()), r, r, boxP);
+                    boxP.setStyle(Paint.Style.FILL);
                 }
-            }
-        });
+                @Override public void setAlpha(int a) {}
+                @Override public void setColorFilter(ColorFilter cf) {}
+                @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+            });
+            FrameLayout.LayoutParams ivLp = new FrameLayout.LayoutParams(
+                    innerIconSize, innerIconSize, Gravity.CENTER);
+            iconBox.addView(iconView, ivLp);
+            tile.addView(iconBox, new LinearLayout.LayoutParams(iconBoxSize, iconBoxSize));
 
-        tile.setOnClickListener(v -> {
-            if (sfx != null) {
-                int sw = context.getResources().getDisplayMetrics().widthPixels;
-                sfx.playSelect(v, sw);
-            }
-            if (spec.action != null) spec.action.run();
-        });
+            LinearLayout textCol = new LinearLayout(context);
+            textCol.setOrientation(LinearLayout.VERTICAL);
+            textCol.setGravity(Gravity.CENTER_VERTICAL);
+            titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14f));
+            textCol.addView(titleView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            subView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 11.5f));
+            LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            subLp.topMargin = dp(context, 2);
+            textCol.addView(subView, subLp);
+
+            LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            textLp.leftMargin = dp(context, 12);
+            textLp.rightMargin = dp(context, 8);
+            tile.addView(textCol, textLp);
+
+            TextView chevron = new TextView(context);
+            chevron.setText("›");
+            chevron.setTypeface(medium);
+            chevron.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 16));
+            chevron.setTextColor(0x55E2E8F0);
+            tile.addView(chevron, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            tile.setOrientation(LinearLayout.VERTICAL);
+            tile.setGravity(Gravity.CENTER_VERTICAL);
+            int padH = dp(context, 14);
+            int padV = dp(context, 11);
+            tile.setPadding(padH, padV, padH, padV);
+
+            LinearLayout topRow = new LinearLayout(context);
+            topRow.setOrientation(LinearLayout.HORIZONTAL);
+            topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            int iconSize = dp(context, 22);
+            topRow.addView(iconView, new LinearLayout.LayoutParams(iconSize, iconSize));
+
+            titleView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 14.5f));
+            LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            titleLp.leftMargin = dp(context, 10);
+            topRow.addView(titleView, titleLp);
+
+            tile.addView(topRow, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            subView.setTextSize(TypedValue.COMPLEX_UNIT_PX, dp(context, 12f));
+            LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            subLp.topMargin = dp(context, 5);
+            tile.addView(subView, subLp);
+        }
+
+        if (!previewMode) {
+            tile.setOnFocusChangeListener((v, hasFocus) -> {
+                bg.setFocused(hasFocus);
+                iconView.invalidate();
+                titleView.setTextColor(hasFocus ? 0xFFFFFFFF : 0xFFF8FAFC);
+                subView.setTextColor(hasFocus ? 0xE6E2E8F0 : 0xA6CBD5E1);
+                v.setTranslationZ(hasFocus ? dp(context, 6) : 0f);
+                float targetScale = hasFocus ? (horizontal ? 1.018f : 1.025f) : 1.0f;
+                v.animate().cancel();
+                v.animate()
+                        .scaleX(targetScale)
+                        .scaleY(targetScale)
+                        .setDuration(160)
+                        .setInterpolator(new OvershootInterpolator(1.04f))
+                        .start();
+                if (hasFocus && sfx != null) {
+                    if (android.os.SystemClock.uptimeMillis() - sLastNavMs < 350L) {
+                        int sw = context.getResources().getDisplayMetrics().widthPixels;
+                        sfx.playFocus(v, sw, sLastNavDir);
+                    }
+                }
+            });
+
+            tile.setOnClickListener(v -> {
+                if (sfx != null) {
+                    int sw = context.getResources().getDisplayMetrics().widthPixels;
+                    sfx.playSelect(v, sw);
+                }
+                if (spec.action != null) spec.action.run();
+            });
+        }
 
         return tile;
     }
@@ -1577,6 +2017,10 @@ public final class QuickSettingsOverlayService extends AccessibilityService {
             star.quadTo(cx, cy, cx, cy - r);
             star.close();
             c.drawPath(star, p);
+        } else if ("power".equals(type)) {
+            RectF arc = new RectF(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f);
+            c.drawArc(arc, -60f, 300f, false, p);
+            c.drawLine(cx, cy - r * 0.95f, cx, cy - r * 0.1f, p);
         } else {
             // Moon / Screensaver
             c.drawArc(new RectF(cx - r * 0.85f, cy - r * 0.85f, cx + r * 0.85f, cy + r * 0.85f),
