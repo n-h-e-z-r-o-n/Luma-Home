@@ -192,5 +192,11 @@ final class ImageLoader {
         return bitmap;
     }
 
+    void trimMemory() {
+        if (cache != null) {
+            cache.trimToSize(cache.maxSize() / 2);
+        }
+    }
+
     void close() { closed = true; workers.shutdownNow(); cache.evictAll(); }
 }

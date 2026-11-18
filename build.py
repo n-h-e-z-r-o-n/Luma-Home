@@ -97,7 +97,7 @@ def main():
     compiled_resources = build / "resources.zip"
     run([aapt, "compile", "--dir", ROOT / "res", "-o", compiled_resources])
     base = build / "base.apk"
-    link = [aapt, "link", "-o", base, "-I", jar, "-A", legal,
+    link = [aapt, "link", "-o", base, "-I", jar, "-A", legal, "--auto-add-overlay",
             "--manifest", ROOT / "AndroidManifest.xml", "--min-sdk-version", "21", "--target-sdk-version", "34", "-R", compiled_resources]
     if args.debug:
         link.append("--debug-mode")

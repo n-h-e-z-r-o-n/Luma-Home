@@ -22,7 +22,12 @@ final class LauncherStore {
         return raw.isEmpty() ? new ArrayList<>() : new ArrayList<>(Arrays.asList(raw.split(",")));
     }
     void list(String key, List<String> values) { set(key, android.text.TextUtils.join(",", values)); }
+    int launchCount(String pkg) { return prefs.getInt("launch_count." + pkg, 0); }
+    void recordLaunch(String pkg) {
+        prefs.edit().putInt("launch_count." + pkg, launchCount(pkg) + 1).apply();
+    }
     void recent(String pkg) {
+        recordLaunch(pkg);
         if (!flag("recents", true)) return;
         List<String> list = list("recent_apps"); list.remove(pkg); list.add(0, pkg);
         while (list.size() > 12) list.remove(list.size() - 1);

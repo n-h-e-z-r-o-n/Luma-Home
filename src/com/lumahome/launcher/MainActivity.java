@@ -145,6 +145,8 @@ public final class MainActivity extends Activity {
     private android.animation.ValueAnimator drawerSearchAnimator;
     private int drawerScrollTarget = -1;
     private android.animation.ValueAnimator drawerScrollAnimator;
+    private int homeScrollTarget = -1;
+    private android.animation.ValueAnimator homeScrollAnimator;
     private UiSoundEngine sfx;
     private long lastUserNavMs;
     private int lastUserNavDir=1;
@@ -214,6 +216,8 @@ public final class MainActivity extends Activity {
             regular=getResources().getFont(getResources().getIdentifier("outfit_regular","font",getPackageName()));
             medium=getResources().getFont(getResources().getIdentifier("outfit_medium","font",getPackageName()));
         }
+        getWindow().setBackgroundDrawable(new ColorDrawable(0xFF000000));
+        getWindow().setFormat(PixelFormat.OPAQUE);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         store=new LauncherStore(this); sfx=new UiSoundEngine(this,store); catalog=new AppCatalog(this); BillingManager.get(this,store);
         images=new ImageLoader(this); recommendations=new RecommendationRepository(this); weatherService=new WeatherService();
@@ -246,8 +250,36 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
-        dismissIdleClock(); closeBlade(); drawer=false; search=""; moving=""; refreshApps(); render();
+        dismissIdleClock();
+        closeBlade();
+        stopQuickSettingsStagePreview();
+        boolean needsRender = (root == null || dirty);
+        if (drawer) {
+            drawer = false;
+            search = "";
+            needsRender = true;
+        }
+        moving = "";
+        if (needsRender) {
+            refreshApps();
+            dirty = false;
+            render();
+        } else {
+            if (homeScroll != null) {
+                homeScroll.scrollTo(0, 0);
+            }
+            View restore = views.get(lastFocus);
+            if (restore != null && restore.isAttachedToWindow()) {
+                restore.requestFocus();
+            }
+        }
         applyIntent(intent);
+    }
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_MODERATE && images != null) {
+            images.trimMemory();
+        }
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putString("imageTarget",imageTarget); state.putBoolean("drawer",drawer);
@@ -430,10 +462,44 @@ public final class MainActivity extends Activity {
         if (!moving.isEmpty()) { if(sfx!=null)sfx.playBack(); moving=""; render(); return; }
         if (drawer) { if(sfx!=null)sfx.playBack(); switchLauncherPage(false); }
     }
+    private void sortAppsList(List<AppCatalog.App> list) {
+        if (list == null || list.isEmpty()) return;
+        String mode = store.value("drawer_sort", "alpha");
+        if ("frequent".equals(mode)) {
+            Collections.sort(list, (a, b) -> {
+                int ca = store.launchCount(a.pkg);
+                int cb = store.launchCount(b.pkg);
+                if (cb != ca) return Integer.compare(cb, ca);
+                return name(a.pkg).compareToIgnoreCase(name(b.pkg));
+            });
+        } else if ("recent".equals(mode)) {
+            List<String> recents = store.list("recent_apps");
+            Collections.sort(list, (a, b) -> {
+                int ia = recents.indexOf(a.pkg);
+                int ib = recents.indexOf(b.pkg);
+                if (ia >= 0 && ib >= 0) return Integer.compare(ia, ib);
+                if (ia >= 0) return -1;
+                if (ib >= 0) return 1;
+                return name(a.pkg).compareToIgnoreCase(name(b.pkg));
+            });
+        } else if ("custom".equals(mode)) {
+            List<String> custom = store.list("custom_drawer_order");
+            Collections.sort(list, (a, b) -> {
+                int ia = custom.indexOf(a.pkg);
+                int ib = custom.indexOf(b.pkg);
+                if (ia >= 0 && ib >= 0) return Integer.compare(ia, ib);
+                if (ia >= 0) return -1;
+                if (ib >= 0) return 1;
+                return name(a.pkg).compareToIgnoreCase(name(b.pkg));
+            });
+        } else {
+            Collections.sort(list, (a, b) -> name(a.pkg).compareToIgnoreCase(name(b.pkg)));
+        }
+    }
     private void refreshApps() {
         apps=catalog.all(); byPackage.clear();
         for (AppCatalog.App app:apps) byPackage.put(app.pkg,app);
-        Collections.sort(apps,(a,b)->name(a.pkg).compareToIgnoreCase(name(b.pkg)));
+        sortAppsList(apps);
         syncFavorites();
     }
     private void initializeFavorites() {
@@ -450,9 +516,9 @@ public final class MainActivity extends Activity {
     }
     private void syncFavorites() {
         if (store==null || apps.isEmpty() || !store.flag("favorites_initialized") || store.flag("favorites_custom_only")) return;
-        List<String> current=store.list("favorites"), removed=store.list("removed_favorites"), updated=new ArrayList<>();
-        for (String pkg:current) if (byPackage.containsKey(pkg) && !removed.contains(pkg) && !updated.contains(pkg)) updated.add(pkg);
-        for (AppCatalog.App app:apps) if (!utility(app.pkg) && !removed.contains(app.pkg) && !updated.contains(app.pkg)) updated.add(app.pkg);
+        List<String> current=store.list("favorites"), removed=store.list("removed_favorites"), hidden=store.list("hidden_apps"), updated=new ArrayList<>();
+        for (String pkg:current) if (byPackage.containsKey(pkg) && !removed.contains(pkg) && !hidden.contains(pkg) && !updated.contains(pkg)) updated.add(pkg);
+        for (AppCatalog.App app:apps) if (!utility(app.pkg) && !removed.contains(app.pkg) && !hidden.contains(app.pkg) && !updated.contains(app.pkg)) updated.add(app.pkg);
         if (!updated.equals(current)) store.list("favorites",updated);
     }
     private void applyIntent(Intent intent) {
@@ -506,9 +572,42 @@ public final class MainActivity extends Activity {
         store.list("favorites",favorites); store.setFlag("favorites_initialized",true); store.setFlag("favorites_custom_only",true);
     }
     private List<String> favorites() {
-        List<String> result=new ArrayList<>(), removed=store.list("removed_favorites");
-        for (String pkg:store.list("favorites")) if (byPackage.containsKey(pkg) && !removed.contains(pkg) && !result.contains(pkg)) result.add(pkg);
+        List<String> result=new ArrayList<>(), removed=store.list("removed_favorites"), hidden=store.list("hidden_apps");
+        for (String pkg:store.list("favorites")) if (byPackage.containsKey(pkg) && !removed.contains(pkg) && !hidden.contains(pkg) && !result.contains(pkg)) result.add(pkg);
         return result;
+    }
+    private String getAppCategory(String pkg) {
+        String custom = store.value("category." + pkg, "");
+        if (!custom.isEmpty()) return custom;
+        if (utility(pkg)) return "TV Utilities";
+        String lower = pkg.toLowerCase(Locale.ROOT);
+        if (lower.contains("youtube") || lower.contains("stream") || lower.contains("netflix") ||
+            lower.contains("vision") || lower.contains("media") || lower.contains("video") ||
+            lower.contains("plex") || lower.contains("kodi") || lower.contains("jellyfin")) {
+            return "Streaming";
+        }
+        if (lower.contains("game") || lower.contains("retro") || lower.contains("play")) {
+            return "Gaming";
+        }
+        return "Apps";
+    }
+    private boolean isHomeGrid() {
+        String layout = store.value("home_layout", "single");
+        return "grid".equals(layout) || "two_rows".equals(layout);
+    }
+    private String homeLayoutSummary() {
+        return (isHomeGrid() ? "Grid dock" : "Single-row dock") + (store.flag("group_utilities", true) ? " · Utilities" : "");
+    }
+    private String drawerLayoutSummary() {
+        String drawerSort = store.value("drawer_sort", "alpha");
+        String sortLabel = "frequent".equals(drawerSort) ? "Most used" :
+                           "recent".equals(drawerSort) ? "Recent" :
+                           "custom".equals(drawerSort) ? "Custom" : "A–Z";
+        int hidden = store.list("hidden_apps").size();
+        return sortLabel + " · " + columns() + " cols" + (hidden > 0 ? " · " + hidden + " hidden" : "");
+    }
+    private String appLayoutSummary() {
+        return homeLayoutSummary() + " | " + drawerLayoutSummary();
     }
     private String name(String pkg) {
         AppCatalog.App app=byPackage.get(pkg);
@@ -2278,7 +2377,8 @@ public final class MainActivity extends Activity {
         views.clear(); appViews.clear(); appRows.clear(); dockViews.clear(); contentViews.clear(); contentRows.clear(); topPillViews.clear();
         focusedFavorite=null;
         if(drawerScrollAnimator!=null) { drawerScrollAnimator.cancel(); drawerScrollAnimator=null; }
-        drawerScrollTarget=-1; drawerScroll=null; homeScroll=null; homePage=null; drawerPage=null; recentSection=null;
+        if(homeScrollAnimator!=null) { homeScrollAnimator.cancel(); homeScrollAnimator=null; }
+        drawerScrollTarget=-1; homeScrollTarget=-1; drawerScroll=null; homeScroll=null; homePage=null; drawerPage=null; recentSection=null;
 
         if (drawer) renderDrawer(); else renderHome();
         if (drawer||store.flag("show_dock",true)) buildDock();
@@ -2448,7 +2548,7 @@ public final class MainActivity extends Activity {
         refreshWallpaperPalette();
         final String desiredFocus=lastFocus;
         serial++; views.clear(); appViews.clear();appRows.clear(); dockViews.clear(); contentViews.clear();contentRows.clear(); topPillViews.clear(); iconGlassViews.clear();
-        focusedFavorite=null; if(drawerScrollAnimator!=null){drawerScrollAnimator.cancel();drawerScrollAnimator=null;}drawerScrollTarget=-1;drawerScroll=null;homeScroll=null;homePage=null;drawerPage=null;recentSection=null;
+        focusedFavorite=null; if(drawerScrollAnimator!=null){drawerScrollAnimator.cancel();drawerScrollAnimator=null;}if(homeScrollAnimator!=null){homeScrollAnimator.cancel();homeScrollAnimator=null;}drawerScrollTarget=-1;homeScrollTarget=-1;drawerScroll=null;homeScroll=null;homePage=null;drawerPage=null;recentSection=null;
         screenWidth=getResources().getDisplayMetrics().widthPixels;
         screenHeight=getResources().getDisplayMetrics().heightPixels;
         scale=Math.min(screenWidth/1920f,screenHeight/1080f);
@@ -2904,7 +3004,7 @@ public final class MainActivity extends Activity {
     private void renderHome() {
         homeScroll=scroll();content.addView(homeScroll,new FrameLayout.LayoutParams(-1,-1));
         homePage=new LinearLayout(this);homePage.setOrientation(LinearLayout.VERTICAL);
-        homePage.setPadding(px(96),px(36),px(96),px(96));homePage.setClipChildren(false);homePage.setClipToPadding(false);
+        homePage.setPadding(px(96),px(36),px(96),px(200));homePage.setClipChildren(false);homePage.setClipToPadding(false);
         homeScroll.addView(homePage,new ScrollView.LayoutParams(-1,-2));
         header=new FrameLayout(this);
         LinearLayout.LayoutParams headerParams=new LinearLayout.LayoutParams(screenWidth,px(330));headerParams.topMargin=-px(36);headerParams.leftMargin=-px(96);headerParams.rightMargin=-px(96);
@@ -2913,46 +3013,90 @@ public final class MainActivity extends Activity {
         FrameLayout heading=new FrameLayout(this);
         TextView title=text("Home",38,foreground()); title.setTypeface(medium);
         heading.addView(title,at(0,0,px(500),px(52)));
-        TextView hint=text(moving.isEmpty()?"":"",21,muted());
+        boolean isGrid=isHomeGrid();
+        String moveHintText=isGrid?"◀ ⬥ ▶ ⬥ ▲ ⬥ ▼ Move tile · OK or Back to place":"◀ ⬥ ▶ Move tile · OK or Back to place";
+        TextView hint=text(!moving.isEmpty()?moveHintText:"",21,!moving.isEmpty()?accent():muted());
+        hint.setTypeface(medium);
         hint.setGravity(Gravity.RIGHT|Gravity.CENTER_VERTICAL);
         heading.addView(hint,at(px(480),px(5),innerWidth()-px(480),px(44)));
         LinearLayout.LayoutParams headingParams=new LinearLayout.LayoutParams(-1,px(64));headingParams.topMargin=px(184);
         homePage.addView(heading,headingParams);
         List<String> favorite=favorites();
-        HorizontalScrollView appsScroll=new HorizontalScrollView(this) {
-            @Override public void playSoundEffect(int soundConstant) {
-                if(muteSystem()) return;
-                super.playSoundEffect(soundConstant);
+        if(!isGrid) {
+            HorizontalScrollView appsScroll=new HorizontalScrollView(this) {
+                @Override public void playSoundEffect(int soundConstant) {
+                    if(muteSystem()) return;
+                    super.playSoundEffect(soundConstant);
+                }
+                @Override protected void onScrollChanged(int l,int t,int oldl,int oldt) {
+                    super.onScrollChanged(l,t,oldl,oldt);
+                    if(l!=oldl && glassRefractionEnabled()) refreshIconGlassSurfaces();
+                }
+            };
+            appsScroll.setSoundEffectsEnabled(!muteSystem());
+            appsScroll.setHorizontalScrollBarEnabled(false);
+            appsScroll.setClipChildren(false);appsScroll.setClipToPadding(false);appsScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            int rowTopPad=Math.max(px(82),px(glowRadiusSetting()+34));
+            int rowBotPad=Math.max(px(44),px(glowRadiusSetting()-6));
+            int baseIconSize=px(columns()==4?176:columns()==8?112:144);
+            float sizeScale=iconSizeScale();
+            int iconSize=Math.round(baseIconSize*sizeScale);
+            int iconSpacing=px(52);
+            LinearLayout appsRow=new LinearLayout(this);appsRow.setClipChildren(false);appsRow.setClipToPadding(false);
+            appsRow.setPadding(px(88),rowTopPad,px(88),rowBotPad);
+            List<View> navigationRow=new ArrayList<>();appRows.add(navigationRow);
+            for(int i=0;i<favorite.size();i++) {
+                View tile=appTile(favorite.get(i),iconSize,iconSize,false);
+                LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
+                if(i+1<favorite.size())tileParams.rightMargin=iconSpacing;
+                appsRow.addView(tile,tileParams);appViews.add(tile);navigationRow.add(tile);
             }
-            @Override protected void onScrollChanged(int l,int t,int oldl,int oldt) {
-                super.onScrollChanged(l,t,oldl,oldt);
-                if(l!=oldl && glassRefractionEnabled()) refreshIconGlassSurfaces();
+            homeSpringStage=new SpringStage(appsRow,true);
+            appsScroll.addView(homeSpringStage.host);
+            LinearLayout.LayoutParams appsParams=new LinearLayout.LayoutParams(screenWidth,-2);
+            appsParams.leftMargin=-px(96);appsParams.rightMargin=-px(96);
+            appsParams.topMargin=px(40)-rowTopPad;appsParams.bottomMargin=px(18)-rowBotPad;
+            homePage.addView(appsScroll,appsParams);
+        } else {
+            int count=columns();
+            int width=innerWidth();
+            int baseIconSize=px(count==4?168:count==8?104:136);
+            float sizeScale=iconSizeScale();
+            int iconSize=Math.round(baseIconSize*sizeScale);
+            int totalTilesWidth=count*iconSize;
+            int gap=count>1?Math.max(px(16),(width-totalTilesWidth)/(count-1)):px(32);
+            LinearLayout gridBox=new LinearLayout(this);
+            gridBox.setOrientation(LinearLayout.VERTICAL);
+            gridBox.setClipChildren(false);gridBox.setClipToPadding(false);
+            int gridTopPad=Math.max(px(48),px(glowRadiusSetting()+20));
+            int gridBotPad=Math.max(px(24),px(glowRadiusSetting()));
+            gridBox.setPadding(0,gridTopPad,0,gridBotPad);
+            LinearLayout currentRow=null;
+            List<View> currentNav=null;
+            for(int i=0;i<favorite.size();i++) {
+                if(i%count==0) {
+                    currentRow=new LinearLayout(this);
+                    currentRow.setOrientation(LinearLayout.HORIZONTAL);
+                    currentRow.setClipChildren(false);currentRow.setClipToPadding(false);
+                    LinearLayout.LayoutParams rlp=new LinearLayout.LayoutParams(-1,iconSize+px(58));
+                    if(i>0) rlp.topMargin=px(28);
+                    gridBox.addView(currentRow,rlp);
+                    currentNav=new ArrayList<>();
+                    appRows.add(currentNav);
+                }
+                View tile=appTile(favorite.get(i),iconSize,iconSize,false);
+                LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
+                if(i%count!=count-1) tileParams.rightMargin=gap;
+                currentRow.addView(tile,tileParams);
+                appViews.add(tile);
+                currentNav.add(tile);
             }
-        };
-        appsScroll.setSoundEffectsEnabled(!muteSystem());
-        appsScroll.setHorizontalScrollBarEnabled(false);
-        appsScroll.setClipChildren(false);appsScroll.setClipToPadding(false);appsScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        LinearLayout appsRow=new LinearLayout(this);appsRow.setClipChildren(false);appsRow.setClipToPadding(false);
-        int rowTopPad=Math.max(px(82),px(glowRadiusSetting()+34));
-        int rowBotPad=Math.max(px(44),px(glowRadiusSetting()-6));
-        appsRow.setPadding(px(88),rowTopPad,px(88),rowBotPad);
-        List<View> navigationRow=new ArrayList<>();appRows.add(navigationRow);
-        int baseIconSize=px(columns()==4?176:columns()==8?112:144);
-        float sizeScale=iconSizeScale();
-        int iconSize=Math.round(baseIconSize*sizeScale);
-        int iconSpacing=px(52);
-        for(int i=0;i<favorite.size();i++) {
-            View tile=appTile(favorite.get(i),iconSize,iconSize,false);
-            LinearLayout.LayoutParams tileParams=new LinearLayout.LayoutParams(iconSize,iconSize+px(58));
-            if(i+1<favorite.size())tileParams.rightMargin=iconSpacing;
-            appsRow.addView(tile,tileParams);appViews.add(tile);navigationRow.add(tile);
+            homeSpringStage=new SpringStage(gridBox,true);
+            LinearLayout.LayoutParams gridParams=new LinearLayout.LayoutParams(-1,-2);
+            gridParams.topMargin=px(16)-gridTopPad;
+            gridParams.bottomMargin=px(16);
+            homePage.addView(homeSpringStage.host,gridParams);
         }
-        homeSpringStage=new SpringStage(appsRow,true);
-        appsScroll.addView(homeSpringStage.host);
-        LinearLayout.LayoutParams appsParams=new LinearLayout.LayoutParams(screenWidth,-2);
-        appsParams.leftMargin=-px(96);appsParams.rightMargin=-px(96);
-        appsParams.topMargin=px(40)-rowTopPad;appsParams.bottomMargin=px(18)-rowBotPad;
-        homePage.addView(appsScroll,appsParams);
         if (favorite.isEmpty()) {
             TextView empty=text("Your home, your choices.\nOpen All Apps and hold OK to add an app to Home.",28,muted());
             empty.setGravity(Gravity.CENTER);homePage.addView(empty,new LinearLayout.LayoutParams(-1,px(190)));
@@ -3003,7 +3147,7 @@ public final class MainActivity extends Activity {
             icon.setImageDrawable(new LineIcon(iconOps,has?accent():0xEAFFFFFF));
             tv.setTextColor(has?foreground():0xEAFFFFFF);
             pill.animate().scaleX(has&&!instantFocus()?1.06f:1f).scaleY(has&&!instantFocus()?1.06f:1f).translationZ(has?px(14):0).setDuration(focusDuration(130)).start();
-            if(has){lastFocus=key;if(!drawer&&homeScroll!=null)homeScroll.post(()->homeScroll.smoothScrollTo(0,0));}
+            if(has){lastFocus=key;if(!drawer&&homeScroll!=null)glideHomeScrollTo(0);}
         });
         pill.setOnClickListener(v->{
             if(sfx!=null && !"pill.settings".equals(key) && !"pill.inputs".equals(key)) sfx.playSelect(v,screenWidth);
@@ -3135,7 +3279,7 @@ public final class MainActivity extends Activity {
     private void resizeHero(boolean expanded) {
         if(header==null||heroPanel==null)return;
         header.getLayoutParams().height=heroHeight(expanded);header.requestLayout();
-        if(expanded&&homeScroll!=null)homeScroll.post(()->homeScroll.smoothScrollTo(0,0));
+        if(expanded&&homeScroll!=null)glideHomeScrollTo(0);
         if(!expanded)stopHeroVideo();
     }
     private void rotateHero() {
@@ -3270,7 +3414,7 @@ public final class MainActivity extends Activity {
         ScrollView page=scroll();drawerScroll=page;page.setClipChildren(false);page.setClipToPadding(false);
         content.addView(page,new FrameLayout.LayoutParams(-1,-1));
         drawerPage=new LinearLayout(this);drawerPage.setOrientation(LinearLayout.VERTICAL);
-        drawerPage.setPadding(px(96),px(36),px(96),px(120));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
+        drawerPage.setPadding(px(96),px(36),px(96),px(180));drawerPage.setClipChildren(false);drawerPage.setClipToPadding(false);
         page.addView(drawerPage,new ScrollView.LayoutParams(-1,-2));
         topPillViews.clear();
 
@@ -3405,7 +3549,8 @@ public final class MainActivity extends Activity {
         drawerFocusTitle.setTypeface(regular);drawerFocusTitle.setLetterSpacing(-0.02f);
         drawerFocusTitle.setSingleLine(true);drawerFocusTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams titleParams=new LinearLayout.LayoutParams(-1,px(76));
-        titleParams.topMargin=Math.max(px(320),screenHeight-px(600));titleParams.bottomMargin=px(12);
+        boolean hasRecents=!recentsForTitle.isEmpty();
+        titleParams.topMargin=hasRecents?px(70):px(140);titleParams.bottomMargin=px(12);
         drawerPage.addView(drawerFocusTitle,titleParams);
 
         FrameLayout grid=new FrameLayout(this);grid.setClipChildren(false);grid.setClipToPadding(false);drawerPage.addView(grid,new LinearLayout.LayoutParams(-1,-2));
@@ -3468,30 +3613,62 @@ public final class MainActivity extends Activity {
     }
     private void populateDrawer(FrameLayout grid,EditText searchView) {
         List<String> visible=new ArrayList<>(); String query=search.toLowerCase(Locale.ROOT).trim();
-        for (AppCatalog.App app:apps) if (name(app.pkg).toLowerCase(Locale.ROOT).contains(query) || app.originalName.toLowerCase(Locale.ROOT).contains(query)) visible.add(app.pkg);
+        List<String> hidden=store.list("hidden_apps");
+        for (AppCatalog.App app:apps) {
+            if(hidden.contains(app.pkg)) continue;
+            if (name(app.pkg).toLowerCase(Locale.ROOT).contains(query) || app.originalName.toLowerCase(Locale.ROOT).contains(query)) visible.add(app.pkg);
+        }
         appViews.clear();appRows.clear();iconGlassViews.clear();grid.removeAllViews();
         if(drawerSpringStage!=null){drawerSpringStage.stop();drawerSpringStage=null;}
         if(recentSpringStage!=null){recentSpringStage.stop();recentSpringStage=null;}
         recentSection=null;
+        if(!moving.isEmpty() && drawerFocusTitle!=null) {
+            drawerFocusTitle.setText("Moving: "+name(moving)+" · D-Pad to move · OK to place");
+            drawerFocusTitle.setTextColor(accent());
+        }
         LinearLayout groups=new LinearLayout(this);groups.setOrientation(LinearLayout.VERTICAL);
         groups.setClipChildren(false);groups.setClipToPadding(false);
         if(query.isEmpty()) {
             View historyDock=buildDrawerRecentDock();
             if(historyDock!=null) {
                 LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2);
-                hp.bottomMargin=px(120);
+                hp.bottomMargin=px(64);
                 groups.addView(historyDock,hp);
             }
         }
-        List<String> regular=new ArrayList<>(),utilities=new ArrayList<>();
-        for(String pkg:visible) {
-            if(store.flag("group_utilities",true)&&utility(pkg))utilities.add(pkg);else regular.add(pkg);
-        }
-        if(!regular.isEmpty())groups.addView(gridRows(regular,true),new LinearLayout.LayoutParams(-1,-2));
-        if(!utilities.isEmpty()) {
-            TextView label=text("TV utilities",26,muted());
-            LinearLayout.LayoutParams heading=new LinearLayout.LayoutParams(-1,px(46));heading.topMargin=regular.isEmpty()?0:px(56);heading.bottomMargin=px(20);
-            groups.addView(label,heading);groups.addView(gridRows(utilities,true),new LinearLayout.LayoutParams(-1,-2));
+        if (store.flag("group_by_category", false)) {
+            java.util.LinkedHashMap<String, List<String>> catMap = new java.util.LinkedHashMap<>();
+            catMap.put("Streaming", new ArrayList<>());
+            catMap.put("Gaming", new ArrayList<>());
+            catMap.put("Apps", new ArrayList<>());
+            catMap.put("TV Utilities", new ArrayList<>());
+            for (String pkg : visible) {
+                String cat = getAppCategory(pkg);
+                if (!catMap.containsKey(cat)) catMap.put(cat, new ArrayList<>());
+                catMap.get(cat).add(pkg);
+            }
+            boolean firstSection = true;
+            for (java.util.Map.Entry<String, List<String>> entry : catMap.entrySet()) {
+                if (entry.getValue().isEmpty()) continue;
+                TextView label = text(entry.getKey(), 26, muted());
+                LinearLayout.LayoutParams heading = new LinearLayout.LayoutParams(-1, px(46));
+                heading.topMargin = firstSection ? 0 : px(56);
+                heading.bottomMargin = px(20);
+                groups.addView(label, heading);
+                groups.addView(gridRows(entry.getValue(), true), new LinearLayout.LayoutParams(-1, -2));
+                firstSection = false;
+            }
+        } else {
+            List<String> regular=new ArrayList<>(),utilities=new ArrayList<>();
+            for(String pkg:visible) {
+                if(store.flag("group_utilities",true)&&utility(pkg))utilities.add(pkg);else regular.add(pkg);
+            }
+            if(!regular.isEmpty())groups.addView(gridRows(regular,true),new LinearLayout.LayoutParams(-1,-2));
+            if(!utilities.isEmpty()) {
+                TextView label=text("TV utilities",26,muted());
+                LinearLayout.LayoutParams heading=new LinearLayout.LayoutParams(-1,px(46));heading.topMargin=regular.isEmpty()?0:px(56);heading.bottomMargin=px(20);
+                groups.addView(label,heading);groups.addView(gridRows(utilities,true),new LinearLayout.LayoutParams(-1,-2));
+            }
         }
         drawerSpringStage=new SpringStage(groups,false);
         grid.addView(drawerSpringStage.host,new FrameLayout.LayoutParams(-1,-2));
@@ -3511,23 +3688,16 @@ public final class MainActivity extends Activity {
     }
     private LinearLayout gridRows(List<String> packages,boolean allApps) {
         LinearLayout rows=new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setClipChildren(false);rows.setClipToPadding(false);rows.setPadding(0,px(16),0,px(24));
-        int width=allApps?drawerWidth():innerWidth(), count=allApps?4:columns();
-        int tileWidth;
-        int gap;
-        if(allApps){
-            tileWidth=px(400);
-            gap=count>1?(width-count*tileWidth)/(count-1):px(42);
-        } else {
-            gap=px(36);
-            tileWidth=(width-gap*(count-1))/count;
-        }
+        int width=allApps?drawerWidth():innerWidth(), count=columns();
+        int gap=px(count==8?20:count==6?28:36);
+        int tileWidth=Math.max(px(140),(width-gap*(count-1))/count);
         int tileHeight=Math.round(tileWidth*9f/16f);
         LinearLayout row=null;
         List<View> navigationRow=null;
         for (int i=0;i<packages.size();i++) {
             if (i%count==0) {
                 row=new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL);row.setClipChildren(false);row.setClipToPadding(false);
-                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,tileHeight+px(58)); lp.bottomMargin=px(56); rows.addView(row,lp);
+                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,tileHeight+px(58)); lp.bottomMargin=px(count==8?36:count==6?46:56); rows.addView(row,lp);
                 navigationRow=new ArrayList<>();appRows.add(navigationRow);
             }
             View tile=appTile(packages.get(i),tileWidth,tileHeight,allApps);
@@ -4173,7 +4343,15 @@ public final class MainActivity extends Activity {
                     liveBevel.draw(canvas);
                 }
                 super.dispatchDraw(canvas);
-                if(tile.isFocused() && !springFocusActive()) {
+                if(!moving.isEmpty() && moving.equals(pkg)) {
+                    float rad=!allApps?iconShapeRadius(getWidth(),getHeight()):px(22);
+                    halo.setStyle(android.graphics.Paint.Style.STROKE);
+                    halo.setStrokeWidth(Math.max(4f,px(4.5f)));
+                    halo.setColor(accent());
+                    float inset=halo.getStrokeWidth()/2f;
+                    android.graphics.RectF rect=new android.graphics.RectF(inset,inset,getWidth()-inset,getHeight()-inset);
+                    canvas.drawRoundRect(rect,rad,rad,halo);
+                } else if(tile.isFocused() && !springFocusActive()) {
                     float rad=!allApps?iconShapeRadius(getWidth(),getHeight()):px(22);
                     halo.setStyle(android.graphics.Paint.Style.STROKE);
                     halo.setStrokeWidth(Math.max(2f,px(2.4f)));
@@ -4233,9 +4411,9 @@ public final class MainActivity extends Activity {
             picture.addView(image,new FrameLayout.LayoutParams(iconSize,iconSize,Gravity.CENTER));
         } else {
             LinearLayout plain=new LinearLayout(this);plain.setOrientation(LinearLayout.VERTICAL);plain.setGravity(Gravity.CENTER);
-            int baseAllAppsIcon=allApps?px(102):px(64);
-            int maxAllAppsIcon=Math.max(baseAllAppsIcon,height-px(62));
-            int iconSize=Math.max(1,Math.min(maxAllAppsIcon,Math.round(baseAllAppsIcon*iconSizeScale())));
+            int maxAllowedIcon=Math.max(px(32),height-px(54));
+            int baseAllAppsIcon=allApps?Math.min(px(96),Math.round(height*0.48f)):px(64);
+            int iconSize=Math.max(1,Math.min(maxAllowedIcon,Math.round(baseAllAppsIcon*iconSizeScale())));
             if(appArt.drawable!=null) {
                 if("original".equals(store.value("icon_style","brand")) && !IconStylingEngine.usesGlassPlate(iconConfig())) {
                     image.setImageDrawable(fitDrawable(appArt.drawable,iconSize,iconSize));
@@ -4244,8 +4422,9 @@ public final class MainActivity extends Activity {
                 }
             }
             image.setScaleType(ImageView.ScaleType.FIT_CENTER);plain.addView(image,new LinearLayout.LayoutParams(iconSize,iconSize));
-            TextView inside=text(name(pkg),allApps?26:24,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(16),0,px(16),0);
-            LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(44));labelParams.topMargin=px(allApps?14:8);plain.addView(inside,labelParams);
+            int labelPx=allApps?(height<px(140)?17:height<px(180)?21:25):24;
+            TextView inside=text(name(pkg),labelPx,foreground());inside.setGravity(Gravity.CENTER);inside.setSingleLine(true);inside.setEllipsize(android.text.TextUtils.TruncateAt.END);inside.setPadding(px(12),0,px(12),0);
+            LinearLayout.LayoutParams labelParams=new LinearLayout.LayoutParams(-1,px(labelPx+14));labelParams.topMargin=px(allApps?(height<px(140)?6:12):8);plain.addView(inside,labelParams);
             picture.addView(plain,new FrameLayout.LayoutParams(-1,-1));
         }
         if(isAppLocked(pkg)) {
@@ -4341,7 +4520,19 @@ public final class MainActivity extends Activity {
                 if(drawer&&allApps)updateDrawerFocusTitle(name(pkg));
                 if(!recent){lastFocus=pkg;if(drawer)allAppsPageFocus=pkg;else homePageFocus=pkg;}
                 else if(drawer){lastFocus="recent."+pkg;allAppsPageFocus="recent."+pkg;}
-                if (!drawer) {heroWantsFocus=false;resizeHero(false);if(!recent)focusedFavorite=tile;wireNavigation();revealHorizontalFocus(tile,recent?px(40):0);}
+                if (!drawer) {
+                    heroWantsFocus=false;
+                    resizeHero(false);
+                    if(!recent) focusedFavorite=tile;
+                    if(isHomeGrid() || recent) {
+                        if(homeScroll!=null) {
+                            if(homeScroll.getHeight()>0) positionHomeSection(tile);
+                            else homeScroll.post(()->positionHomeSection(tile));
+                        }
+                    } else {
+                        revealHorizontalFocus(tile,0);
+                    }
+                }
                 else if(allApps && drawerScroll!=null) {
                     if(drawerScroll.getHeight()>0) centerDrawerChild(tile);
                     else drawerScroll.post(()->centerDrawerChild(tile));
@@ -4353,23 +4544,74 @@ public final class MainActivity extends Activity {
         final boolean[] held={false};
         tile.setOnKeyListener((v,code,event)->{
             boolean down=event.getAction()==KeyEvent.ACTION_DOWN;
-            if(down && code==KeyEvent.KEYCODE_DPAD_UP && !drawer && !recent && (heroPanel==null || heroPanel.getVisibility()!=View.VISIBLE)) {
-                if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) {
-                    glanceWidget.requestFocus();
-                    return true;
-                }
-                if(!topPillViews.isEmpty()) {
-                    topPillViews.get(0).requestFocus();
-                    return true;
-                }
-            }
             boolean ok=code==KeyEvent.KEYCODE_DPAD_CENTER||code==KeyEvent.KEYCODE_ENTER;
             if (!moving.isEmpty() && moving.equals(pkg)) {
                 if (down && event.getRepeatCount()==0) {
-                    int delta=code==KeyEvent.KEYCODE_DPAD_LEFT?-1:code==KeyEvent.KEYCODE_DPAD_RIGHT?1:0;
-                    if (delta!=0) { moveFavorite(pkg,delta); return true; }
+                    if (drawer) {
+                        int cols = columns();
+                        int delta = code==KeyEvent.KEYCODE_DPAD_LEFT ? -1 :
+                                    code==KeyEvent.KEYCODE_DPAD_RIGHT ? 1 :
+                                    code==KeyEvent.KEYCODE_DPAD_UP ? -cols :
+                                    code==KeyEvent.KEYCODE_DPAD_DOWN ? cols : 0;
+                        if (delta != 0) { moveDrawerApp(pkg, delta); return true; }
+                    } else {
+                        boolean isGrid = isHomeGrid();
+                        int cols = columns();
+                        int delta = code==KeyEvent.KEYCODE_DPAD_LEFT ? -1 :
+                                    code==KeyEvent.KEYCODE_DPAD_RIGHT ? 1 :
+                                    (isGrid && code==KeyEvent.KEYCODE_DPAD_UP) ? -cols :
+                                    (isGrid && code==KeyEvent.KEYCODE_DPAD_DOWN) ? cols : 0;
+                        if (delta != 0) { moveFavorite(pkg, delta); return true; }
+                    }
                 }
-                if (ok) { if (!down) { moving=""; render(); } return true; }
+                if (ok) {
+                    if (!down) { moving=""; render(); }
+                    return true;
+                }
+            }
+            if(down && code==KeyEvent.KEYCODE_DPAD_UP && !drawer && !recent && (heroPanel==null || heroPanel.getVisibility()!=View.VISIBLE)) {
+                boolean isTopRow = appRows.isEmpty() || appRows.get(0).contains(v);
+                if (isTopRow) {
+                    if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) {
+                        glanceWidget.requestFocus();
+                        return true;
+                    }
+                    if(!topPillViews.isEmpty()) {
+                        int col = 0;
+                        if (!appRows.isEmpty() && appRows.get(0).contains(v)) {
+                            col = appRows.get(0).indexOf(v);
+                        }
+                        int maxCol = Math.max(1, (!appRows.isEmpty() ? appRows.get(0).size() : 1) - 1);
+                        int pillIdx = Math.min(topPillViews.size() - 1, Math.round((float) col / maxCol * (topPillViews.size() - 1)));
+                        topPillViews.get(pillIdx).requestFocus();
+                        return true;
+                    }
+                }
+            }
+            if(down && code==KeyEvent.KEYCODE_DPAD_DOWN && !drawer && recent) {
+                if(!dockViews.isEmpty()) {
+                    int c = 0;
+                    for(List<View> r : contentRows) {
+                        int idx = r.indexOf(v);
+                        if(idx >= 0) { c = idx; break; }
+                    }
+                    int targetDock = Math.min(c, dockViews.size() - 1);
+                    dockViews.get(targetDock).requestFocus();
+                    return true;
+                }
+            }
+            if(down && code==KeyEvent.KEYCODE_DPAD_UP && !drawer && recent) {
+                if(!appRows.isEmpty()) {
+                    List<View> lastRow = appRows.get(appRows.size() - 1);
+                    int c = 0;
+                    for(List<View> r : contentRows) {
+                        int idx = r.indexOf(v);
+                        if(idx >= 0) { c = idx; break; }
+                    }
+                    int targetCol = Math.min(c, lastRow.size() - 1);
+                    lastRow.get(targetCol).requestFocus();
+                    return true;
+                }
             }
             if (code==KeyEvent.KEYCODE_MENU) { if (!down) appMenu(pkg); return true; }
             if (!ok) return false;
@@ -4505,7 +4747,7 @@ public final class MainActivity extends Activity {
         dock.setPadding(px(12),px(12),px(12),px(12));
         shell.addView(dock,new FrameLayout.LayoutParams(-1,-1));
 
-        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(64);place.bottomMargin=px(40);
+        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,px(132));place.topMargin=px(48);place.bottomMargin=px(64);
         (drawer?drawerPage:homePage).addView(shell,place);
         List<TvInputInfo> inputs=hdmiInputs();
         addDock(dock,ALL,drawer?"Home":"All Apps",null,()->{ switchLauncherPage(!drawer); });
@@ -4538,14 +4780,8 @@ public final class MainActivity extends Activity {
             }
             if(has) {
                 lastFocus=key;
-                final ScrollView page=drawer?drawerScroll:homeScroll;
-                final LinearLayout pageContent=drawer?drawerPage:homePage;
-                if(page!=null && pageContent!=null) {
-                    page.post(()->{
-                        if(page==(drawer?drawerScroll:homeScroll) && v.hasFocus())
-                            page.smoothScrollTo(0,Math.max(0,pageContent.getHeight()-page.getHeight()));
-                    });
-                }
+                if(drawer) centerDrawerChild(v);
+                else positionHomeSection(v);
             }
         });
         tile.setOnKeyListener((v,code,event)->{
@@ -4570,8 +4806,7 @@ public final class MainActivity extends Activity {
         if(glanceWidget!=null) {
             glanceWidget.setNextFocusUpId(glanceWidget.getId());
             if(!topPillViews.isEmpty()) glanceWidget.setNextFocusDownId(topPillViews.get(0).getId());
-            else if(focusedFavorite!=null) glanceWidget.setNextFocusDownId(focusedFavorite.getId());
-            else if(!appViews.isEmpty()) glanceWidget.setNextFocusDownId(appViews.get(0).getId());
+            else if(!appRows.isEmpty() && !appRows.get(0).isEmpty()) glanceWidget.setNextFocusDownId(appRows.get(0).get(0).getId());
             else if(!dockViews.isEmpty()) glanceWidget.setNextFocusDownId(dockViews.get(0).getId());
         }
         for(int i=0;i<topPillViews.size();i++) {
@@ -4579,10 +4814,15 @@ public final class MainActivity extends Activity {
             pill.setNextFocusLeftId(topPillViews.get(Math.max(0,i-1)).getId());
             pill.setNextFocusRightId(topPillViews.get(Math.min(topPillViews.size()-1,i+1)).getId());
             pill.setNextFocusUpId(pill.getId());
-            if(drawer && views.get("search")!=null) pill.setNextFocusDownId(views.get("search").getId());
-            else if(focusedFavorite!=null) pill.setNextFocusDownId(focusedFavorite.getId());
-            else if(!appViews.isEmpty()) pill.setNextFocusDownId(appViews.get(0).getId());
-            else if(!dockViews.isEmpty()) pill.setNextFocusDownId(dockViews.get(0).getId());
+            if(drawer && views.get("search")!=null) {
+                pill.setNextFocusDownId(views.get("search").getId());
+            } else if(!appRows.isEmpty() && !appRows.get(0).isEmpty()) {
+                List<View> firstRow = appRows.get(0);
+                int targetCol = Math.min(firstRow.size()-1, Math.round((float)i / Math.max(1, topPillViews.size()-1) * (firstRow.size()-1)));
+                pill.setNextFocusDownId(firstRow.get(targetCol).getId());
+            } else if(!dockViews.isEmpty()) {
+                pill.setNextFocusDownId(dockViews.get(Math.min(i, dockViews.size()-1)).getId());
+            }
         }
         if(drawer && views.get("search")!=null && !topPillViews.isEmpty()) {
             views.get("search").setNextFocusUpId(topPillViews.get(topPillViews.size()-1).getId());
@@ -4594,9 +4834,14 @@ public final class MainActivity extends Activity {
                 v.setNextFocusLeftId(row.get(Math.max(0,c-1)).getId());
                 v.setNextFocusRightId(row.get(Math.min(row.size()-1,c+1)).getId());
                 if(r==0&&!drawer) {
-                    if(heroPrimary!=null && heroPanel!=null && heroPanel.getVisibility()==View.VISIBLE) v.setNextFocusUpId(heroPrimary.getId());
-                    else if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) v.setNextFocusUpId(glanceWidget.getId());
-                    else if(!topPillViews.isEmpty()) v.setNextFocusUpId(topPillViews.get(0).getId());
+                    if(heroPrimary!=null && heroPanel!=null && heroPanel.getVisibility()==View.VISIBLE) {
+                        v.setNextFocusUpId(heroPrimary.getId());
+                    } else if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) {
+                        v.setNextFocusUpId(glanceWidget.getId());
+                    } else if(!topPillViews.isEmpty()) {
+                        int targetPill = Math.min(topPillViews.size()-1, Math.round((float)c / Math.max(1, row.size()-1) * (topPillViews.size()-1)));
+                        v.setNextFocusUpId(topPillViews.get(targetPill).getId());
+                    }
                 }
                 if(r==0&&drawer) {
                     View upTarget=views.get("search");
@@ -4605,35 +4850,58 @@ public final class MainActivity extends Activity {
                     if(upTarget!=null) v.setNextFocusUpId(upTarget.getId());
                 }
                 if(r>0) {
-                    List<View> above=appRows.get(r-1);v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
+                    List<View> above=appRows.get(r-1);
+                    v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
                 }
                 if(r+1<appRows.size()) {
-                    List<View> below=appRows.get(r+1);v.setNextFocusDownId(below.get(Math.min(c,below.size()-1)).getId());
-                } else if(!contentViews.isEmpty())v.setNextFocusDownId(contentViews.get(0).getId());
-                else if(!dockViews.isEmpty())v.setNextFocusDownId(dockViews.get(Math.min(c,dockViews.size()-1)).getId());
+                    List<View> below=appRows.get(r+1);
+                    v.setNextFocusDownId(below.get(Math.min(c,below.size()-1)).getId());
+                } else if(!rows.isEmpty()) {
+                    List<View> firstContentRow = rows.get(0);
+                    v.setNextFocusDownId(firstContentRow.get(Math.min(c,firstContentRow.size()-1)).getId());
+                } else if(!dockViews.isEmpty()) {
+                    v.setNextFocusDownId(dockViews.get(Math.min(c,dockViews.size()-1)).getId());
+                }
             }
         }
         for (int i=0;i<dockViews.size();i++) {
-            View v=dockViews.get(i); v.setNextFocusLeftId(dockViews.get(Math.max(0,i-1)).getId());
-            v.setNextFocusRightId(dockViews.get(Math.min(dockViews.size()-1,i+1)).getId()); v.setNextFocusDownId(v.getId());
+            View v=dockViews.get(i);
+            v.setNextFocusLeftId(dockViews.get(Math.max(0,i-1)).getId());
+            v.setNextFocusRightId(dockViews.get(Math.min(dockViews.size()-1,i+1)).getId());
+            v.setNextFocusDownId(v.getId());
             if (!rows.isEmpty()) {
-                List<View> last=rows.get(rows.size()-1);v.setNextFocusUpId(last.get(Math.min(i,last.size()-1)).getId());
-            }
-            else if (!appRows.isEmpty()) {
+                List<View> last=rows.get(rows.size()-1);
+                v.setNextFocusUpId(last.get(Math.min(i,last.size()-1)).getId());
+            } else if (!appRows.isEmpty()) {
                 List<View> last=appRows.get(appRows.size()-1);
-                v.setNextFocusUpId((focusedFavorite!=null?focusedFavorite:last.get(Math.min(i,last.size()-1))).getId());
+                v.setNextFocusUpId(last.get(Math.min(i,last.size()-1)).getId());
+            } else if (!topPillViews.isEmpty()) {
+                v.setNextFocusUpId(topPillViews.get(Math.min(i, topPillViews.size()-1)).getId());
             }
         }
-        for(int r=0;r<rows.size();r++)for(int c=0;c<rows.get(r).size();c++) {
-            List<View> row=rows.get(r);View v=row.get(c);
-            v.setNextFocusLeftId(row.get(Math.max(0,c-1)).getId());v.setNextFocusRightId(row.get(Math.min(c+1,row.size()-1)).getId());
-            if(r>0) {
-                List<View> above=rows.get(r-1);v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
-            } else if(focusedFavorite!=null)v.setNextFocusUpId(focusedFavorite.getId());
-            else if(!appViews.isEmpty())v.setNextFocusUpId(appViews.get(0).getId());
-            if(r+1<rows.size()) {
-                List<View> below=rows.get(r+1);v.setNextFocusDownId(below.get(Math.min(c,below.size()-1)).getId());
-            } else if(!dockViews.isEmpty())v.setNextFocusDownId(dockViews.get(Math.min(c,dockViews.size()-1)).getId());
+        for(int r=0;r<rows.size();r++) {
+            List<View> row=rows.get(r);
+            for(int c=0;c<row.size();c++) {
+                View v=row.get(c);
+                v.setNextFocusLeftId(row.get(Math.max(0,c-1)).getId());
+                v.setNextFocusRightId(row.get(Math.min(c+1,row.size()-1)).getId());
+                if(r>0) {
+                    List<View> above=rows.get(r-1);
+                    v.setNextFocusUpId(above.get(Math.min(c,above.size()-1)).getId());
+                } else if(!appRows.isEmpty()) {
+                    List<View> lastAppRow=appRows.get(appRows.size()-1);
+                    v.setNextFocusUpId(lastAppRow.get(Math.min(c,lastAppRow.size()-1)).getId());
+                } else if(!topPillViews.isEmpty()) {
+                    int targetPill = Math.min(topPillViews.size()-1, Math.round((float)c / Math.max(1, row.size()-1) * (topPillViews.size()-1)));
+                    v.setNextFocusUpId(topPillViews.get(targetPill).getId());
+                }
+                if(r+1<rows.size()) {
+                    List<View> below=rows.get(r+1);
+                    v.setNextFocusDownId(below.get(Math.min(c,below.size()-1)).getId());
+                } else if(!dockViews.isEmpty()) {
+                    v.setNextFocusDownId(dockViews.get(Math.min(c,dockViews.size()-1)).getId());
+                }
+            }
         }
     }
     private void updateRecommendationRows() {
@@ -4845,27 +5113,91 @@ public final class MainActivity extends Activity {
     private void revealHorizontalFocus(View view) {
         revealHorizontalFocus(view,0);
     }
+    private void glideHomeScrollTo(int target) {
+        if(destroyed || homeScroll==null) return;
+        final int currentY = homeScroll.getScrollY();
+        if(Math.abs(currentY - target) <= 2) {
+            homeScrollTarget = target;
+            return;
+        }
+        if(homeScrollTarget == target && homeScrollAnimator != null && homeScrollAnimator.isRunning()) {
+            return;
+        }
+        homeScrollTarget = target;
+        if(homeScrollAnimator != null) homeScrollAnimator.cancel();
+
+        int distance = Math.abs(target - currentY);
+        int duration = (int)focusDuration(Math.min(480, Math.max(280, 240 + distance / 4)));
+        homeScrollAnimator = android.animation.ValueAnimator.ofInt(currentY, target);
+        homeScrollAnimator.setDuration(duration);
+        homeScrollAnimator.setInterpolator(new android.view.animation.PathInterpolator(0.16f, 1f, 0.30f, 1f));
+        homeScrollAnimator.addUpdateListener(anim -> {
+            if(homeScroll != null) {
+                homeScroll.scrollTo(0, (Integer) anim.getAnimatedValue());
+            }
+        });
+        homeScrollAnimator.start();
+    }
     private void positionHomeSection(View focused) {
         if(restoringPage||homeScroll==null||homePage==null||focused==null||!focused.hasFocus())return;
-        View section=focused;
-        if(appViews.contains(focused)||topPillViews.contains(focused)||header.hasFocus()) {
-            homeScroll.smoothScrollTo(0,0);
+        if(topPillViews.contains(focused)||header.hasFocus()) {
+            glideHomeScrollTo(0);
             return;
         }
+        if(!isHomeGrid() && appViews.contains(focused)) {
+            glideHomeScrollTo(0);
+            return;
+        }
+        int viewH=homeScroll.getHeight()>0?homeScroll.getHeight():screenHeight;
+        int currentY=homeScroll.getScrollY();
+        int maxScroll=Math.max(0,homePage.getHeight()-viewH);
+
         if(dockViews.contains(focused)) {
-            homeScroll.smoothScrollTo(0,Math.max(0,homePage.getHeight()-homeScroll.getHeight()));
+            glideHomeScrollTo(maxScroll);
             return;
         }
+        if(isHomeGrid() && appViews.contains(focused)) {
+            if(!appRows.isEmpty() && appRows.get(0).contains(focused)) {
+                glideHomeScrollTo(0);
+                return;
+            }
+            android.graphics.Rect bounds=new android.graphics.Rect(0,0,focused.getWidth(),focused.getHeight());
+            homePage.offsetDescendantRectToMyCoords(focused,bounds);
+
+            int padTop = px(100);
+            int padBottom = px(140);
+            int tileTop = bounds.top - currentY;
+            int tileBottom = bounds.bottom - currentY;
+            if(tileTop >= padTop && tileBottom <= viewH - padBottom) {
+                return;
+            }
+
+            int room=Math.max(0,viewH-bounds.height());
+            int target=Math.max(0,bounds.top-room/2);
+            target=Math.min(target,maxScroll);
+            glideHomeScrollTo(target);
+            return;
+        }
+        View section=focused;
         // Include the section heading and row padding, rather than just the focused card.
         while(section.getParent() instanceof View && section.getParent()!=homePage
                 && section.getParent()!=contentRail) section=(View)section.getParent();
         if(section.getParent()!=homePage && section.getParent()!=contentRail)return;
         android.graphics.Rect bounds=new android.graphics.Rect(0,0,section.getWidth(),section.getHeight());
         homePage.offsetDescendantRectToMyCoords(section,bounds);
-        int room=Math.max(0,homeScroll.getHeight()-bounds.height());
+
+        int padTop = px(100);
+        int padBottom = px(140);
+        int secTop = bounds.top - currentY;
+        int secBottom = bounds.bottom - currentY;
+        if(secTop >= padTop && secBottom <= viewH - padBottom) {
+            return;
+        }
+
+        int room=Math.max(0,viewH-bounds.height());
         int target=Math.max(0,bounds.top-room/2);
-        target=Math.min(target,Math.max(0,homePage.getHeight()-homeScroll.getHeight()));
-        homeScroll.smoothScrollTo(0,target);
+        target=Math.min(target,maxScroll);
+        glideHomeScrollTo(target);
     }
     private void glideDrawerScrollTo(int target) {
         if(destroyed || drawerScroll==null) return;
@@ -4982,7 +5314,7 @@ public final class MainActivity extends Activity {
             for(int i=0;i<plan.widths.length;i++){
                 int cardWidth=plan.widths[i];
                 int cardHeight=Math.min(maxCardHeight,Math.max(1,Math.round(cardWidth*9f/16f)));
-                View tile=appTile(recent.get(i),cardWidth,cardHeight,true,true);
+                View tile=appTile(recent.get(i),cardWidth,cardHeight,true,false);
                 LinearLayout.LayoutParams cell=new LinearLayout.LayoutParams(cardWidth,cardHeight);
                 if(i+1<plan.widths.length)cell.rightMargin=gap;
                 row.addView(tile,cell);rowViews.add(tile);
@@ -4998,7 +5330,7 @@ public final class MainActivity extends Activity {
         };
         section.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->fitRow.run());
         section.post(fitRow);
-        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(20);
+        LinearLayout.LayoutParams place=new LinearLayout.LayoutParams(-1,-2);place.topMargin=px(24);place.bottomMargin=px(48);
         homePage.addView(recentSection,Math.max(0,homePage.getChildCount()-1),place);
     }
 
@@ -5025,6 +5357,18 @@ public final class MainActivity extends Activity {
                 store.list("favorites",favorite); render(); toast("Added to Home");
             }
         });
+        if (drawer) {
+            add(labels,actions,"Reorder in All Apps",()->{
+                store.set("drawer_sort","custom");
+                refreshApps();
+                drawer=true;
+                moving=pkg;
+                lastFocus=pkg;
+                closeBlade();
+                render();
+                toast("Use D-Pad to move · Press OK to place");
+            });
+        }
         if (pinned) {
             add(labels,actions,"Replace with another app",()->chooseApp("Replace "+name(pkg),true,chosen->{
                 List<String> removed=store.list("removed_favorites"); removed.remove(chosen);
@@ -5058,8 +5402,21 @@ public final class MainActivity extends Activity {
         add(labels,actions,"Rename tile: "+name(pkg),()->rename(pkg));
         add(labels,actions,"Artwork: "+(store.flag("home_banner."+pkg)?"Banner":"Icon"),()->artworkMenu(pkg));
         add(labels,actions,"Tile glow: "+appGlowOverrideName(pkg),()->appGlowMenu(pkg));
+        add(labels,actions,"Category: "+getAppCategory(pkg),()->chooseCategoryForApp(pkg,()->showAppMenu(pkg)));
         add(labels,actions,"Section: "+(utility(pkg)?"TV utilities":"Apps"),()->{
             store.setFlag("utility."+pkg,!utility(pkg));syncFavorites();render();showAppMenu(pkg);
+        });
+        add(labels,actions,"Hide app from launcher",()->{
+            List<String> hidden=store.list("hidden_apps");
+            if(!hidden.contains(pkg))hidden.add(pkg);
+            store.list("hidden_apps",hidden);
+            List<String> favs=store.list("favorites");
+            favs.remove(pkg);
+            store.list("favorites",favs);
+            refreshApps();
+            render();
+            toast(name(pkg)+" hidden. Restore in App Layout settings.");
+            closeBlade();
         });
         add(labels,actions,"§CONTENT",null);
         RecommendationRepository.Feed known=recommendations.cached(pkg);
@@ -5073,10 +5430,45 @@ public final class MainActivity extends Activity {
         menu(name(pkg),labels,actions,null);
     }
     private void moveFavorite(String pkg,int delta) {
-        List<String> list=favorites(); int from=list.indexOf(pkg), to=from+delta;
-        if (from<0||to<0||to>=list.size()) return;
+        List<String> list=favorites(); int from=list.indexOf(pkg);
+        if (from<0) return;
+        int to=Math.max(0,Math.min(list.size()-1,from+delta));
+        if (to==from) return;
         if(sfx!=null) sfx.playDetent(0.5f,Math.max(10,Math.min(90,to*100/Math.max(1,list.size()-1))));
         list.remove(from); list.add(to,pkg); store.list("favorites",list); lastFocus=pkg; render();
+    }
+    private void moveDrawerApp(String pkg,int delta) {
+        List<String> custom=store.list("custom_drawer_order");
+        if(custom.isEmpty()) {
+            for(AppCatalog.App a:apps) custom.add(a.pkg);
+        } else {
+            for(AppCatalog.App a:apps) if(!custom.contains(a.pkg)) custom.add(a.pkg);
+        }
+        int from=custom.indexOf(pkg);
+        if(from<0) return;
+        int to=Math.max(0,Math.min(custom.size()-1,from+delta));
+        if(to==from) return;
+        if(sfx!=null) sfx.playDetent(0.5f,Math.max(10,Math.min(90,to*100/Math.max(1,custom.size()-1))));
+        custom.remove(from); custom.add(to,pkg);
+        store.list("custom_drawer_order",custom);
+        store.set("drawer_sort","custom");
+        lastFocus=pkg;
+        refreshApps();
+        render();
+    }
+    private void chooseCategoryForApp(String pkg,Runnable back) {
+        String current=getAppCategory(pkg);
+        String[] categories=new String[]{"Streaming","Gaming","News & Info","TV Utilities","Apps"};
+        int selected=-1;
+        for(int i=0;i<categories.length;i++){
+            if(categories[i].equalsIgnoreCase(current)){selected=i;break;}
+        }
+        choice("Category for "+name(pkg),categories,selected,idx->{
+            store.set("category."+pkg,categories[idx]);
+            toast(name(pkg)+" set to "+categories[idx]);
+            refreshApps();
+            rebuildContentInPlace();
+        },back);
     }
     private void rename(String pkg) {
         LinearLayout box=new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
@@ -5147,6 +5539,169 @@ public final class MainActivity extends Activity {
         add(labels,actions,"@wifi|Customize Your Launcher from Your Phone",()->phoneDropPanel(this::settingsMenu));
         menu("Settings",labels,actions,null);
     }
+    private void appLayoutMenu(Runnable back) {
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+
+        add(labels,actions,"@home|Home screen section\n"+homeLayoutSummary(),()->homeLayoutMenu(()->appLayoutMenu(back)));
+        add(labels,actions,"@grid|All Apps section\n"+drawerLayoutSummary(),()->allAppsLayoutMenu(()->appLayoutMenu(back)));
+
+        menu("App layout & arrangement",labels,actions,back);
+    }
+
+    private void homeLayoutMenu(Runnable back) {
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+        boolean isGrid=isHomeGrid();
+        String homeStyle=isGrid?"Grid dock":"Single-row dock";
+
+        add(labels,actions,"Home layout style: "+homeStyle,()->choice("Home layout style",
+                new String[]{"Single-row dock · Classic horizontal scrolling dock","Grid dock · Fluid multi-row grid layout"},
+                isGrid?1:0,
+                idx->{
+                    store.set("home_layout",idx==1?"grid":"single");
+                    rebuildContentInPlace();
+                },()->homeLayoutMenu(back)));
+
+        add(labels,actions,"Arrange Home icons ↗",()->{
+            List<String> favs=favorites();
+            if(favs.isEmpty()){toast("No apps on Home to arrange");return;}
+            closeBlade();
+            drawer=false;
+            moving=favs.get(0);
+            lastFocus=favs.get(0);
+            render();
+            toast("Use D-Pad to move · Press OK to place");
+        });
+
+        add(labels,actions,"Separate TV utilities on Home: "+onOff(store.flag("group_utilities",true)),()->{
+            store.setFlag("group_utilities",!store.flag("group_utilities",true));
+            syncFavorites();
+            rebuildContentInPlace();
+            homeLayoutMenu(back);
+        });
+
+        if(!store.list("removed_favorites").isEmpty()) {
+            add(labels,actions,"Restore all removed Home icons",()->{
+                store.list("removed_favorites",new ArrayList<>());
+                store.setFlag("favorites_custom_only",false);
+                syncFavorites();
+                rebuildContentInPlace();
+                toast("All regular apps restored to Home");
+                homeLayoutMenu(back);
+            });
+        }
+
+        menu("Home screen layout",labels,actions,back);
+    }
+
+    private void allAppsLayoutMenu(Runnable back) {
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+        String drawerSort=store.value("drawer_sort","alpha");
+        String sortLabel="frequent".equals(drawerSort)?"Most frequently used":
+                         "recent".equals(drawerSort)?"Recently launched":
+                         "custom".equals(drawerSort)?"Custom manual order":"Alphabetical (A–Z)";
+        String groupingLabel=store.flag("group_by_category",false)?"Category sections":
+                             store.flag("group_utilities",true)?"Separate TV utilities":"Unified flat grid";
+        int cols=columns();
+        String colsLabel=cols==4?"Large · 4 columns":cols==8?"Compact · 8 columns":"Comfortable · 6 columns";
+        List<String> hidden=store.list("hidden_apps");
+
+        add(labels,actions,"App sort order: "+sortLabel,()->choice("App sort order",
+                new String[]{
+                        "Alphabetical (A–Z) · Traditional alphabetical order",
+                        "Most frequently used · Smart order based on your launches",
+                        "Recently launched · Apps you opened recently appear first",
+                        "Custom manual order · Drag & drop arrange in any order"
+                },
+                "frequent".equals(drawerSort)?1:"recent".equals(drawerSort)?2:"custom".equals(drawerSort)?3:0,
+                idx->{
+                    String[] sorts=new String[]{"alpha","frequent","recent","custom"};
+                    store.set("drawer_sort",sorts[idx]);
+                    refreshApps();
+                    rebuildContentInPlace();
+                },()->allAppsLayoutMenu(back)));
+
+        add(labels,actions,"Arrange All Apps drawer ↗",()->{
+            if(apps.isEmpty()){toast("No apps to arrange");return;}
+            closeBlade();
+            store.set("drawer_sort","custom");
+            refreshApps();
+            drawer=true;
+            moving=apps.get(0).pkg;
+            lastFocus=apps.get(0).pkg;
+            render();
+            toast("Use D-Pad (◀ ▶ ▲ ▼) to reorder · Press OK to place");
+        });
+
+        add(labels,actions,"Grid density: "+colsLabel,()->choice("Grid density",
+                new String[]{"Comfortable · 6 columns in All Apps","Compact · 8 columns in All Apps","Large · 4 columns in All Apps"},
+                cols==8?1:cols==4?2:0,
+                idx->{
+                    store.setNumber("columns",new int[]{6,8,4}[idx]);
+                    rebuildContentInPlace();
+                },()->allAppsLayoutMenu(back)));
+
+        add(labels,actions,"Drawer grouping: "+groupingLabel,()->choice("Drawer grouping",
+                new String[]{
+                        "Separate TV utilities · Keeps utilities in their own section",
+                        "Category sections · Groups apps by Streaming, Gaming, Utilities, etc.",
+                        "Unified flat grid · Shows all apps in a single continuous grid"
+                },
+                store.flag("group_by_category",false)?1:store.flag("group_utilities",true)?0:2,
+                idx->{
+                    if(idx==0){
+                        store.setFlag("group_by_category",false);
+                        store.setFlag("group_utilities",true);
+                    } else if(idx==1){
+                        store.setFlag("group_by_category",true);
+                        store.setFlag("group_utilities",true);
+                    } else {
+                        store.setFlag("group_by_category",false);
+                        store.setFlag("group_utilities",false);
+                    }
+                    rebuildContentInPlace();
+                },()->allAppsLayoutMenu(back)));
+
+        add(labels,actions,"Manage hidden apps: "+(hidden.isEmpty()?"None hidden":hidden.size()+" hidden"),()->manageHiddenAppsBlade(()->allAppsLayoutMenu(back)));
+
+        menu("All Apps section layout",labels,actions,back);
+    }
+
+    private void manageHiddenAppsBlade(Runnable back) {
+        List<String> labels=new ArrayList<>();
+        List<Runnable> actions=new ArrayList<>();
+        List<String> hidden=store.list("hidden_apps");
+        List<AppCatalog.App> all=catalog.all();
+        Collections.sort(all,(a,b)->name(a.pkg).compareToIgnoreCase(name(b.pkg)));
+        for(AppCatalog.App app:all) {
+            boolean isHidden=hidden.contains(app.pkg);
+            String prefix=isHidden?"✕ Hidden: ":"✓ Visible: ";
+            add(labels,actions,prefix+name(app.pkg),()->{
+                List<String> current=store.list("hidden_apps");
+                if(current.contains(app.pkg)) {
+                    current.remove(app.pkg);
+                    toast(name(app.pkg)+" unhidden");
+                } else {
+                    current.add(app.pkg);
+                    List<String> favs=store.list("favorites");
+                    favs.remove(app.pkg);
+                    store.list("favorites",favs);
+                    toast(name(app.pkg)+" hidden");
+                }
+                store.list("hidden_apps",current);
+                refreshApps();
+                rebuildContentInPlace();
+                manageHiddenAppsBlade(back);
+            });
+        }
+        if(all.isEmpty()) {
+            add(labels,actions,"No apps installed",null);
+        }
+        menu("Manage hidden apps",labels,actions,back);
+    }
+
     private void lumaSettingsMenu() {
         List<String> labels=new ArrayList<>(); List<Runnable> actions=new ArrayList<>();
         String source=store.value("featured_source","");
@@ -5155,6 +5710,8 @@ public final class MainActivity extends Activity {
         add(labels,actions,"§PERSONALIZE",null);
         add(labels,actions,"@sparkles|Living-room scenes\n"+sceneSummary(),()->scenesMenu(this::lumaSettingsMenu));
         add(labels,actions,"@palette|Appearance\n"+themeName()+" · "+getIconStyleSummary(),this::appearanceMenu);
+        add(labels,actions,"@home|Home screen section\n"+homeLayoutSummary(),()->homeLayoutMenu(this::lumaSettingsMenu));
+        add(labels,actions,"@grid|All Apps section\n"+drawerLayoutSummary(),()->allAppsLayoutMenu(this::lumaSettingsMenu));
         add(labels,actions,"@wifi|Wallpapers & QR studio\n"+backgroundSummary(),()->backgroundMenu(this::lumaSettingsMenu));
         add(labels,actions,"@sparkles|Glass & surfaces\n"+glassSurfacesSummary(),()->glassSurfacesMenu(this::lumaSettingsMenu));
         add(labels,actions,"@settings|Quick Settings\n"+quickSettingsSummary(),()->quickSettingsMenu(this::lumaSettingsMenu));
@@ -5483,6 +6040,7 @@ public final class MainActivity extends Activity {
                 "§APP ICONS",
                 "@palette|App icons: "+getIconStyleSummary(),
                 "§LAYOUT & BARS",
+                "App layout & arrangement: "+appLayoutSummary(),
                 "Tile size: "+(columns()==4?"Large":columns()==8?"Compact":"Comfortable"),
                 "Clock size: "+clockLabel,
                 "Clock style: "+clockStyleName(),
@@ -5513,6 +6071,7 @@ public final class MainActivity extends Activity {
                         null,
                         ()->appIconsMenu(this::appearanceMenu),
                         null,
+                        ()->appLayoutMenu(this::appearanceMenu),
                         ()->choice("Tile size",new String[]{"Compact · 8 columns in All Apps","Comfortable · 6 columns in All Apps","Large · 4 columns in All Apps"},
                                 columns()==8?0:columns()==6?1:2,
                                 index->{
@@ -10582,7 +11141,19 @@ public final class MainActivity extends Activity {
                         } else if(direction==View.FOCUS_UP) {
                             if(this==homeScroll) {
                                 if(glanceWidget!=null && glanceWidget.getVisibility()==View.VISIBLE) glanceWidget.requestFocus();
-                                else if(!topPillViews.isEmpty()) topPillViews.get(0).requestFocus();
+                                else if(!topPillViews.isEmpty()) {
+                                    int targetPill = 0;
+                                    if(focused != null) {
+                                        for(List<View> r : appRows) {
+                                            int idx = r.indexOf(focused);
+                                            if(idx >= 0) {
+                                                targetPill = Math.min(topPillViews.size() - 1, Math.round((float) idx / Math.max(1, r.size() - 1) * (topPillViews.size() - 1)));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    topPillViews.get(targetPill).requestFocus();
+                                }
                             } else if(this==drawerScroll && views.get("search")!=null) {
                                 views.get("search").requestFocus();
                             }

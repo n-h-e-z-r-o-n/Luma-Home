@@ -54,7 +54,7 @@
     <application android:label="Luma Home" android:allowBackup="false"
         android:icon="@mipmap/ic_launcher" android:banner="@drawable/tv_banner"
         android:usesCleartextTraffic="false"
-        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        android:theme="@style/Theme.LumaHome">
         <meta-data
             android:name="com.google.android.play.billingclient.version"
             android:value="8.0.0" />
@@ -72,6 +72,7 @@
 
         <activity android:name=".MainActivity"
             android:exported="true"
+            android:theme="@style/Theme.LumaHome"
             android:launchMode="singleTask" android:stateNotNeeded="true"
             android:clearTaskOnLaunch="true" android:excludeFromRecents="true"
             android:screenOrientation="landscape"
